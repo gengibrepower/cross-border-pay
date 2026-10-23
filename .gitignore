@@ -1,0 +1,11 @@
+/bin/
+/tmp/
+*.test
+*.out
+coverage.*
+.env
+.env.*
+!.env.example
+*.p12
+*.pem
+.DS_Store
