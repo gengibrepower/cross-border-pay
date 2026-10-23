@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var ErrShutdownTimeout = errors.New("worker: jobs did not stop before the shutdown timeout")
+var ErrShutdownTimeout = errors.New("jobs did not stop before the shutdown timeout")
 
 type Job struct {
 	Name string
@@ -27,8 +27,7 @@ func Run(ctx context.Context, logger *slog.Logger, shutdownTimeout time.Duration
 	for i, job := range jobs {
 		wg.Go(func() {
 			logger.Info("job started", "job", job.Name)
-			err := job.Run(ctx)
-			if err != nil && !(errors.Is(err, context.Canceled) && ctx.Err() != nil) {
+			if err := job.Run(ctx); failed(ctx, err) {
 				errs[i] = fmt.Errorf("job %s: %w", job.Name, err)
 				logger.Error("job failed", "job", job.Name, "error", err)
 				cancel()
@@ -50,4 +49,9 @@ func Run(ctx context.Context, logger *slog.Logger, shutdownTimeout time.Duration
 	case <-time.After(shutdownTimeout):
 		return ErrShutdownTimeout
 	}
+}
+
+func failed(ctx context.Context, err error) bool {
+	stoppedByShutdown := ctx.Err() != nil && errors.Is(err, context.Canceled)
+	return err != nil && !stoppedByShutdown
 }

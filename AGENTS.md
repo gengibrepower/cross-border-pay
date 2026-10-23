@@ -91,9 +91,10 @@ vira **várias** PRs pequenas — proponha o fatiamento.
 
 Rode e me mostre limpos:
 
-    mise run fmt:check          # gofumpt, saída vazia
-    mise run lint               # go vet + golangci-lint
+    mise run fmt:check          # gofumpt + goimports, sem diff
+    mise run lint               # golangci-lint (já roda o govet)
     mise run test               # go test -race ./...
+    mise run vuln               # govulncheck
 
 Revise o diff comigo. Só commite depois do meu OK explícito.
 
@@ -160,14 +161,15 @@ com o linter nomeado e justificativa real.
 
 ## Comandos
 
-Versões e tarefas vivem em `mise.toml` (decisão 48), criado na primeira PR da F0. Até lá,
-nenhum destes existe.
+Versões e tarefas vivem em `mise.toml` (decisão 48). O CI roda as mesmas tasks.
 
 - `mise install` — instala Go e ferramentas nas versões fixadas
-- `mise run fmt` / `mise run fmt:check`
-- `mise run lint`
+- `mise run fmt` / `mise run fmt:check` — formatadores da config do golangci-lint
+- `mise run lint` — `golangci-lint run` (`.golangci.yml`)
 - `mise run test` — `go test -race ./...` (precisa de Docker para os testes de integração)
+- `mise run test:cover` — o mesmo, com relatório de cobertura (CI)
 - `mise run test:stress` — `-race -count=100`, o mesmo do job noturno
-- `mise run gen` — `sqlc generate`
-- `mise run db` — Postgres local por `docker compose`
-- `mise run migrate` — aplica as migrations embutidas
+- `mise run vuln` — `govulncheck ./...`
+- `mise run gen` — `sqlc generate` (a partir da PR 3 da F0)
+- `mise run db` — Postgres local por `docker compose` (a partir da PR 3 da F0)
+- `mise run migrate` — aplica as migrations embutidas (a partir da PR 3 da F0)

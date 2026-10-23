@@ -2,11 +2,35 @@
 go = "1.27.3"
 golangci-lint = "2.15.0"
 sqlc = "1.31.1"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+
+[tasks.fmt]
+description = "Formata o código (gofumpt + goimports pela config do golangci-lint)"
+run = "golangci-lint fmt"
+
+[tasks."fmt:check"]
+description = "Falha se algum arquivo não estiver formatado"
+run = "golangci-lint fmt --diff"
+
+[tasks.lint]
+description = "golangci-lint, que já roda o govet"
+run = "golangci-lint run"
 
 [tasks.test]
 description = "Testes com o detector de corrida"
 run = "go test -race ./..."
 
+[tasks."test:cover"]
+description = "Testes com o detector de corrida e relatório de cobertura"
+run = [
+  "go test -race -coverprofile=coverage.out ./...",
+  "go tool cover -func=coverage.out",
+]
+
 [tasks."test:stress"]
 description = "Testes repetidos 100 vezes com o detector de corrida, como o job noturno"
 run = "go test -race -count=100 ./..."
+
+[tasks.vuln]
+description = "Vulnerabilidades conhecidas no código e nas dependências"
+run = "govulncheck ./..."

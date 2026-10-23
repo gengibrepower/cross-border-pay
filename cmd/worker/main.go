@@ -32,7 +32,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 
 	logger.Info("worker started")
 	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout); err != nil {
-		return err
+		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")
 	return nil
