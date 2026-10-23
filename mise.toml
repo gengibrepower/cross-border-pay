@@ -1,0 +1,12 @@
+[tools]
+go = "1.27.3"
+golangci-lint = "2.15.0"
+sqlc = "1.31.1"
+
+[tasks.test]
+description = "Testes com o detector de corrida"
+run = "go test -race ./..."
+
+[tasks."test:stress"]
+description = "Testes repetidos 100 vezes com o detector de corrida, como o job noturno"
+run = "go test -race -count=100 ./..."
