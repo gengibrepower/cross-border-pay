@@ -8,10 +8,13 @@ import (
 	"time"
 )
 
+var ErrMissingDatabaseURL = errors.New("DATABASE_URL is required")
+
 type Config struct {
 	HTTPAddr        string
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+	DatabaseURL     string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -21,6 +24,8 @@ func Load(getenv func(string) string) (Config, error) {
 		ShutdownTimeout: 10 * time.Second,
 	}
 	var errs []error
+
+	cfg.DatabaseURL = getenv("DATABASE_URL")
 
 	if v := getenv("HTTP_ADDR"); v != "" {
 		if _, _, err := net.SplitHostPort(v); err != nil {
@@ -51,4 +56,11 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c Config) RequireDatabase() error {
+	if c.DatabaseURL == "" {
+		return ErrMissingDatabaseURL
+	}
+	return nil
 }

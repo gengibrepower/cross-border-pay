@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -11,28 +12,55 @@ import (
 	"time"
 )
 
-func TestHealthz(t *testing.T) {
-	rec := httptest.NewRecorder()
-	routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", http.NoBody))
+type fakeDB struct{ err error }
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+func (f fakeDB) Ping(context.Context) error { return f.err }
+
+func get(t *testing.T, handler http.Handler, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, http.NoBody))
+	return rec
+}
+
+func assertResponse(t *testing.T, rec *httptest.ResponseRecorder, wantCode int, wantBody string) {
+	t.Helper()
+	if rec.Code != wantCode {
+		t.Errorf("status = %d, want %d", rec.Code, wantCode)
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
-	if got := rec.Body.String(); got != `{"status":"ok"}` {
-		t.Errorf("body = %s, want {\"status\":\"ok\"}", got)
+	if got := rec.Body.String(); got != wantBody {
+		t.Errorf("body = %s, want %s", got, wantBody)
 	}
 }
 
-func TestHealthzRejectsOtherMethods(t *testing.T) {
-	rec := httptest.NewRecorder()
-	routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/healthz", http.NoBody))
+func TestHealthz(t *testing.T) {
+	rec := get(t, routes(fakeDB{}), http.MethodGet, "/healthz")
+	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
+}
 
+func TestHealthzIgnoresDatabase(t *testing.T) {
+	rec := get(t, routes(fakeDB{err: errors.New("down")}), http.MethodGet, "/healthz")
+	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
+}
+
+func TestHealthzRejectsOtherMethods(t *testing.T) {
+	rec := get(t, routes(fakeDB{}), http.MethodPost, "/healthz")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
+}
+
+func TestReadyz(t *testing.T) {
+	rec := get(t, routes(fakeDB{}), http.MethodGet, "/readyz")
+	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
+}
+
+func TestReadyzWithDatabaseDown(t *testing.T) {
+	rec := get(t, routes(fakeDB{err: errors.New("down")}), http.MethodGet, "/readyz")
+	assertResponse(t, rec, http.StatusServiceUnavailable, `{"status":"unavailable"}`)
 }
 
 func TestServeAnswersAndStopsOnCancel(t *testing.T) {
@@ -43,7 +71,9 @@ func TestServeAnswersAndStopsOnCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
-	go func() { result <- serve(ctx, ln, slog.New(slog.DiscardHandler), time.Second) }()
+	go func() {
+		result <- serve(ctx, ln, routes(fakeDB{}), slog.New(slog.DiscardHandler), time.Second)
+	}()
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/healthz", http.NoBody)
 	if err != nil {
@@ -79,5 +109,12 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 	}
 	if err := run(t.Context(), getenv, io.Discard); err == nil {
 		t.Fatal("run() error = nil, want config error")
+	}
+}
+
+func TestRunRequiresDatabaseURL(t *testing.T) {
+	err := run(t.Context(), func(string) string { return "" }, io.Discard)
+	if err == nil {
+		t.Fatal("run() error = nil, want missing DATABASE_URL")
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -28,8 +29,14 @@ func TestLoad(t *testing.T) {
 				"HTTP_ADDR":        "127.0.0.1:9000",
 				"LOG_LEVEL":        "debug",
 				"SHUTDOWN_TIMEOUT": "30s",
+				"DATABASE_URL":     "postgres://localhost/cbp",
 			},
-			want: Config{HTTPAddr: "127.0.0.1:9000", LogLevel: slog.LevelDebug, ShutdownTimeout: 30 * time.Second},
+			want: Config{
+				HTTPAddr:        "127.0.0.1:9000",
+				LogLevel:        slog.LevelDebug,
+				ShutdownTimeout: 30 * time.Second,
+				DatabaseURL:     "postgres://localhost/cbp",
+			},
 		},
 		{
 			name: "level is case insensitive",
@@ -83,5 +90,14 @@ func TestLoadRejectsInvalid(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRequireDatabase(t *testing.T) {
+	if err := (Config{}).RequireDatabase(); !errors.Is(err, ErrMissingDatabaseURL) {
+		t.Errorf("RequireDatabase() without URL = %v, want %v", err, ErrMissingDatabaseURL)
+	}
+	if err := (Config{DatabaseURL: "postgres://localhost/cbp"}).RequireDatabase(); err != nil {
+		t.Errorf("RequireDatabase() with URL = %v, want nil", err)
 	}
 }

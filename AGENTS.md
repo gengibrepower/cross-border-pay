@@ -170,6 +170,6 @@ Versões e tarefas vivem em `mise.toml` (decisão 48). O CI roda as mesmas tasks
 - `mise run test:cover` — o mesmo, com relatório de cobertura (CI)
 - `mise run test:stress` — `-race -count=100`, o mesmo do job noturno
 - `mise run vuln` — `govulncheck ./...`
-- `mise run gen` — `sqlc generate` (a partir da PR 3 da F0)
-- `mise run db` — Postgres local por `docker compose` (a partir da PR 3 da F0)
-- `mise run migrate` — aplica as migrations embutidas (a partir da PR 3 da F0)
+- `mise run db` — Postgres local por `docker compose` (dev; `DATABASE_URL` vem do `mise.toml`)
+- `mise run migrate` — aplica as migrations embutidas
+- `mise run gen` — `sqlc generate` (a partir da F2, com as primeiras queries)

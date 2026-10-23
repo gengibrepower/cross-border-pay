@@ -4,6 +4,9 @@ golangci-lint = "2.15.0"
 sqlc = "1.31.1"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
 
+[env]
+DATABASE_URL = "postgres://cbp:cbp@localhost:5432/cbp?sslmode=disable"
+
 [tasks.fmt]
 description = "Formata o código (gofumpt + goimports pela config do golangci-lint)"
 run = "golangci-lint fmt"
@@ -34,3 +37,11 @@ run = "go test -race -count=100 ./..."
 [tasks.vuln]
 description = "Vulnerabilidades conhecidas no código e nas dependências"
 run = "govulncheck ./..."
+
+[tasks.db]
+description = "Sobe o Postgres local (compose.yaml) e espera ficar saudável"
+run = "docker compose up -d --wait"
+
+[tasks.migrate]
+description = "Aplica as migrations embutidas no DATABASE_URL"
+run = "go run ./cmd/migrate"

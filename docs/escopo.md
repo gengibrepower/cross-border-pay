@@ -414,7 +414,7 @@ cursor; datas ISO 8601 UTC; request ID em toda resposta, ligado aos logs.
 | Linguagem | Go 1.27.3, fixado em `go.mod` (`toolchain`) e `mise.toml` | Concorrência, workers, deploy simples |
 | Ferramentas e tarefas | `mise.toml`: versões de Go, `golangci-lint` 2.15 e `sqlc` 1.31 + tasks (`mise run test`) | Uma ferramenta fixa versões e roda tarefas (decisão 48) |
 | HTTP | `net/http` + `ServeMux` da stdlib | Padrões de método e caminho bastam (decisão 35) |
-| Banco | PostgreSQL 16+ | Transações, locks, `SKIP LOCKED`, UUID nativo |
+| Banco | PostgreSQL 18 (`postgres:18.6-alpine` no compose e nos testes) | Transações, locks, `SKIP LOCKED`, `uuidv7()` nativo |
 | Driver | `pgx/v5` + `pgxpool` | Controle de transação e tipos do Postgres |
 | Acesso a dados | `sqlc`; SQL manual com `pgx` no ledger se preciso | SQL à mão, Go gerado (decisão 36) |
 | Migrations | `goose` como biblioteca, SQL embutido por `embed`, aplicado por `cmd/migrate` e pelos testes | Mesma versão em dev, CI e produção (decisão 49) |
@@ -690,7 +690,8 @@ Cada fase só termina quando o critério é atingido. Uma fase vira **várias** 
      com `/healthz`, `cmd/worker` com shutdown gracioso.
   2. `ci`: `.golangci.yml` (decisão 51), GitHub Actions e Dependabot (decisão 57).
   3. `feat(db)`: `compose.yaml` com Postgres, goose embutido e `cmd/migrate`, helper de
-     `testcontainers-go`, `WithTx`, `Clock`, `sqlc.yaml`.
+     `testcontainers-go`, `WithTx`, `Clock`, `/readyz`. O `sqlc` fica para a F2, com as
+     primeiras queries.
 
   *Pronto quando*: CI verde no PR; um teste de integração sobe Postgres, aplica as
   migrations e passa; `/healthz` responde; o worker para limpo com SIGTERM.
@@ -699,7 +700,7 @@ Cada fase só termina quando o critério é atingido. Uma fase vira **várias** 
   propriedade mostram que toda conversão fecha em zero contando a conta de
   arredondamento; operação entre moedas diferentes é erro.
 - **F2 — Ledger**: contas, transações, invariantes 1–6, imutabilidade no banco, locks em
-  ordem. *Pronto quando*: teste de propriedade das invariantes e o teste citado 3 passam
+  ordem; `sqlc.yaml` e a task `gen` chegam com as primeiras queries. *Pronto quando*: teste de propriedade das invariantes e o teste citado 3 passam
   com `-race -count=20`.
 - **F3 — Cobrança e API base**: lojistas e API keys (hash, prefixo), máquina de estados,
   OpenAPI à mão, `POST`/`GET /v1/payments`, RFC 9457. *Pronto quando*: toda transição
