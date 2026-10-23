@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run fmt:check
+      - run: mise run lint
+      - name: mise run test:cover
+        run: |
+          mise run test:cover | tee coverage.txt
+          {
+            echo '### Cobertura'
+            echo '```'
+            grep -E '^(total:|github.com)' coverage.txt | tail -n 50
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - run: mise run vuln

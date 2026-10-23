@@ -13,7 +13,7 @@ import (
 
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
-	routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", http.NoBody))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -28,7 +28,7 @@ func TestHealthz(t *testing.T) {
 
 func TestHealthzRejectsOtherMethods(t *testing.T) {
 	rec := httptest.NewRecorder()
-	routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+	routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/healthz", http.NoBody))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -45,7 +45,7 @@ func TestServeAnswersAndStopsOnCancel(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { result <- serve(ctx, ln, slog.New(slog.DiscardHandler), time.Second) }()
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/healthz", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/healthz", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
