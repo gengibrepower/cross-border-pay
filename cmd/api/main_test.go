@@ -37,29 +37,32 @@ func assertResponse(t *testing.T, rec *httptest.ResponseRecorder, wantCode int, 
 }
 
 func TestHealthz(t *testing.T) {
-	rec := get(t, routes(fakeDB{}), http.MethodGet, "/healthz")
+	rec := get(t, routes(fakeDB{}, slog.New(slog.DiscardHandler)), http.MethodGet, "/healthz")
 	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
 }
 
 func TestHealthzIgnoresDatabase(t *testing.T) {
-	rec := get(t, routes(fakeDB{err: errors.New("down")}), http.MethodGet, "/healthz")
+	rec := get(t, routes(fakeDB{err: errors.New("down")}, slog.New(slog.DiscardHandler)), http.MethodGet, "/healthz")
 	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
 }
 
 func TestHealthzRejectsOtherMethods(t *testing.T) {
-	rec := get(t, routes(fakeDB{}), http.MethodPost, "/healthz")
+	rec := get(t, routes(fakeDB{}, slog.New(slog.DiscardHandler)), http.MethodPost, "/healthz")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", got)
 	}
 }
 
 func TestReadyz(t *testing.T) {
-	rec := get(t, routes(fakeDB{}), http.MethodGet, "/readyz")
+	rec := get(t, routes(fakeDB{}, slog.New(slog.DiscardHandler)), http.MethodGet, "/readyz")
 	assertResponse(t, rec, http.StatusOK, `{"status":"ok"}`)
 }
 
 func TestReadyzWithDatabaseDown(t *testing.T) {
-	rec := get(t, routes(fakeDB{err: errors.New("down")}), http.MethodGet, "/readyz")
+	rec := get(t, routes(fakeDB{err: errors.New("down")}, slog.New(slog.DiscardHandler)), http.MethodGet, "/readyz")
 	assertResponse(t, rec, http.StatusServiceUnavailable, `{"status":"unavailable"}`)
 }
 
@@ -72,7 +75,7 @@ func TestServeAnswersAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
 	go func() {
-		result <- serve(ctx, ln, routes(fakeDB{}), slog.New(slog.DiscardHandler), time.Second)
+		result <- serve(ctx, ln, routes(fakeDB{}, slog.New(slog.DiscardHandler)), slog.New(slog.DiscardHandler), time.Second)
 	}()
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/healthz", http.NoBody)
