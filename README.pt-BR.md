@@ -34,6 +34,7 @@ Todos os números abaixo são medidos, não estimados. Todo teste que toca o ban
 | Propriedades do domínio do ledger | Transações aleatórias mantêm as invariantes em memória, e uma transação desbalanceada é sempre rejeitada. | 2 propriedades × 100 casos por rodada, 20/20 rodadas |
 | Propriedades de câmbio | A conversão é half-even ao mais próximo, simétrica para negativos, monotônica e faz ida e volta quando a taxa é pelo menos 1. As pernas em USD de uma cotação somam zero, e, com taxa base de pelo menos 1, a conta de arredondamento nunca recebe mais de um centavo. | 6 propriedades × 100 casos por rodada, 20/20 rodadas |
 | `TestTransitionIsExhaustive` | Cada par (estado, evento) da máquina de estados da cobrança é comparado com a seção 3.4, reescrita dentro do teste: o que está fora da tabela é `ErrInvalidTransition`, e um evento repetido que o estado já reflete é no-op. | Os 49 pares, 20/20 rodadas |
+| `TestAuthenticate` | API keys contra Postgres real: chave malformada, chave desconhecida, lookup certo com segredo errado, chave certa com o modo trocado e chave revogada recebem o mesmo `401`, então a resposta não diz a um atacante qual parte errou. | 5 casos de recusa, mais um teste de mutação: uma comparação de hash que aceita qualquer segredo faz o teste falhar |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
 A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
@@ -87,6 +88,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 | Eventos recebidos | Tabela de inbox: o handler do webhook só grava e responde `200`; o worker processa, tolerando duplicata e reordenação | Processar dentro do handler: retries do provedor e handler lento viram processamento duplo |
 | Testes | Postgres real em todo teste de integração; determinismo só no simulador de provedor, controlado por seed | Banco mockado ou mundo todo simulado: perde os bugs reais de lock e isolamento |
 | Erros da API | RFC 9457 `application/problem+json` com `code` estável e o `request_id` que também aparece nos logs | Formato de erro próprio: mais uma coisa para o cliente aprender, e só o status HTTP não distingue as causas |
+| API keys | `sk_test_`/`sk_live_` + lookup público + segredo de 256 bits; só o SHA-256 é guardado e comparado em tempo constante; a chave é impressa uma vez pelo `cmd/admin` | bcrypt/argon2: feitos para senhas adivinháveis, somariam dezenas de milissegundos a cada request sem proteger melhor um segredo aleatório de 256 bits |
 | HTTP | Roteador da stdlib `net/http`; OpenAPI escrito à mão, validado nos testes de contrato | Frameworks e código gerado: mais a explicar, pouco ganho com os padrões de método+caminho do Go |
 
 ## Status
@@ -117,6 +119,7 @@ mise run test         # go test -race ./... (sobe os containers de Postgres sozi
 
 mise run db           # Postgres local via docker compose
 mise run migrate      # aplica as migrations embutidas
+go run ./cmd/admin merchant create -name GameStore -mode test   # imprime a API key uma única vez
 go run ./cmd/api      # /healthz e /readyz em :8080
 ```
 
@@ -129,10 +132,12 @@ cmd/
   api/        servidor HTTP
   worker/     processamento em segundo plano com shutdown gracioso
   migrate/    aplica as migrations do goose embutidas
+  admin/      tarefas de operação: criar lojista e API key, revogar chave
 internal/
   money/      Money e Currency em minor units
   fx/         taxas, conversão, cotações
   ledger/     transações de partidas dobradas, invariantes, adapter Postgres
+  merchants/  lojistas, API keys (só hash), middleware de autenticação
   payments/   máquina de estados da cobrança
   platform/   config, logs, relógio, Postgres (WithTx), runner de workers, HTTP (erros RFC 9457, request ID)
 migrations/   migrations SQL, embutidas nos binários

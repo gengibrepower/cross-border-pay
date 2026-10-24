@@ -8,6 +8,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ApiKey struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Mode       string
+	Lookup     string
+	KeyHash    []byte
+	CreatedAt  pgtype.Timestamptz
+	RevokedAt  pgtype.Timestamptz
+}
+
 type LedgerAccount struct {
 	ID          pgtype.UUID
 	Code        pgtype.Text
@@ -27,5 +37,11 @@ type LedgerEntry struct {
 type LedgerTransaction struct {
 	ID        pgtype.UUID
 	Reference pgtype.Text
+	CreatedAt pgtype.Timestamptz
+}
+
+type Merchant struct {
+	ID        pgtype.UUID
+	Name      string
 	CreatedAt pgtype.Timestamptz
 }

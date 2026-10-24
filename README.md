@@ -34,6 +34,7 @@ Every number below is measured, not estimated. Every test that touches the datab
 | Ledger domain properties | Random transactions keep the invariants in memory, and an unbalanced transaction is always rejected. | 2 properties × 100 cases per run, 20/20 runs |
 | FX properties | Conversion is nearest half-even, odd-symmetric and monotonic, and round-trips when the rate is at least 1. A quote's USD legs sum to zero, and with a base rate of at least 1 the rounding account never takes more than one cent. | 6 properties × 100 cases per run, 20/20 runs |
 | `TestTransitionIsExhaustive` | Every (status, event) pair of the payment state machine is checked against section 3.4, written out again inside the test: anything outside the table is `ErrInvalidTransition`, and a repeated event the status already reflects is a no-op. | All 49 pairs, 20/20 runs |
+| `TestAuthenticate` | API keys against real Postgres: a malformed key, an unknown one, the right lookup with a wrong secret, the right key with its mode changed, and a revoked key all get the same `401`, so the response does not tell an attacker which part was wrong. | 5 rejection cases, plus a mutation check: a hash comparison that accepts any secret makes it fail |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
 CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
@@ -87,6 +88,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 | Incoming events | Inbox table: the webhook handler only stores and returns `200`; the worker processes, tolerating duplicates and reordering | Processing inside the handler: provider retries and slow handlers turn into double processing |
 | Testing | Real Postgres in every integration test; determinism only in the provider simulator, controlled by a seed | Mocked database or fully simulated world: loses real lock and isolation bugs |
 | API errors | RFC 9457 `application/problem+json` with a stable `code` and the `request_id` that also appears in the logs | A custom error format: one more thing for clients to learn, and a bare status code cannot tell causes apart |
+| API keys | `sk_test_`/`sk_live_` + public lookup + 256-bit secret; only the SHA-256 is stored and compared in constant time; the key is printed once by `cmd/admin` | bcrypt/argon2: built for guessable passwords, they would add tens of milliseconds to every request without protecting a random 256-bit secret any better |
 | HTTP | Standard library `net/http` router; hand-written OpenAPI validated in contract tests | Frameworks and generated code: more to explain, little gained with Go's method+path patterns |
 
 ## Status
@@ -117,6 +119,7 @@ mise run test         # go test -race ./... (starts Postgres containers by itsel
 
 mise run db           # local Postgres via docker compose
 mise run migrate      # apply embedded migrations
+go run ./cmd/admin merchant create -name GameStore -mode test   # prints the API key once
 go run ./cmd/api      # /healthz and /readyz on :8080
 ```
 
@@ -129,10 +132,12 @@ cmd/
   api/        HTTP server
   worker/     background processing with graceful shutdown
   migrate/    applies embedded goose migrations
+  admin/      operator tasks: create a merchant and its API key, revoke a key
 internal/
   money/      Money and Currency in minor units
   fx/         rates, conversion, quotes
   ledger/     double-entry transactions, invariants, Postgres adapter
+  merchants/  merchants, API keys (hash only), authentication middleware
   payments/   payment state machine
   platform/   config, logging, clock, Postgres (WithTx), worker runner, HTTP (RFC 9457 errors, request ID)
 migrations/   SQL migrations, embedded in the binaries
