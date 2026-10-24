@@ -629,9 +629,15 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
     simulação total como no exchange (perderia os bugs reais de lock e isolamento).
 
 **Produção**
-39. **Hospedagem: adiada para a F10.** Opções levantadas: VPS + Compose, AWS (ECS/EC2 +
-    RDS), Fly.io/Railway. Decidir com preços e limites conferidos no dia. Premissa fixa:
-    tudo roda em Docker Compose, então qualquer opção serve sem mudar o código.
+39. **Hospedagem: VM Linux + Docker Compose + Caddy (HTTPS automático) no Azure for
+    Students**, decidida em 24/10/2026; o deploy em si continua na F10. Crédito ativado
+    só no deploy (o prazo de 12 meses corre da ativação); tamanho da VM e Postgres na VM
+    ou gerenciado decididos com preços do dia. Domínio grátis do GitHub Student Pack.
+    Reserva: VPS Hetzner, mesma stack. Descartados: Fly.io (Postgres gerenciado caro),
+    Railway (Prometheus e Grafana viram serviços cobrados, sobra pouco para operar),
+    AWS (custo e complexidade fora dos quatro eixos; AWS Academy tem sessões de 4 h e não
+    hospeda). Premissa fixa: tudo roda em Docker Compose, então trocar de provedor não
+    muda o código.
 40. **Sandbox real: Efí primeiro** (mTLS com `.p12`), **Asaas depois** (provar que trocar
     é configuração). Adapter sobre a API HTTP, sem SDK.
 
@@ -739,7 +745,7 @@ F0–F5 + README; F6 logo depois.
 
 **Fase 4 — Produção e plataforma**
 
-- **F10 — Produção**: hospedagem (decisão 39), HTTPS, backup com restauração testada,
+- **F10 — Produção**: deploy no Azure (decisão 39), HTTPS, backup com restauração testada,
   deploy por CI, migrations expand/contract, shutdown gracioso, health checks,
   observabilidade, k6, demo pública com limites. *Pronto quando*: sistema no ar com link,
   dashboard público, conta de demonstração e números de carga em `docs/benchmarks.md`.

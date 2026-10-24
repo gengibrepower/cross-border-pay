@@ -96,7 +96,23 @@ Rode e me mostre limpos:
     mise run test               # go test -race ./...
     mise run vuln               # govulncheck
 
+Confira também o README (passo 3a): atualizado, ou o motivo para pular.
+
 Revise o diff comigo. Só commite depois do meu OK explícito.
+
+### 3a. README acompanha a fatia
+
+Toda PR que muda o que o projeto faz ou prova atualiza, **na mesma PR**, `README.md` e
+`README.pt-BR.md`, sempre juntos (decisão 47):
+
+- tabela de status (fase em andamento ou pronta);
+- seção do que já está provado, com números **medidos nesta PR** (casos de propriedade,
+  operações do teste de concorrência, rodadas `-count`), nunca estimados;
+- decisões novas ou alteradas, com a alternativa descartada e o motivo;
+- comandos de execução, se mudaram.
+
+PR só de infra, sem efeito visível no README, pode pular, dizendo isso no resumo.
+O README não menciona o uso de assistentes de IA.
 
 ### 4. Commits
 
