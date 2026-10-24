@@ -19,8 +19,14 @@ func (id AccountID) Compare(other AccountID) int {
 	return bytes.Compare(id[:], other[:])
 }
 
-func (id AccountID) String() string {
-	h := hex.EncodeToString(id[:])
+func (id AccountID) String() string { return uuidString(id) }
+
+type TransactionID [16]byte
+
+func (id TransactionID) String() string { return uuidString(id) }
+
+func uuidString(b [16]byte) string {
+	h := hex.EncodeToString(b[:])
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 

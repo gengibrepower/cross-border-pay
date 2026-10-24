@@ -38,6 +38,14 @@ run = "go test -race -count=100 ./..."
 description = "Vulnerabilidades conhecidas no código e nas dependências"
 run = "govulncheck ./..."
 
+[tasks.gen]
+description = "Gera o código do sqlc a partir das migrations e das queries"
+run = "sqlc generate"
+
+[tasks."gen:check"]
+description = "Falha se o código gerado pelo sqlc estiver desatualizado"
+run = "sqlc diff"
+
 [tasks.db]
 description = "Sobe o Postgres local (compose.yaml) e espera ficar saudável"
 run = "docker compose up -d --wait"

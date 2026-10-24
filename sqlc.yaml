@@ -1,0 +1,10 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: internal/ledger/adapters/queries.sql
+    gen:
+      go:
+        package: ledgerdb
+        out: internal/ledger/adapters/ledgerdb
+        sql_package: pgx/v5

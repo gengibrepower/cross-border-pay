@@ -9,11 +9,12 @@ import (
 )
 
 var (
-	ErrUnbalanced      = errors.New("ledger: entries do not sum to zero")
-	ErrTooFewEntries   = errors.New("ledger: a transaction needs at least two entries")
-	ErrZeroEntry       = errors.New("ledger: entry with zero amount")
-	ErrUnknownAccount  = errors.New("ledger: unknown account")
-	ErrNegativeBalance = errors.New("ledger: balance would go negative")
+	ErrUnbalanced         = errors.New("ledger: entries do not sum to zero")
+	ErrTooFewEntries      = errors.New("ledger: a transaction needs at least two entries")
+	ErrZeroEntry          = errors.New("ledger: entry with zero amount")
+	ErrUnknownAccount     = errors.New("ledger: unknown account")
+	ErrNegativeBalance    = errors.New("ledger: balance would go negative")
+	ErrDuplicateReference = errors.New("ledger: reference already posted")
 )
 
 // Entry is a signed amount on one account: positive and negative entries of the same

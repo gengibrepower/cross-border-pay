@@ -31,7 +31,7 @@ func TestConnectRejectsUnreachableDatabase(t *testing.T) {
 }
 
 func TestMigrateAppliesPendingOnce(t *testing.T) {
-	pool := pgtest.NewPool(t)
+	pool := pgtest.NewEmptyPool(t)
 	migrations := os.DirFS("testdata/migrations")
 
 	applied, err := postgres.Migrate(t.Context(), pool, migrations)
@@ -56,7 +56,7 @@ func TestMigrateAppliesPendingOnce(t *testing.T) {
 }
 
 func TestMigrateWithoutMigrationsIsNoop(t *testing.T) {
-	pool := pgtest.NewPool(t)
+	pool := pgtest.NewEmptyPool(t)
 
 	applied, err := postgres.Migrate(t.Context(), pool, fstest.MapFS{"README.md": {Data: []byte("not a migration")}})
 	if err != nil {

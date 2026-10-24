@@ -89,13 +89,25 @@ func prepare(ctx context.Context, container *tcpostgres.PostgresContainer) error
 // dropped when the test ends, and returns its connection URL.
 func NewDatabase(t testing.TB) string {
 	t.Helper()
+	return newDatabase(t, " TEMPLATE "+quote(templateName))
+}
+
+// NewEmptyPool connects to a database without the project's migrations, for tests of
+// the migration machinery itself.
+func NewEmptyPool(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	return connect(t, newDatabase(t, ""))
+}
+
+func newDatabase(t testing.TB, template string) string {
+	t.Helper()
 	if adminPool == nil {
 		t.Fatal("pgtest: call pgtest.Main from this package's TestMain")
 	}
 	name := fmt.Sprintf("test_%d", sequence.Add(1))
 
 	cloning.Lock()
-	_, err := adminPool.Exec(t.Context(), "CREATE DATABASE "+quote(name)+" TEMPLATE "+quote(templateName))
+	_, err := adminPool.Exec(t.Context(), "CREATE DATABASE "+quote(name)+template)
 	cloning.Unlock()
 	if err != nil {
 		t.Fatalf("pgtest: create database: %v", err)
@@ -111,7 +123,12 @@ func NewDatabase(t testing.TB) string {
 
 func NewPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
-	pool, err := postgres.Connect(t.Context(), NewDatabase(t))
+	return connect(t, NewDatabase(t))
+}
+
+func connect(t testing.TB, databaseURL string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := postgres.Connect(t.Context(), databaseURL)
 	if err != nil {
 		t.Fatalf("pgtest: %v", err)
 	}
