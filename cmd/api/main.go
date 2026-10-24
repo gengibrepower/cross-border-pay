@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/config"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
@@ -47,12 +48,17 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 	defer pool.Close()
 
+	api, err := newAPI(pool, logger, cfg.USDBRLRate, clock.System{})
+	if err != nil {
+		return err
+	}
+
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTPAddr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	return serve(ctx, ln, routes(pool, logger), logger, cfg.ShutdownTimeout)
+	return serve(ctx, ln, routes(pool, logger, api.register), logger, cfg.ShutdownTimeout)
 }
 
 func serve(ctx context.Context, ln net.Listener, handler http.Handler, logger *slog.Logger, shutdownTimeout time.Duration) error {
@@ -91,10 +97,13 @@ type pinger interface {
 	Ping(ctx context.Context) error
 }
 
-func routes(db pinger, logger *slog.Logger) http.Handler {
+func routes(db pinger, logger *slog.Logger, register ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", readyz(db))
+	for _, r := range register {
+		r(mux)
+	}
 	return httpapi.Handler(mux, logger)
 }
 

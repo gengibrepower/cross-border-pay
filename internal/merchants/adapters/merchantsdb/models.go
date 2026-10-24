@@ -45,3 +45,34 @@ type Merchant struct {
 	Name      string
 	CreatedAt pgtype.Timestamptz
 }
+
+type Payment struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	QuoteID    pgtype.UUID
+	Status     string
+	Method     string
+	Amount     int64
+	Currency   string
+	Reference  string
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
+type Quote struct {
+	ID            pgtype.UUID
+	BaseCurrency  string
+	QuoteCurrency string
+	BaseRate      int64
+	SpreadBps     int64
+	FeeBps        int64
+	Amount        int64
+	PayerAmount   int64
+	Converted     int64
+	Spread        int64
+	Rounding      int64
+	Fee           int64
+	MerchantNet   int64
+	CreatedAt     pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
+}

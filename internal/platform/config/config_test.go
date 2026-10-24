@@ -21,7 +21,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			vars: nil,
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000"},
 		},
 		{
 			name: "all set",
@@ -30,18 +30,20 @@ func TestLoad(t *testing.T) {
 				"LOG_LEVEL":        "debug",
 				"SHUTDOWN_TIMEOUT": "30s",
 				"DATABASE_URL":     "postgres://localhost/cbp",
+				"FX_USD_BRL_RATE":  "5.4321",
 			},
 			want: Config{
 				HTTPAddr:        "127.0.0.1:9000",
 				LogLevel:        slog.LevelDebug,
 				ShutdownTimeout: 30 * time.Second,
 				DatabaseURL:     "postgres://localhost/cbp",
+				USDBRLRate:      "5.4321",
 			},
 		},
 		{
 			name: "level is case insensitive",
 			vars: map[string]string{"LOG_LEVEL": "WARN"},
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000"},
 		},
 	}
 	for _, tt := range tests {

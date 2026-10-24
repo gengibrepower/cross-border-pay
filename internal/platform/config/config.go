@@ -15,6 +15,9 @@ type Config struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	DatabaseURL     string
+	// USDBRLRate is the fixed base rate of decision 12, as a decimal string; fx parses
+	// it so that this package does not depend on a domain module.
+	USDBRLRate string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -22,6 +25,7 @@ func Load(getenv func(string) string) (Config, error) {
 		HTTPAddr:        ":8080",
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 10 * time.Second,
+		USDBRLRate:      "5.0000",
 	}
 	var errs []error
 
@@ -50,6 +54,10 @@ func Load(getenv func(string) string) (Config, error) {
 		default:
 			cfg.ShutdownTimeout = d
 		}
+	}
+
+	if v := getenv("FX_USD_BRL_RATE"); v != "" {
+		cfg.USDBRLRate = v
 	}
 
 	if err := errors.Join(errs...); err != nil {

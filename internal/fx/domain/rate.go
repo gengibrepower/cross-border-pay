@@ -73,5 +73,10 @@ func (r Rate) Quote() money.Currency { return r.quote }
 func (r Rate) Value() int64 { return r.value }
 
 func (r Rate) String() string {
-	return fmt.Sprintf("%s/%s %d.%08d", r.base, r.quote, r.value/rateScale, r.value%rateScale)
+	return fmt.Sprintf("%s/%s %s", r.base, r.quote, r.Decimal())
+}
+
+// Decimal is the value with all 8 places, e.g. "5.07500000", for APIs and logs.
+func (r Rate) Decimal() string {
+	return fmt.Sprintf("%d.%08d", r.value/rateScale, r.value%rateScale)
 }

@@ -35,6 +35,7 @@ Todos os números abaixo são medidos, não estimados. Todo teste que toca o ban
 | Propriedades de câmbio | A conversão é half-even ao mais próximo, simétrica para negativos, monotônica e faz ida e volta quando a taxa é pelo menos 1. As pernas em USD de uma cotação somam zero, e, com taxa base de pelo menos 1, a conta de arredondamento nunca recebe mais de um centavo. | 6 propriedades × 100 casos por rodada, 20/20 rodadas |
 | `TestTransitionIsExhaustive` | Cada par (estado, evento) da máquina de estados da cobrança é comparado com a seção 3.4, reescrita dentro do teste: o que está fora da tabela é `ErrInvalidTransition`, e um evento repetido que o estado já reflete é no-op. | Os 49 pares, 20/20 rodadas |
 | `TestAuthenticate` | API keys contra Postgres real: chave malformada, chave desconhecida, lookup certo com segredo errado, chave certa com o modo trocado e chave revogada recebem o mesmo `401`, então a resposta não diz a um atacante qual parte errou. | 5 casos de recusa, mais um teste de mutação: uma comparação de hash que aceita qualquer segredo faz o teste falhar |
+| Testes de contrato (`cmd/api`) | Cada request e resposta de `POST /v1/payments` passa pelo handler real e por um Postgres real e é conferido contra o `api/openapi.yaml` escrito à mão, com o `kin-openapi`. A cobrança da GameStore devolve R$ 101,50, taxa de US$ 0,60 e cotação de 30 minutos. | 1 caso de sucesso e 14 de erro, cada um com seu `code` estável, e nenhum request recusado grava cobrança; renomear um campo da resposta faz o teste falhar |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
 A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
@@ -89,6 +90,8 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 | Testes | Postgres real em todo teste de integração; determinismo só no simulador de provedor, controlado por seed | Banco mockado ou mundo todo simulado: perde os bugs reais de lock e isolamento |
 | Erros da API | RFC 9457 `application/problem+json` com `code` estável e o `request_id` que também aparece nos logs | Formato de erro próprio: mais uma coisa para o cliente aprender, e só o status HTTP não distingue as causas |
 | API keys | `sk_test_`/`sk_live_` + lookup público + segredo de 256 bits; só o SHA-256 é guardado e comparado em tempo constante; a chave é impressa uma vez pelo `cmd/admin` | bcrypt/argon2: feitos para senhas adivinháveis, somariam dezenas de milissegundos a cada request sem proteger melhor um segredo aleatório de 256 bits |
+| IDs públicos | `pay_` + o UUIDv7 em base32 Crockford (26 caracteres), então os IDs ordenam por criação como texto simples | Hex: 32 caracteres para a mesma informação. Expor o UUID cru: sem prefixo de tipo para pegar um ID de cobrança passado onde se esperava um de estorno |
+| Cotações | Tabela `quotes`, do `fx`, que guarda todo valor calculado, com `CHECK`s nas identidades que fazem as pernas em USD somarem zero | Colunas dentro de `payments`: cartão recota na autorização (decisão 44), então uma cobrança pode ter mais de uma cotação |
 | HTTP | Roteador da stdlib `net/http`; OpenAPI escrito à mão, validado nos testes de contrato | Frameworks e código gerado: mais a explicar, pouco ganho com os padrões de método+caminho do Go |
 
 ## Status
@@ -120,8 +123,19 @@ mise run test         # go test -race ./... (sobe os containers de Postgres sozi
 mise run db           # Postgres local via docker compose
 mise run migrate      # aplica as migrations embutidas
 go run ./cmd/admin merchant create -name GameStore -mode test   # imprime a API key uma única vez
-go run ./cmd/api      # /healthz e /readyz em :8080
+go run ./cmd/api      # /healthz e /readyz em :8080; FX_USD_BRL_RATE define a taxa base (padrão 5.0000)
 ```
+
+Criando a cobrança da GameStore com a chave que o `cmd/admin` imprimiu:
+
+```sh
+curl -s localhost:8080/v1/payments \
+  -H "Authorization: Bearer sk_test_..." -H "Idempotency-Key: order-123" \
+  -d '{"amount": {"value": 2000, "currency": "USD"}, "method": "pix", "reference": "order-123"}'
+# 201: pending, o pagador paga {"value": 10150, "currency": "BRL"}, taxa 60, líquido 1940, cotação válida por 30 min
+```
+
+O contrato é o [api/openapi.yaml](api/openapi.yaml).
 
 Outras tarefas: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test:stress` (a rodada noturna com `-count=100`), `mise run gen` (`sqlc`).
 
@@ -138,8 +152,9 @@ internal/
   fx/         taxas, conversão, cotações
   ledger/     transações de partidas dobradas, invariantes, adapter Postgres
   merchants/  lojistas, API keys (só hash), middleware de autenticação
-  payments/   máquina de estados da cobrança
+  payments/   máquina de estados da cobrança, criação, handlers HTTP
   platform/   config, logs, relógio, Postgres (WithTx), runner de workers, HTTP (erros RFC 9457, request ID)
+api/          openapi.yaml, o contrato escrito à mão
 migrations/   migrations SQL, embutidas nos binários
 docs/         escopo, regras e decisões
 ```

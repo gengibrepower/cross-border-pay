@@ -35,6 +35,7 @@ Every number below is measured, not estimated. Every test that touches the datab
 | FX properties | Conversion is nearest half-even, odd-symmetric and monotonic, and round-trips when the rate is at least 1. A quote's USD legs sum to zero, and with a base rate of at least 1 the rounding account never takes more than one cent. | 6 properties × 100 cases per run, 20/20 runs |
 | `TestTransitionIsExhaustive` | Every (status, event) pair of the payment state machine is checked against section 3.4, written out again inside the test: anything outside the table is `ErrInvalidTransition`, and a repeated event the status already reflects is a no-op. | All 49 pairs, 20/20 runs |
 | `TestAuthenticate` | API keys against real Postgres: a malformed key, an unknown one, the right lookup with a wrong secret, the right key with its mode changed, and a revoked key all get the same `401`, so the response does not tell an attacker which part was wrong. | 5 rejection cases, plus a mutation check: a hash comparison that accepts any secret makes it fail |
+| Contract tests (`cmd/api`) | Every request and response of `POST /v1/payments` goes through the real handler and a real Postgres and is checked against the hand-written `api/openapi.yaml` with `kin-openapi`. The GameStore payment returns R$ 101.50 with a US$ 0.60 fee and a 30-minute quote. | 1 success and 14 error cases, each with its stable `code`, and no rejected request stores a payment; renaming one response field makes the test fail |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
 CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
@@ -89,6 +90,8 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 | Testing | Real Postgres in every integration test; determinism only in the provider simulator, controlled by a seed | Mocked database or fully simulated world: loses real lock and isolation bugs |
 | API errors | RFC 9457 `application/problem+json` with a stable `code` and the `request_id` that also appears in the logs | A custom error format: one more thing for clients to learn, and a bare status code cannot tell causes apart |
 | API keys | `sk_test_`/`sk_live_` + public lookup + 256-bit secret; only the SHA-256 is stored and compared in constant time; the key is printed once by `cmd/admin` | bcrypt/argon2: built for guessable passwords, they would add tens of milliseconds to every request without protecting a random 256-bit secret any better |
+| Public IDs | `pay_` + the UUIDv7 in Crockford base32 (26 characters), so IDs sort by creation time as plain strings | Hex: 32 characters for the same information. Exposing the raw UUID: no type prefix to catch a payment ID passed where a refund ID belongs |
+| Quotes | A `quotes` table owned by `fx` that stores every computed amount, with `CHECK`s for the identities that make the USD legs sum to zero | Columns inside `payments`: card payments are requoted at authorization (decision 44), so one payment can have more than one quote |
 | HTTP | Standard library `net/http` router; hand-written OpenAPI validated in contract tests | Frameworks and generated code: more to explain, little gained with Go's method+path patterns |
 
 ## Status
@@ -120,8 +123,19 @@ mise run test         # go test -race ./... (starts Postgres containers by itsel
 mise run db           # local Postgres via docker compose
 mise run migrate      # apply embedded migrations
 go run ./cmd/admin merchant create -name GameStore -mode test   # prints the API key once
-go run ./cmd/api      # /healthz and /readyz on :8080
+go run ./cmd/api      # /healthz and /readyz on :8080; FX_USD_BRL_RATE sets the base rate (default 5.0000)
 ```
+
+Creating the GameStore payment with the key `cmd/admin` printed:
+
+```sh
+curl -s localhost:8080/v1/payments \
+  -H "Authorization: Bearer sk_test_..." -H "Idempotency-Key: order-123" \
+  -d '{"amount": {"value": 2000, "currency": "USD"}, "method": "pix", "reference": "order-123"}'
+# 201: pending, payer pays {"value": 10150, "currency": "BRL"}, fee 60, net 1940, quote valid 30 min
+```
+
+The contract is [api/openapi.yaml](api/openapi.yaml).
 
 Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test:stress` (the nightly `-count=100` run), `mise run gen` (`sqlc`).
 
@@ -138,8 +152,9 @@ internal/
   fx/         rates, conversion, quotes
   ledger/     double-entry transactions, invariants, Postgres adapter
   merchants/  merchants, API keys (hash only), authentication middleware
-  payments/   payment state machine
+  payments/   payment state machine, creation, HTTP handlers
   platform/   config, logging, clock, Postgres (WithTx), worker runner, HTTP (RFC 9457 errors, request ID)
+api/          openapi.yaml, the hand-written contract
 migrations/   SQL migrations, embedded in the binaries
 docs/         scope, rules and decisions (Portuguese)
 ```
