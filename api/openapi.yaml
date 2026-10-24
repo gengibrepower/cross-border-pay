@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: Cross-border Pay
+  version: 0.1.0
+  description: |
+    A merchant abroad charges in USD; a payer in Brazil pays in BRL. Every amount is an
+    integer in minor units (2000 is US$ 20.00); a decimal value is rejected. Errors are
+    RFC 9457 problem details with a stable `code`.
+servers:
+  - url: http://localhost:8080
+security:
+  - apiKey: []
+
+paths:
+  /v1/payments:
+    post:
+      operationId: createPayment
+      summary: Create a payment, priced in BRL by a quote valid for 30 minutes (PIX)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentRequest"
+            example:
+              amount: { value: 2000, currency: USD }
+              method: pix
+              reference: order-123
+      responses:
+        "201":
+          description: The payment, pending until the payer pays.
+          headers:
+            Location:
+              schema: { type: string, example: /v1/payments/pay_06f1z4ghq3m5ttqb0gnsx4yy3c }
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: "An API key: `Authorization: Bearer sk_test_...`."
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Makes retries safe. Required now; stored and enforced from F4 on.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+
+  headers:
+    RequestId:
+      description: Also in error bodies and in the server logs.
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: An RFC 9457 problem.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Money:
+      type: object
+      additionalProperties: false
+      required: [value, currency]
+      properties:
+        value:
+          type: integer
+          format: int64
+          description: Minor units. 2000 is 20.00.
+        currency:
+          type: string
+          enum: [USD, BRL]
+
+    CreatePaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [amount, method, reference]
+      properties:
+        amount:
+          $ref: "#/components/schemas/Money"
+        method:
+          type: string
+          enum: [pix, boleto, card]
+          description: Only pix is available now; boleto and card answer 422 until F8.
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The merchant's own reference, such as an order ID.
+
+    Quote:
+      type: object
+      additionalProperties: false
+      required: [payer_amount, base_rate, fee, net_amount, expires_at]
+      properties:
+        payer_amount:
+          $ref: "#/components/schemas/Money"
+        base_rate:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]{8}$"
+          description: BRL per USD before the spread, with 8 decimal places.
+        fee:
+          $ref: "#/components/schemas/Money"
+        net_amount:
+          $ref: "#/components/schemas/Money"
+        expires_at:
+          type: string
+          format: date-time
+
+    Payment:
+      type: object
+      additionalProperties: false
+      required: [id, status, method, amount, reference, quote, created_at]
+      properties:
+        id:
+          type: string
+          pattern: "^pay_[0-9a-z]{26}$"
+        status:
+          type: string
+          enum: [pending, paid, partially_refunded, refunded, charged_back, expired, canceled]
+        method:
+          type: string
+          enum: [pix, boleto, card]
+        amount:
+          $ref: "#/components/schemas/Money"
+        reference:
+          type: string
+        quote:
+          $ref: "#/components/schemas/Quote"
+        created_at:
+          type: string
+          format: date-time
+
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          description: Stable, machine-readable cause, e.g. invalid_amount.
+        request_id: { type: string }

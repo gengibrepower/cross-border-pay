@@ -16,3 +16,19 @@ sql:
         package: merchantsdb
         out: internal/merchants/adapters/merchantsdb
         sql_package: pgx/v5
+  - engine: postgresql
+    schema: migrations
+    queries: internal/fx/adapters/queries.sql
+    gen:
+      go:
+        package: fxdb
+        out: internal/fx/adapters/fxdb
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: migrations
+    queries: internal/payments/adapters/queries.sql
+    gen:
+      go:
+        package: paymentsdb
+        out: internal/payments/adapters/paymentsdb
+        sql_package: pgx/v5

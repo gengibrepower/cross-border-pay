@@ -37,7 +37,10 @@ func (p Pricing) validate() error {
 // Quote locks what the payer pays and how the converted amount splits. Each part has
 // its own formula and rounding; Rounding absorbs the cents they disagree on, so that
 // Converted = Amount + Spread + Rounding and MerchantNet + Fee = Amount, exactly.
+type QuoteID [16]byte
+
 type Quote struct {
+	pricing     Pricing
 	amount      money.Money
 	baseRate    Rate
 	payerAmount money.Money
@@ -64,7 +67,7 @@ func NewQuote(amount money.Money, base Rate, p Pricing, now, expiresAt time.Time
 		return Quote{}, fmt.Errorf("%w: expires at %s, not after %s", ErrInvalidQuote, expiresAt, now)
 	}
 
-	q := Quote{amount: amount, baseRate: base, createdAt: now, expiresAt: expiresAt}
+	q := Quote{pricing: p, amount: amount, baseRate: base, createdAt: now, expiresAt: expiresAt}
 	if err := q.price(p); err != nil {
 		return Quote{}, fmt.Errorf("%w: %w", ErrInvalidQuote, err)
 	}
@@ -100,6 +103,8 @@ func (q *Quote) price(p Pricing) error {
 	}
 	return nil
 }
+
+func (q *Quote) Pricing() Pricing { return q.pricing }
 
 // Amount is what the merchant charged, in the base currency.
 func (q *Quote) Amount() money.Money { return q.amount }
