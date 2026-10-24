@@ -10,31 +10,51 @@ import (
 // Convert applies the rate in either direction: base amounts are multiplied by it,
 // quote amounts are divided. The result is rounded half-even (decision 11).
 func Convert(m money.Money, r Rate) (money.Money, error) {
+	return convertScaled(m, r, big.NewInt(1), big.NewInt(1))
+}
+
+// convertScaled is Convert(m, r) × num/den with a single rounding at the end, so that
+// a spread on top of the rate does not round twice.
+func convertScaled(m money.Money, r Rate, num, den *big.Int) (money.Money, error) {
 	if r.value <= 0 {
 		return money.Money{}, fmt.Errorf("%w: zero Rate", ErrInvalidRate)
 	}
-	var (
-		num, den = big.NewInt(m.Amount()), big.NewInt(rateScale)
-		target   money.Currency
-	)
+	num = new(big.Int).Mul(num, big.NewInt(m.Amount()))
+	den = new(big.Int).Set(den)
+
+	var target money.Currency
 	switch m.Currency() {
 	case r.base:
 		num.Mul(num, big.NewInt(r.value))
+		den.Mul(den, big.NewInt(rateScale))
 		target = r.quote
 	case r.quote:
 		num.Mul(num, big.NewInt(rateScale))
-		den.SetInt64(r.value)
+		den.Mul(den, big.NewInt(r.value))
 		target = r.base
 	default:
 		return money.Money{}, fmt.Errorf("fx: convert %s with %s: %w", m, r, money.ErrCurrencyMismatch)
 	}
 	scaleExponents(num, den, m.Currency(), target)
 
-	result := divRoundHalfEven(num, den)
-	if !result.IsInt64() {
-		return money.Money{}, fmt.Errorf("fx: convert %s with %s: %w", m, r, money.ErrOverflow)
+	result, err := toMoney(divRoundHalfEven(num, den), target)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("fx: convert %s with %s: %w", m, r, err)
 	}
-	return money.New(result.Int64(), target), nil
+	return result, nil
+}
+
+// mulRatio returns m × num/den rounded half-even, in m's currency.
+func mulRatio(m money.Money, num, den int64) (money.Money, error) {
+	n := new(big.Int).Mul(big.NewInt(m.Amount()), big.NewInt(num))
+	return toMoney(divRoundHalfEven(n, big.NewInt(den)), m.Currency())
+}
+
+func toMoney(amount *big.Int, c money.Currency) (money.Money, error) {
+	if !amount.IsInt64() {
+		return money.Money{}, money.ErrOverflow
+	}
+	return money.New(amount.Int64(), c), nil
 }
 
 // scaleExponents adjusts for currencies with different minor-unit digits. BRL and USD
