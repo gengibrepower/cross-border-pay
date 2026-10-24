@@ -8,3 +8,11 @@ sql:
         package: ledgerdb
         out: internal/ledger/adapters/ledgerdb
         sql_package: pgx/v5
+  - engine: postgresql
+    schema: migrations
+    queries: internal/merchants/adapters/queries.sql
+    gen:
+      go:
+        package: merchantsdb
+        out: internal/merchants/adapters/merchantsdb
+        sql_package: pgx/v5
