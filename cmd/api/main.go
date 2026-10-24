@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gengibrepower/cross-border-pay/internal/platform/config"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
@@ -51,7 +52,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	return serve(ctx, ln, routes(pool), logger, cfg.ShutdownTimeout)
+	return serve(ctx, ln, routes(pool, logger), logger, cfg.ShutdownTimeout)
 }
 
 func serve(ctx context.Context, ln net.Listener, handler http.Handler, logger *slog.Logger, shutdownTimeout time.Duration) error {
@@ -90,11 +91,11 @@ type pinger interface {
 	Ping(ctx context.Context) error
 }
 
-func routes(db pinger) http.Handler {
+func routes(db pinger, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", readyz(db))
-	return mux
+	return httpapi.Handler(mux, logger)
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {

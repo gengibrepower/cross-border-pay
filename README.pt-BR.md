@@ -25,14 +25,15 @@ A regra que nunca pode quebrar: **o dinheiro registrado sempre bate com o dinhei
 
 ## O que já está provado
 
-Todos os números abaixo são medidos, não estimados. Todos os testes rodam contra um **PostgreSQL 18 real** em container (`testcontainers-go`), nunca contra um banco mockado.
+Todos os números abaixo são medidos, não estimados. Todo teste que toca o banco roda contra um **PostgreSQL 18 real** em container (`testcontainers-go`), nunca contra um banco mockado; os testes de domínio não fazem I/O nenhum.
 
 | Teste | O que mostra | Resultado |
 |---|---|---|
 | `TestThousandsOfConcurrentTransfers` | 10 workers concorrentes lançam 5.000 transferências aleatórias entre 20 contas em duas moedas. No fim, o próprio banco é consultado sobre cada invariante. | 20/20 rodadas com `-race -count=20`, ou seja, **100.000 transferências concorrentes**. O ledger fecha em zero por moeda em todas, e transferências que estourariam o saldo são rejeitadas, nunca aplicadas pela metade. |
 | `TestLedgerInvariantsAgainstPostgres` | Teste de propriedade: sequências aleatórias de transações válidas e inválidas contra o Postgres. Depois de cada passo, os saldos batem com um modelo em memória. | 100 sequências aleatórias por rodada, 20/20 rodadas |
 | Propriedades do domínio do ledger | Transações aleatórias mantêm as invariantes em memória, e uma transação desbalanceada é sempre rejeitada. | 2 propriedades × 100 casos por rodada, 20/20 rodadas |
-| Propriedades de câmbio | A conversão é half-even ao mais próximo, simétrica para negativos, monotônica e faz ida e volta quando a taxa é pelo menos 1. As pernas em USD de uma cotação somam zero, e o arredondamento nunca passa de um centavo. | 6 propriedades × 100 casos por rodada, 20/20 rodadas |
+| Propriedades de câmbio | A conversão é half-even ao mais próximo, simétrica para negativos, monotônica e faz ida e volta quando a taxa é pelo menos 1. As pernas em USD de uma cotação somam zero, e, com taxa base de pelo menos 1, a conta de arredondamento nunca recebe mais de um centavo. | 6 propriedades × 100 casos por rodada, 20/20 rodadas |
+| `TestTransitionIsExhaustive` | Cada par (estado, evento) da máquina de estados da cobrança é comparado com a seção 3.4, reescrita dentro do teste: o que está fora da tabela é `ErrInvalidTransition`, e um evento repetido que o estado já reflete é no-op. | Os 49 pares, 20/20 rodadas |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
 A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
@@ -85,6 +86,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 | Resultado ambíguo do provedor | A tentativa vai para `unknown` e é resolvida consultando o provedor ativamente (`GetAttempt` com backoff), com eventos e conciliação como rede de segurança | Tratar timeout como falha: o provedor pode ter cobrado o pagador |
 | Eventos recebidos | Tabela de inbox: o handler do webhook só grava e responde `200`; o worker processa, tolerando duplicata e reordenação | Processar dentro do handler: retries do provedor e handler lento viram processamento duplo |
 | Testes | Postgres real em todo teste de integração; determinismo só no simulador de provedor, controlado por seed | Banco mockado ou mundo todo simulado: perde os bugs reais de lock e isolamento |
+| Erros da API | RFC 9457 `application/problem+json` com `code` estável e o `request_id` que também aparece nos logs | Formato de erro próprio: mais uma coisa para o cliente aprender, e só o status HTTP não distingue as causas |
 | HTTP | Roteador da stdlib `net/http`; OpenAPI escrito à mão, validado nos testes de contrato | Frameworks e código gerado: mais a explicar, pouco ganho com os padrões de método+caminho do Go |
 
 ## Status
@@ -96,7 +98,7 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F0 | Esqueleto, CI, Postgres real nos testes | ✅ pronta |
 | F1 | Dinheiro e câmbio: conversão half-even, cotação com spread, taxa e validade | ✅ pronta |
 | F2 | Ledger com invariantes sob concorrência | ✅ pronta |
-| F3 | Cobranças, máquina de estados, API base | ⏳ próxima |
+| F3 | Cobranças, máquina de estados, API base | ⏳ em andamento |
 | F4 | Idempotência | planejada |
 | F5 | PIX simulado, inbox, confirmação | planejada |
 | F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | planejada |
@@ -132,7 +134,7 @@ internal/
   fx/         taxas, conversão, cotações
   ledger/     transações de partidas dobradas, invariantes, adapter Postgres
   payments/   máquina de estados da cobrança
-  platform/   config, logs, relógio, Postgres (WithTx), runner de workers
+  platform/   config, logs, relógio, Postgres (WithTx), runner de workers, HTTP (erros RFC 9457, request ID)
 migrations/   migrations SQL, embutidas nos binários
 docs/         escopo, regras e decisões
 ```

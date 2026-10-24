@@ -25,14 +25,15 @@ The one rule that can never break: **the money on record always matches the mone
 
 ## What is proven so far
 
-Every number below is measured, not estimated. All tests run against a **real PostgreSQL 18** in a container (`testcontainers-go`), never a mocked database.
+Every number below is measured, not estimated. Every test that touches the database runs against a **real PostgreSQL 18** in a container (`testcontainers-go`), never a mocked one; domain tests do no I/O at all.
 
 | Test | What it shows | Result |
 |---|---|---|
 | `TestThousandsOfConcurrentTransfers` | 10 concurrent workers post 5,000 random transfers between 20 accounts in two currencies. Afterwards the database itself is asked whether every invariant holds. | 20/20 runs with `-race -count=20`, i.e. **100,000 concurrent transfers**. The ledger closes at zero per currency every time, and transfers that would overdraw are rejected, never half-applied. |
 | `TestLedgerInvariantsAgainstPostgres` | Property-based: random sequences of valid and invalid transactions against Postgres. After every step, balances match an in-memory model. | 100 random sequences per run, 20/20 runs |
 | Ledger domain properties | Random transactions keep the invariants in memory, and an unbalanced transaction is always rejected. | 2 properties × 100 cases per run, 20/20 runs |
-| FX properties | Conversion is nearest half-even, odd-symmetric and monotonic, and round-trips when the rate is at least 1. A quote's USD legs sum to zero, and rounding never exceeds one cent. | 6 properties × 100 cases per run, 20/20 runs |
+| FX properties | Conversion is nearest half-even, odd-symmetric and monotonic, and round-trips when the rate is at least 1. A quote's USD legs sum to zero, and with a base rate of at least 1 the rounding account never takes more than one cent. | 6 properties × 100 cases per run, 20/20 runs |
+| `TestTransitionIsExhaustive` | Every (status, event) pair of the payment state machine is checked against section 3.4, written out again inside the test: anything outside the table is `ErrInvalidTransition`, and a repeated event the status already reflects is a no-op. | All 49 pairs, 20/20 runs |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
 CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
@@ -85,6 +86,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 | Ambiguous provider result | Attempt goes to `unknown` and is resolved by actively polling the provider (`GetAttempt` with backoff), with events and reconciliation as a safety net | Treating timeouts as failures: the provider may have charged the payer |
 | Incoming events | Inbox table: the webhook handler only stores and returns `200`; the worker processes, tolerating duplicates and reordering | Processing inside the handler: provider retries and slow handlers turn into double processing |
 | Testing | Real Postgres in every integration test; determinism only in the provider simulator, controlled by a seed | Mocked database or fully simulated world: loses real lock and isolation bugs |
+| API errors | RFC 9457 `application/problem+json` with a stable `code` and the `request_id` that also appears in the logs | A custom error format: one more thing for clients to learn, and a bare status code cannot tell causes apart |
 | HTTP | Standard library `net/http` router; hand-written OpenAPI validated in contract tests | Frameworks and generated code: more to explain, little gained with Go's method+path patterns |
 
 ## Status
@@ -96,7 +98,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F0 | Skeleton, CI, real Postgres in tests | ✅ done |
 | F1 | Money and FX: half-even conversion, quotes with spread, fee and expiry | ✅ done |
 | F2 | Ledger with invariants under concurrency | ✅ done |
-| F3 | Payments, state machine, base API | ⏳ next |
+| F3 | Payments, state machine, base API | ⏳ in progress |
 | F4 | Idempotency | planned |
 | F5 | Simulated PIX, inbox, confirmation | planned |
 | F6 | Outbox and webhooks; GameStore end to end over HTTP | planned |
@@ -132,7 +134,7 @@ internal/
   fx/         rates, conversion, quotes
   ledger/     double-entry transactions, invariants, Postgres adapter
   payments/   payment state machine
-  platform/   config, logging, clock, Postgres (WithTx), worker runner
+  platform/   config, logging, clock, Postgres (WithTx), worker runner, HTTP (RFC 9457 errors, request ID)
 migrations/   SQL migrations, embedded in the binaries
 docs/         scope, rules and decisions (Portuguese)
 ```
