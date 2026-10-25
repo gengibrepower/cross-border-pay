@@ -52,6 +52,73 @@ paths:
           $ref: "#/components/responses/Problem"
         "503":
           $ref: "#/components/responses/Problem"
+    get:
+      operationId: listPayments
+      summary: List the merchant's payments, newest first
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page. Opaque.
+          schema: { type: string }
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
+      responses:
+        "200":
+          description: One page of payments.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentList"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
+  /v1/payments/{id}:
+    get:
+      operationId: getPayment
+      summary: Get one of the merchant's payments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PaymentId"
+      responses:
+        "200":
+          description: The payment and the quote that priced it.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: |
+            No such payment. Also the answer for another merchant's payment and for a
+            malformed ID, so it never tells whether a payment exists.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
 
 components:
   securitySchemes:
@@ -134,17 +201,37 @@ components:
           type: string
           format: date-time
 
+    PaymentId:
+      type: string
+      pattern: "^pay_[0-9a-z]{26}$"
+
+    PaymentStatus:
+      type: string
+      enum: [pending, paid, partially_refunded, refunded, charged_back, expired, canceled]
+
+    PaymentList:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Payment"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass it as `cursor` for the next page; null on the last page.
+
     Payment:
       type: object
       additionalProperties: false
       required: [id, status, method, amount, reference, quote, created_at]
       properties:
         id:
-          type: string
-          pattern: "^pay_[0-9a-z]{26}$"
+          $ref: "#/components/schemas/PaymentId"
         status:
-          type: string
-          enum: [pending, paid, partially_refunded, refunded, charged_back, expired, canceled]
+          $ref: "#/components/schemas/PaymentStatus"
         method:
           type: string
           enum: [pix, boleto, card]

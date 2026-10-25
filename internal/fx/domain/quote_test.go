@@ -152,3 +152,52 @@ func TestQuoteRoundingIsAtMostOneCent(t *testing.T) {
 		}
 	})
 }
+
+func stored(q *domain.Quote) domain.StoredQuote {
+	return domain.StoredQuote{
+		Pricing:     q.Pricing(),
+		BaseRate:    q.BaseRate(),
+		Amount:      q.Amount().Amount(),
+		PayerAmount: q.PayerAmount().Amount(),
+		Converted:   q.Converted().Amount(),
+		Spread:      q.Spread().Amount(),
+		Rounding:    q.Rounding().Amount(),
+		Fee:         q.Fee().Amount(),
+		MerchantNet: q.MerchantNet().Amount(),
+		CreatedAt:   q.CreatedAt(),
+		ExpiresAt:   q.ExpiresAt(),
+	}
+}
+
+func TestRestoreQuoteRoundTrips(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		q := drawQuote(t, minRate)
+		s := stored(&q)
+		got, err := domain.RestoreQuote(&s)
+		if err != nil || got != q {
+			t.Fatalf("RestoreQuote(stored(q)) = %+v, %v; want %+v", got, err, q)
+		}
+	})
+}
+
+func TestRestoreQuoteRejects(t *testing.T) {
+	q, err := domain.NewQuote(money.New(2000, money.USD), mustRate(t, "5"), domain.DefaultPricing, t0, t0.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]func(s *domain.StoredQuote){
+		"converted off by a cent": func(s *domain.StoredQuote) { s.Converted++ },
+		"fee off by a cent":       func(s *domain.StoredQuote) { s.Fee++ },
+		"zero amount":             func(s *domain.StoredQuote) { s.Amount, s.Converted, s.MerchantNet = 0, s.Spread+s.Rounding, -s.Fee },
+		"expires at creation":     func(s *domain.StoredQuote) { s.ExpiresAt = s.CreatedAt },
+		"no rate":                 func(s *domain.StoredQuote) { s.BaseRate = domain.Rate{} },
+		"pricing above 100%":      func(s *domain.StoredQuote) { s.Pricing.Fee = 10_001 },
+	}
+	for name, corrupt := range tests {
+		s := stored(&q)
+		corrupt(&s)
+		if _, err := domain.RestoreQuote(&s); !errors.Is(err, domain.ErrInvalidQuote) {
+			t.Errorf("%s: error = %v, want %v", name, err, domain.ErrInvalidQuote)
+		}
+	}
+}

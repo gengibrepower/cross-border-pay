@@ -2,22 +2,28 @@ package adapters
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
+	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 )
 
 const maxBodyBytes = 1 << 20
 
-type Creator interface {
+type Payments interface {
 	Create(ctx context.Context, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error)
+	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
+	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
 }
 
 // MerchantFunc returns the authenticated merchant; cmd/api wires it to the merchants
@@ -25,18 +31,20 @@ type Creator interface {
 type MerchantFunc func(ctx context.Context) (domain.MerchantID, bool)
 
 type Handler struct {
-	payments Creator
+	payments Payments
 	merchant MerchantFunc
 	logger   *slog.Logger
 }
 
-func NewHandler(payments Creator, merchant MerchantFunc, logger *slog.Logger) *Handler {
+func NewHandler(payments Payments, merchant MerchantFunc, logger *slog.Logger) *Handler {
 	return &Handler{payments: payments, merchant: merchant, logger: logger}
 }
 
 // Register adds the payment routes, each wrapped by auth.
 func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
 	mux.Handle("POST /v1/payments", auth(http.HandlerFunc(h.create)))
+	mux.Handle("GET /v1/payments", auth(http.HandlerFunc(h.list)))
+	mux.Handle("GET /v1/payments/{id}", auth(http.HandlerFunc(h.get)))
 }
 
 type createRequest struct {
@@ -63,10 +71,23 @@ type paymentResponse struct {
 	CreatedAt time.Time     `json:"created_at"`
 }
 
-func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+type listResponse struct {
+	Data []paymentResponse `json:"data"`
+	// NextCursor is null on the last page.
+	NextCursor *string `json:"next_cursor"`
+}
+
+func (h *Handler) authenticated(w http.ResponseWriter, r *http.Request) (domain.MerchantID, bool) {
 	merchant, ok := h.merchant(r.Context())
 	if !ok {
 		httpapi.WriteInternalError(w, r, h.logger, errors.New("payments: route is not behind RequireAPIKey"))
+	}
+	return merchant, ok
+}
+
+func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := h.authenticated(w, r)
+	if !ok {
 		return
 	}
 	// Stored and enforced in F4; required now so the contract does not change then.
@@ -94,9 +115,115 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Location", "/v1/payments/"+payment.ID().String())
+	writeJSON(w, http.StatusCreated, newPaymentResponse(&payment, &quote))
+}
+
+func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := h.authenticated(w, r)
+	if !ok {
+		return
+	}
+	// A malformed ID is a 404 like any other unknown one, so the answer never depends on
+	// whether the payment exists.
+	id, err := domain.ParsePaymentID(r.PathValue("id"))
+	if err != nil {
+		writeNotFound(w, r)
+		return
+	}
+	p, err := h.payments.Get(r.Context(), merchant, id)
+	if errors.Is(err, app.ErrPaymentNotFound) {
+		writeNotFound(w, r)
+		return
+	}
+	if err != nil {
+		httpapi.WriteInternalError(w, r, h.logger, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newPaymentResponse(&p.Payment, &p.Quote))
+}
+
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := h.authenticated(w, r)
+	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	q := app.ListQuery{Limit: app.DefaultPageSize}
+	if s := query.Get("limit"); s != "" {
+		limit, err := strconv.Atoi(s)
+		if err != nil {
+			writeInvalidLimit(w, r)
+			return
+		}
+		q.Limit = limit
+	}
+	if s := query.Get("status"); s != "" {
+		status, err := domain.ParseStatus(s)
+		if err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "invalid_status", "status must be one of the payment statuses")
+			return
+		}
+		q.Status = status
+	}
+	if s := query.Get("cursor"); s != "" {
+		before, err := decodeCursor(s)
+		if err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "invalid_cursor", "cursor must be a next_cursor returned by this endpoint")
+			return
+		}
+		q.Before = before
+	}
+
+	page, err := h.payments.List(r.Context(), merchant, q)
+	if errors.Is(err, app.ErrInvalidLimit) {
+		writeInvalidLimit(w, r)
+		return
+	}
+	if err != nil {
+		httpapi.WriteInternalError(w, r, h.logger, err)
+		return
+	}
+	resp := listResponse{Data: make([]paymentResponse, len(page.Payments))}
+	for i := range page.Payments {
+		resp.Data[i] = newPaymentResponse(&page.Payments[i].Payment, &page.Payments[i].Quote)
+	}
+	if page.More {
+		cursor := encodeCursor(page.Payments[len(page.Payments)-1].Payment.ID())
+		resp.NextCursor = &cursor
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// The cursor is opaque to clients so that what it holds can change without breaking
+// them; today it is the last payment ID of the page.
+func encodeCursor(last domain.PaymentID) string {
+	return base64.RawURLEncoding.EncodeToString(last[:])
+}
+
+func decodeCursor(s string) (domain.PaymentID, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return domain.PaymentID{}, fmt.Errorf("payments: cursor: %w", err)
+	}
+	var id domain.PaymentID
+	if len(b) != len(id) {
+		return domain.PaymentID{}, errors.New("payments: cursor has the wrong length")
+	}
+	return domain.PaymentID(b), nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(newPaymentResponse(&payment, &quote))
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeInvalidLimit(w http.ResponseWriter, r *http.Request) {
+	writeProblem(w, r, http.StatusBadRequest, "invalid_limit", "limit must be an integer from 1 to 100")
+}
+
+func writeNotFound(w http.ResponseWriter, r *http.Request) {
+	writeProblem(w, r, http.StatusNotFound, "payment_not_found", "no payment with this ID")
 }
 
 func newPaymentResponse(p *domain.Payment, q *fx.Quote) paymentResponse {

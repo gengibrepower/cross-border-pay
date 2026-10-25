@@ -9,3 +9,6 @@ INSERT INTO quotes (
     @created_at, @expires_at
 )
 RETURNING id;
+
+-- name: GetQuotes :many
+SELECT * FROM quotes WHERE id = ANY(@ids::uuid[]);

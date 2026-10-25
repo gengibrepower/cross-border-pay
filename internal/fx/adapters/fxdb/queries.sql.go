@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getQuotes = `-- name: GetQuotes :many
+SELECT id, base_currency, quote_currency, base_rate, spread_bps, fee_bps, amount, payer_amount, converted, spread, rounding, fee, merchant_net, created_at, expires_at FROM quotes WHERE id = ANY($1::uuid[])
+`
+
+func (q *Queries) GetQuotes(ctx context.Context, ids []pgtype.UUID) ([]Quote, error) {
+	rows, err := q.db.Query(ctx, getQuotes, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Quote
+	for rows.Next() {
+		var i Quote
+		if err := rows.Scan(
+			&i.ID,
+			&i.BaseCurrency,
+			&i.QuoteCurrency,
+			&i.BaseRate,
+			&i.SpreadBps,
+			&i.FeeBps,
+			&i.Amount,
+			&i.PayerAmount,
+			&i.Converted,
+			&i.Spread,
+			&i.Rounding,
+			&i.Fee,
+			&i.MerchantNet,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertQuote = `-- name: InsertQuote :one
 INSERT INTO quotes (
     base_currency, quote_currency, base_rate, spread_bps, fee_bps,
