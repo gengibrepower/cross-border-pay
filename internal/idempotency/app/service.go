@@ -16,6 +16,10 @@ var (
 	ErrLeaseLost  = errors.New("idempotency: lease lost to a resumed request")
 )
 
+// CleanupBatch keeps each delete of the cleanup short; the job loops until a batch
+// comes back short.
+const CleanupBatch = 1000
+
 type Clock interface {
 	Now() time.Time
 }
@@ -36,6 +40,9 @@ type Store interface {
 	// keeps the key and ends the lease at now, so a retry resumes from the recovery
 	// point at once instead of starting over.
 	Fail(ctx context.Context, held *domain.Held, now time.Time) (released bool, err error)
+	// DeleteExpired deletes up to limit keys created at or before cutoff, skipping keys
+	// another transaction has locked.
+	DeleteExpired(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
 type Service struct {
@@ -74,4 +81,20 @@ func (s *Service) Fail(ctx context.Context, held *domain.Held) (released bool, e
 		return false, fmt.Errorf("idempotency: fail: %w", err)
 	}
 	return released, nil
+}
+
+// Cleanup deletes every key past its TTL (decision 14), batch keys at a time.
+func (s *Service) Cleanup(ctx context.Context, batch int) (int64, error) {
+	cutoff := s.clock.Now().Add(-domain.TTL)
+	var total int64
+	for {
+		n, err := s.store.DeleteExpired(ctx, cutoff, batch)
+		total += n
+		if err != nil {
+			return total, fmt.Errorf("idempotency: cleanup: %w", err)
+		}
+		if n < int64(batch) {
+			return total, nil
+		}
+	}
 }

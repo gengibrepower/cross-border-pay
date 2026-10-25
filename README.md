@@ -38,6 +38,7 @@ Every number below is measured, not estimated. Every test that touches the datab
 | Contract tests (`cmd/api`) | Every request and response of `POST /v1/payments`, `GET /v1/payments/{id}` and `GET /v1/payments` goes through the real handler and a real Postgres and is checked against the hand-written `api/openapi.yaml` with `kin-openapi`. The GameStore payment returns R$ 101.50 with a US$ 0.60 fee and a 30-minute quote, and the `GET` returns byte for byte what the `POST` returned. Walking 7 payments in pages of 3 sees each one exactly once, newest first, and none of another merchant's; another merchant's payment, an unknown ID and a malformed ID all get the same `404`. | `POST`: 1 success and 14 error cases, and no rejected request stores a payment. `GET`: 4 `404`/`401` cases and 6 invalid-parameter cases, each with its stable `code`. 20/20 runs with `-race -count=20`. Changing `id <` to `id <=` in the cursor makes the pagination test fail |
 | Idempotency at the store layer (`internal/idempotency`) | The eight cases of section 4.2 against a real Postgres: a stored response replayed as is, a different body rejected, a 4xx kept, a 5xx before any work releases the key, a 5xx after recorded work keeps it, keys of different merchants independent. A key left by a request that died is resumed from where it stopped once the lease ends, and the dead request can no longer complete or release it. The recovery point rolls back with the transaction of whoever wrote it. | 20 concurrent requests with one key: exactly 1 proceeds and 19 get `409`, 20/20 runs with `-race -count=20`. Dropping the `lock_token` from completion or the `recovery_point` from release makes the test for that case fail |
 | Idempotency through the API (`POST /v1/payments`) | A retry gets the same 201 byte for byte, marked `Idempotent-Replayed: true`, and no new payment; the same key with another payment is a `422`; a 4xx is stored and replayed; different merchants with the same key create different payments. **Simulated crash:** the request creates the payment and dies before storing its answer; the retry gets `409` while the lease runs and, after it, `201` with that same payment, identical to the `GET`, and the database still holds 1 payment and 1 quote. In the middleware, a 5xx before any work releases the key, and a 5xx after a recovery point keeps it and lets the retry resume at once. | 10 concurrent HTTP requests with one key create exactly 1 payment, 20/20 runs with `-race -count=20`. Making `Create` ignore the recovery point makes the crash test fail |
+| Key cleanup (`cmd/worker`) | Every hour, in batches of 1,000, the job deletes keys older than 24 h and nothing younger. With `FOR UPDATE SKIP LOCKED`, a key another transaction has locked is passed over without waiting and deleted on the next round. A failed round is logged and does not stop the worker. | 7 expired keys deleted in batches of 3, 20/20 runs with `-race -count=20`. Dropping `SKIP LOCKED` makes `Cleanup` wait for the lock until its deadline, and the test fails |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
 CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
@@ -110,7 +111,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F1 | Money and FX: half-even conversion, quotes with spread, fee and expiry | ✅ done |
 | F2 | Ledger with invariants under concurrency | ✅ done |
 | F3 | Payments, state machine, base API | ✅ done |
-| F4 | Idempotency | ⏳ in progress |
+| F4 | Idempotency | ✅ done |
 | F5 | Simulated PIX, inbox, confirmation | planned |
 | F6 | Outbox and webhooks; GameStore end to end over HTTP | planned |
 | F7 | Refunds and settlement | planned |
@@ -130,6 +131,7 @@ mise run db           # local Postgres via docker compose
 mise run migrate      # apply embedded migrations
 go run ./cmd/admin merchant create -name GameStore -mode test   # prints the API key once
 go run ./cmd/api      # /healthz and /readyz on :8080; FX_USD_BRL_RATE sets the base rate (default 5.0000)
+go run ./cmd/worker   # background jobs; for now, deleting idempotency keys older than 24 h
 ```
 
 Creating the GameStore payment with the key `cmd/admin` printed:
@@ -155,7 +157,7 @@ Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test:st
 ```
 cmd/
   api/        HTTP server
-  worker/     background processing with graceful shutdown
+  worker/     background jobs (idempotency cleanup) with graceful shutdown
   migrate/    applies embedded goose migrations
   admin/      operator tasks: create a merchant and its API key, revoke a key
 internal/

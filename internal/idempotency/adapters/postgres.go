@@ -191,6 +191,17 @@ func (p *Postgres) Fail(ctx context.Context, held *domain.Held, now time.Time) (
 	return false, nil
 }
 
+func (p *Postgres) DeleteExpired(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	n, err := idempotencydb.New(p.pool).DeleteExpiredKeys(ctx, idempotencydb.DeleteExpiredKeysParams{
+		Cutoff:  timestamptz(cutoff),
+		MaxRows: int64(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("idempotency: delete expired: %w", err)
+	}
+	return n, nil
+}
+
 // SetRecoveryPoint records how far the request got. It runs on the caller's
 // transaction, so the recovery point commits or rolls back with the work it describes;
 // if the lease was lost it returns ErrLeaseLost and the caller's work must roll back.

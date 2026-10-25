@@ -38,6 +38,7 @@ Todos os números abaixo são medidos, não estimados. Todo teste que toca o ban
 | Testes de contrato (`cmd/api`) | Cada request e resposta de `POST /v1/payments`, `GET /v1/payments/{id}` e `GET /v1/payments` passa pelo handler real e por um Postgres real e é conferido contra o `api/openapi.yaml` escrito à mão, com o `kin-openapi`. A cobrança da GameStore devolve R$ 101,50, taxa de US$ 0,60 e cotação de 30 minutos, e o `GET` devolve byte a byte o que o `POST` devolveu. Percorrer 7 cobranças em páginas de 3 vê cada uma exatamente uma vez, da mais nova para a mais antiga, e nenhuma de outro lojista; a cobrança de outro lojista, um ID desconhecido e um ID malformado recebem o mesmo `404`. | `POST`: 1 caso de sucesso e 14 de erro, e nenhum request recusado grava cobrança. `GET`: 4 casos de `404`/`401` e 6 de parâmetro inválido, cada um com seu `code` estável. 20/20 rodadas com `-race -count=20`. Trocar `id <` por `id <=` no cursor faz o teste de paginação falhar |
 | Idempotência na camada de store (`internal/idempotency`) | Os oito casos da seção 4.2 contra Postgres real: resposta guardada devolvida igual, corpo diferente recusado, 4xx guardado, 5xx sem trabalho feito libera a key, 5xx depois de trabalho registrado mantém a key, keys de lojistas diferentes independentes. Uma key largada por um request que morreu é retomada do ponto em que ele parou quando a lease vence, e o request morto não consegue mais concluir nem liberar a key. O ponto de retomada desfaz junto com a transação de quem o gravou. | 20 requests simultâneos com a mesma key: exatamente 1 segue e 19 recebem `409`, 20/20 rodadas com `-race -count=20`. Tirar o `lock_token` da conclusão ou o `recovery_point` da liberação faz o teste do caso correspondente falhar |
 | Idempotência pela API (`POST /v1/payments`) | A repetição recebe o mesmo 201 byte a byte, marcado com `Idempotent-Replayed: true`, e nenhuma cobrança nova; a mesma key com outra cobrança é `422`; um 4xx é guardado e devolvido de novo; lojistas diferentes com a mesma key criam cobranças diferentes. **Queda simulada:** o request cria a cobrança e morre sem guardar a resposta; a repetição recebe `409` enquanto a lease vale e, depois dela, `201` com a mesma cobrança, idêntica ao `GET`, e o banco continua com 1 cobrança e 1 cotação. No middleware, um 5xx sem trabalho feito libera a key, e um 5xx depois de um ponto de retomada a mantém e deixa a repetição retomar na hora. | 10 requests HTTP simultâneos com a mesma key criam exatamente 1 cobrança, 20/20 rodadas com `-race -count=20`. Fazer o `Create` ignorar o ponto de retomada faz o teste da queda falhar |
+| Limpeza das keys (`cmd/worker`) | O job apaga, a cada hora e em lotes de 1.000, as keys com mais de 24 h, e nenhuma mais nova. Com `FOR UPDATE SKIP LOCKED`, uma key travada por outra transação é pulada sem espera e apagada na rodada seguinte. Uma rodada que falha vai para o log e não derruba o worker. | 7 keys vencidas apagadas em lotes de 3, 20/20 rodadas com `-race -count=20`. Tirar o `SKIP LOCKED` faz o `Cleanup` esperar o lock até estourar o prazo, e o teste falha |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
 A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
@@ -110,7 +111,7 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F1 | Dinheiro e câmbio: conversão half-even, cotação com spread, taxa e validade | ✅ pronta |
 | F2 | Ledger com invariantes sob concorrência | ✅ pronta |
 | F3 | Cobranças, máquina de estados, API base | ✅ pronta |
-| F4 | Idempotência | ⏳ em andamento |
+| F4 | Idempotência | ✅ pronta |
 | F5 | PIX simulado, inbox, confirmação | planejada |
 | F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | planejada |
 | F7 | Estornos e liquidação | planejada |
@@ -130,6 +131,7 @@ mise run db           # Postgres local via docker compose
 mise run migrate      # aplica as migrations embutidas
 go run ./cmd/admin merchant create -name GameStore -mode test   # imprime a API key uma única vez
 go run ./cmd/api      # /healthz e /readyz em :8080; FX_USD_BRL_RATE define a taxa base (padrão 5.0000)
+go run ./cmd/worker   # jobs em segundo plano; hoje, a limpeza das keys de idempotência com mais de 24 h
 ```
 
 Criando a cobrança da GameStore com a chave que o `cmd/admin` imprimiu:
@@ -155,7 +157,7 @@ Outras tarefas: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test
 ```
 cmd/
   api/        servidor HTTP
-  worker/     processamento em segundo plano com shutdown gracioso
+  worker/     jobs em segundo plano (limpeza de idempotência) com shutdown gracioso
   migrate/    aplica as migrations do goose embutidas
   admin/      tarefas de operação: criar lojista e API key, revogar chave
 internal/
