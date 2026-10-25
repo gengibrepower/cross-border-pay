@@ -131,3 +131,45 @@ func (q *Quote) CreatedAt() time.Time { return q.createdAt }
 func (q *Quote) ExpiresAt() time.Time { return q.expiresAt }
 
 func (q *Quote) Expired(now time.Time) bool { return !now.Before(q.expiresAt) }
+
+// StoredQuote is a quote as stored: every computed amount, not just the inputs.
+type StoredQuote struct {
+	Pricing     Pricing
+	BaseRate    Rate
+	Amount      int64
+	PayerAmount int64
+	Converted   int64
+	Spread      int64
+	Rounding    int64
+	Fee         int64
+	MerchantNet int64
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+// RestoreQuote rebuilds a stored quote without repricing it, so it stays what the payer
+// was shown even if the pricing formula changes. It still checks the identities of
+// section 3.3, which the database enforces too.
+func RestoreQuote(s *StoredQuote) (Quote, error) {
+	if err := s.Pricing.validate(); err != nil {
+		return Quote{}, err
+	}
+	if s.BaseRate == (Rate{}) || s.Amount <= 0 || !s.ExpiresAt.After(s.CreatedAt) ||
+		s.Converted != s.Amount+s.Spread+s.Rounding || s.MerchantNet+s.Fee != s.Amount {
+		return Quote{}, fmt.Errorf("%w: stored quote %+v does not add up", ErrInvalidQuote, *s)
+	}
+	base, quote := s.BaseRate.Base(), s.BaseRate.Quote()
+	return Quote{
+		pricing:     s.Pricing,
+		amount:      money.New(s.Amount, base),
+		baseRate:    s.BaseRate,
+		payerAmount: money.New(s.PayerAmount, quote),
+		converted:   money.New(s.Converted, base),
+		spread:      money.New(s.Spread, base),
+		rounding:    money.New(s.Rounding, base),
+		fee:         money.New(s.Fee, base),
+		merchantNet: money.New(s.MerchantNet, base),
+		createdAt:   s.CreatedAt,
+		expiresAt:   s.ExpiresAt,
+	}, nil
+}

@@ -11,6 +11,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getPayment = `-- name: GetPayment :one
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at FROM payments WHERE merchant_id = $1 AND id = $2
+`
+
+type GetPaymentParams struct {
+	MerchantID pgtype.UUID
+	ID         pgtype.UUID
+}
+
+func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment, error) {
+	row := q.db.QueryRow(ctx, getPayment, arg.MerchantID, arg.ID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.QuoteID,
+		&i.Status,
+		&i.Method,
+		&i.Amount,
+		&i.Currency,
+		&i.Reference,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertPayment = `-- name: InsertPayment :one
 INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
@@ -42,4 +69,58 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (p
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listPayments = `-- name: ListPayments :many
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at FROM payments
+WHERE merchant_id = $1
+  AND ($2::uuid IS NULL OR id < $2)
+  AND ($3::text IS NULL OR status = $3)
+ORDER BY id DESC
+LIMIT $4::bigint
+`
+
+type ListPaymentsParams struct {
+	MerchantID pgtype.UUID
+	Before     pgtype.UUID
+	Status     pgtype.Text
+	MaxRows    int64
+}
+
+// Keyset pagination on payments_merchant_id_id: newest first, each page starts below
+// the last ID of the previous one.
+func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]Payment, error) {
+	rows, err := q.db.Query(ctx, listPayments,
+		arg.MerchantID,
+		arg.Before,
+		arg.Status,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Payment
+	for rows.Next() {
+		var i Payment
+		if err := rows.Scan(
+			&i.ID,
+			&i.MerchantID,
+			&i.QuoteID,
+			&i.Status,
+			&i.Method,
+			&i.Amount,
+			&i.Currency,
+			&i.Reference,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
