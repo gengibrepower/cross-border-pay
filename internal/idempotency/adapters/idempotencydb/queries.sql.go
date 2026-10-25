@@ -45,6 +45,32 @@ func (q *Queries) CompleteKey(ctx context.Context, arg CompleteKeyParams) (int64
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredKeys = `-- name: DeleteExpiredKeys :execrows
+DELETE FROM idempotency_keys
+WHERE (merchant_id, key) IN (
+    SELECT expired.merchant_id, expired.key FROM idempotency_keys AS expired
+    WHERE expired.created_at <= $1
+    LIMIT $2::bigint
+    FOR UPDATE SKIP LOCKED
+)
+`
+
+type DeleteExpiredKeysParams struct {
+	Cutoff  pgtype.Timestamptz
+	MaxRows int64
+}
+
+// One batch of keys past their TTL. SKIP LOCKED passes over a key that Acquire is
+// restarting right now instead of waiting for it; the lock also rechecks created_at,
+// so a key restarted in the meantime no longer matches and survives.
+func (q *Queries) DeleteExpiredKeys(ctx context.Context, arg DeleteExpiredKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredKeys, arg.Cutoff, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const endLease = `-- name: EndLease :execrows
 UPDATE idempotency_keys
 SET locked_until = $1
