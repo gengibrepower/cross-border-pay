@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ func getRequest(t *testing.T, key, path string) *http.Request {
 
 func (c *contract) createPayment(key string) (id string, body []byte) {
 	c.t.Helper()
-	rec := c.do(postPayment(c.t, key, "k", gameStore), true)
+	rec := c.do(postPayment(c.t, key, rand.Text(), gameStore), true)
 	if rec.Code != http.StatusCreated {
 		c.t.Fatalf("create: status = %d: %s", rec.Code, rec.Body.String())
 	}

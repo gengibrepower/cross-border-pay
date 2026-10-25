@@ -37,6 +37,7 @@ type contract struct {
 	router  routers.Router
 	handler http.Handler
 	pool    *pgxpool.Pool
+	clock   *clock.Fake
 }
 
 func newContract(t *testing.T) *contract {
@@ -56,11 +57,12 @@ func newContract(t *testing.T) *contract {
 
 	pool := pgtest.NewPool(t)
 	logger := slog.New(slog.DiscardHandler)
-	a, err := newAPI(pool, logger, "5.0000", clock.NewFake(t0))
+	fake := clock.NewFake(t0)
+	a, err := newAPI(pool, logger, "5.0000", fake)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &contract{t: t, router: router, handler: routes(pool, logger, a.register), pool: pool}
+	return &contract{t: t, router: router, handler: routes(pool, logger, a.register), pool: pool, clock: fake}
 }
 
 func (c *contract) merchantKey() string {
@@ -203,7 +205,12 @@ func TestCreatePaymentErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c.t = t
-			rec := c.do(postPayment(t, tt.key, tt.idemKey, tt.body), tt.validRequest)
+			// Each case gets its own key: the same key with another body is a 422 now.
+			idemKey := tt.idemKey
+			if idemKey == "k" {
+				idemKey = tt.name
+			}
+			rec := c.do(postPayment(t, tt.key, idemKey, tt.body), tt.validRequest)
 			var p struct {
 				Code string `json:"code"`
 			}

@@ -12,6 +12,9 @@ import (
 	"time"
 
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
+	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
+	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
+	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -21,7 +24,7 @@ import (
 const maxBodyBytes = 1 << 20
 
 type Payments interface {
-	Create(ctx context.Context, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error)
+	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error)
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
 }
@@ -40,9 +43,10 @@ func NewHandler(payments Payments, merchant MerchantFunc, logger *slog.Logger) *
 	return &Handler{payments: payments, merchant: merchant, logger: logger}
 }
 
-// Register adds the payment routes, each wrapped by auth.
-func (h *Handler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
-	mux.Handle("POST /v1/payments", auth(http.HandlerFunc(h.create)))
+// Register adds the payment routes, each wrapped by auth; the ones that create or move
+// money are idempotent too, inside auth.
+func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handler) http.Handler) {
+	mux.Handle("POST /v1/payments", auth(idempotent(http.HandlerFunc(h.create))))
 	mux.Handle("GET /v1/payments", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/payments/{id}", auth(http.HandlerFunc(h.get)))
 }
@@ -90,9 +94,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Stored and enforced in F4; required now so the contract does not change then.
-	if key := r.Header.Get("Idempotency-Key"); key == "" || len(key) > 255 {
-		writeProblem(w, r, http.StatusBadRequest, "idempotency_key_required", "send an Idempotency-Key header of 1 to 255 characters")
+	held, ok := idempotencyadapters.HeldFrom(r.Context())
+	if !ok {
+		httpapi.WriteInternalError(w, r, h.logger, errors.New("payments: create is not behind idempotency.Require"))
 		return
 	}
 
@@ -108,7 +112,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, quote, err := h.payments.Create(r.Context(), merchant, req.Method, *req.Amount, req.Reference)
+	payment, quote, err := h.payments.Create(r.Context(), held, merchant, req.Method, *req.Amount, req.Reference)
 	if err != nil {
 		h.createError(w, r, err)
 		return
@@ -270,6 +274,8 @@ func (h *Handler) createError(w http.ResponseWriter, r *http.Request, err error)
 		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_amount", "amount.value must be positive")
 	case errors.Is(err, domain.ErrInvalidReference):
 		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_reference", "reference must have 1 to 100 characters")
+	case errors.Is(err, idempotencyapp.ErrLeaseLost):
+		writeProblem(w, r, http.StatusConflict, "idempotency_key_in_progress", "a request with this Idempotency-Key is still in progress; retry later")
 	case errors.Is(err, fx.ErrRateUnavailable):
 		h.logger.ErrorContext(r.Context(), "no exchange rate", "error", err, "request_id", httpapi.RequestID(r.Context()))
 		writeProblem(w, r, http.StatusServiceUnavailable, "rate_unavailable", "no exchange rate is available right now")

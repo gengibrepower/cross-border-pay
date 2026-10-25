@@ -12,6 +12,9 @@ import (
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
 	fxapp "github.com/gengibrepower/cross-border-pay/internal/fx/app"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
+	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
+	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
+	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
 	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
 	merchantsapp "github.com/gengibrepower/cross-border-pay/internal/merchants/app"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
@@ -23,8 +26,9 @@ import (
 // api holds the /v1 routes, built from every module. This is the only place that
 // knows how the modules fit together.
 type api struct {
-	payments *paymentsadapters.Handler
-	auth     func(http.Handler) http.Handler
+	payments   *paymentsadapters.Handler
+	auth       func(http.Handler) http.Handler
+	idempotent func(http.Handler) http.Handler
 }
 
 func newAPI(pool *pgxpool.Pool, logger *slog.Logger, usdbrl string, clock fxapp.Clock) (*api, error) {
@@ -42,15 +46,25 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, usdbrl string, clock fxapp.
 			logger,
 		),
 		auth: merchantsadapters.RequireAPIKey(merchants, logger),
+		idempotent: idempotencyadapters.Require(
+			idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock, rand.Reader),
+			idempotencyMerchant,
+			logger,
+		),
 	}, nil
 }
 
 func (a *api) register(mux *http.ServeMux) {
-	a.payments.Register(mux, a.auth)
+	a.payments.Register(mux, a.auth, a.idempotent)
 }
 
 // merchantFrom is the bridge that keeps payments from importing merchants.
 func merchantFrom(ctx context.Context) (payments.MerchantID, bool) {
 	p, ok := merchantsadapters.PrincipalFrom(ctx)
 	return payments.MerchantID(p.MerchantID), ok
+}
+
+func idempotencyMerchant(ctx context.Context) (idempotency.MerchantID, bool) {
+	p, ok := merchantsadapters.PrincipalFrom(ctx)
+	return idempotency.MerchantID(p.MerchantID), ok
 }

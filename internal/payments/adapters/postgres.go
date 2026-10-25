@@ -11,6 +11,8 @@ import (
 
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
+	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
+	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
@@ -26,7 +28,7 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
 }
 
-func (p *Postgres) Create(ctx context.Context, d *domain.Draft, q *fx.Quote) (domain.Payment, error) {
+func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote) (domain.Payment, error) {
 	var id pgtype.UUID
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		quoteID, err := fxadapters.SaveQuote(ctx, tx, q)
@@ -46,7 +48,9 @@ func (p *Postgres) Create(ctx context.Context, d *domain.Draft, q *fx.Quote) (do
 		if err != nil {
 			return fmt.Errorf("insert payment: %w", err)
 		}
-		return nil
+		// A lost lease fails here and rolls the payment back: the request that resumed
+		// the key creates it instead.
+		return idempotencyadapters.SetRecoveryPoint(ctx, tx, held, app.PaymentCreated, id.Bytes)
 	})
 	if err != nil {
 		return domain.Payment{}, fmt.Errorf("payments: store: %w", err)

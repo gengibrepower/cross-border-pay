@@ -36,6 +36,8 @@ paths:
               schema: { type: string, example: /v1/payments/pay_06f1z4ghq3m5ttqb0gnsx4yy3c }
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
           content:
             application/json:
               schema:
@@ -44,6 +46,17 @@ paths:
           $ref: "#/components/responses/Problem"
         "401":
           $ref: "#/components/responses/Problem"
+        "409":
+          description: |
+            `idempotency_key_in_progress`: another request with this Idempotency-Key is
+            still running. Retry later; it is never answered for a finished request.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "413":
           $ref: "#/components/responses/Problem"
         "422":
@@ -132,13 +145,21 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Makes retries safe. Required now; stored and enforced from F4 on.
+      description: |
+        Makes retries safe for 24 hours. A retry with the same key and the same request
+        gets the stored answer, with `Idempotent-Replayed: true`; the same key with a
+        different request is a 422 `idempotency_key_reused`.
       schema: { type: string, minLength: 1, maxLength: 255 }
 
   headers:
     RequestId:
       description: Also in error bodies and in the server logs.
       schema: { type: string }
+    IdempotentReplayed:
+      description: |
+        Present on a stored answer replayed for a retry. Its body is the original one,
+        including the request_id of the request that did the work.
+      schema: { type: string, enum: ["true"] }
 
   responses:
     Problem:
@@ -146,6 +167,8 @@ components:
       headers:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
+        Idempotent-Replayed:
+          $ref: "#/components/headers/IdempotentReplayed"
       content:
         application/problem+json:
           schema:

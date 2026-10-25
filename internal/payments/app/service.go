@@ -7,6 +7,7 @@ import (
 	"time"
 
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
+	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
@@ -20,7 +21,12 @@ var (
 	// learn that it exists.
 	ErrPaymentNotFound = errors.New("payments: payment not found")
 	ErrInvalidLimit    = errors.New("payments: limit out of range")
+	ErrRecoveryPoint   = errors.New("payments: unknown recovery point")
 )
+
+// PaymentCreated is the recovery point of a create whose payment is stored: a resumed
+// request returns that payment instead of creating another one.
+const PaymentCreated idempotency.RecoveryPoint = "payment_created"
 
 const (
 	DefaultPageSize = 20
@@ -48,8 +54,9 @@ type Page struct {
 }
 
 type Store interface {
-	// Create stores the quote and the pending payment together, or neither.
-	Create(ctx context.Context, d *domain.Draft, q *fx.Quote) (domain.Payment, error)
+	// Create stores the quote, the pending payment and the PaymentCreated recovery point
+	// together, or none of them.
+	Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote) (domain.Payment, error)
 	// Get returns ErrPaymentNotFound unless the merchant owns the payment.
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (Priced, error)
 	// List returns at most q.Limit payments of the merchant, newest first.
@@ -65,9 +72,21 @@ func NewService(quoter Quoter, store Store) *Service {
 	return &Service{quoter: quoter, store: store}
 }
 
-// Create prices the payment in BRL and stores it as pending (section 4.1, steps 1-2).
-// The payer amount comes from the quote; the provider attempt arrives in F5.
-func (s *Service) Create(ctx context.Context, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error) {
+// Create prices the payment in BRL and stores it as pending (section 4.1, steps 1-2),
+// under the idempotency key held. The provider attempt arrives in F5.
+func (s *Service) Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error) {
+	switch held.RecoveryPoint {
+	case idempotency.Started:
+	case PaymentCreated:
+		p, err := s.store.Get(ctx, merchant, held.ResourceID)
+		if err != nil {
+			return domain.Payment{}, fx.Quote{}, fmt.Errorf("payments: resume create: %w", err)
+		}
+		return p.Payment, p.Quote, nil
+	default:
+		return domain.Payment{}, fx.Quote{}, fmt.Errorf("%w: %q", ErrRecoveryPoint, held.RecoveryPoint)
+	}
+
 	draft, err := domain.NewDraft(merchant, method, amount, reference)
 	if err != nil {
 		return domain.Payment{}, fx.Quote{}, fmt.Errorf("payments: create: %w", err)
@@ -76,7 +95,7 @@ func (s *Service) Create(ctx context.Context, merchant domain.MerchantID, method
 	if err != nil {
 		return domain.Payment{}, fx.Quote{}, fmt.Errorf("payments: create: %w", err)
 	}
-	payment, err := s.store.Create(ctx, &draft, &quote)
+	payment, err := s.store.Create(ctx, held, &draft, &quote)
 	if err != nil {
 		return domain.Payment{}, fx.Quote{}, fmt.Errorf("payments: create: %w", err)
 	}
