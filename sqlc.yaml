@@ -32,3 +32,11 @@ sql:
         package: paymentsdb
         out: internal/payments/adapters/paymentsdb
         sql_package: pgx/v5
+  - engine: postgresql
+    schema: migrations
+    queries: internal/idempotency/adapters/queries.sql
+    gen:
+      go:
+        package: idempotencydb
+        out: internal/idempotency/adapters/idempotencydb
+        sql_package: pgx/v5

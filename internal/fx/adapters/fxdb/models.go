@@ -18,6 +18,21 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz
 }
 
+type IdempotencyKey struct {
+	MerchantID      pgtype.UUID
+	Key             string
+	RequestHash     []byte
+	Status          string
+	RecoveryPoint   string
+	ResourceID      pgtype.UUID
+	LockToken       []byte
+	LockedUntil     pgtype.Timestamptz
+	ResponseCode    pgtype.Int4
+	ResponseHeaders []byte
+	ResponseBody    []byte
+	CreatedAt       pgtype.Timestamptz
+}
+
 type LedgerAccount struct {
 	ID          pgtype.UUID
 	Code        pgtype.Text
