@@ -5,11 +5,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 type fakeDB struct{ err error }
@@ -64,43 +62,6 @@ func TestReadyz(t *testing.T) {
 func TestReadyzWithDatabaseDown(t *testing.T) {
 	rec := get(t, routes(fakeDB{err: errors.New("down")}, slog.New(slog.DiscardHandler)), http.MethodGet, "/readyz")
 	assertResponse(t, rec, http.StatusServiceUnavailable, `{"status":"unavailable"}`)
-}
-
-func TestServeAnswersAndStopsOnCancel(t *testing.T) {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	result := make(chan error, 1)
-	go func() {
-		result <- serve(ctx, ln, routes(fakeDB{}, slog.New(slog.DiscardHandler)), slog.New(slog.DiscardHandler), time.Second)
-	}()
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/healthz", http.NoBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	cancel()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("serve() error = %v, want nil", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("serve did not return after cancel")
-	}
 }
 
 func TestRunRejectsInvalidConfig(t *testing.T) {

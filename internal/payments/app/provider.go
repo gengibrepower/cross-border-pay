@@ -22,7 +22,7 @@ var (
 // failed, and the attempt goes to unknown.
 type Provider interface {
 	Name() domain.ProviderName
-	CreateAttempt(ctx context.Context, req AttemptRequest) (AttemptResult, error)
+	CreateAttempt(ctx context.Context, req *AttemptRequest) (AttemptResult, error)
 	// GetAttempt looks the attempt up by our ID, which CreateAttempt sent as the
 	// provider's idempotency key.
 	GetAttempt(ctx context.Context, id domain.AttemptID) (AttemptResult, error)
