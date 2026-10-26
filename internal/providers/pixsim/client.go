@@ -18,9 +18,12 @@ var (
 	ErrRejected = errors.New("pixsim: charge rejected")
 	ErrNotFound = errors.New("pixsim: charge not found")
 	// ErrKeyReused is the same idempotency key sent with a different charge.
-	ErrKeyReused   = errors.New("pixsim: idempotency key reused with another charge")
-	ErrNotPayable  = errors.New("pixsim: charge cannot be paid")
-	ErrBadResponse = errors.New("pixsim: unexpected response")
+	ErrKeyReused     = errors.New("pixsim: idempotency key reused with another charge")
+	ErrNotPayable    = errors.New("pixsim: charge cannot be paid")
+	ErrEventNotFound = errors.New("pixsim: event not found")
+	// ErrDeliveryFailed is the webhook not answering 2xx to a redelivery.
+	ErrDeliveryFailed = errors.New("pixsim: event delivery failed")
+	ErrBadResponse    = errors.New("pixsim: unexpected response")
 )
 
 // DefaultTimeout bounds every call; a call that hits it is ambiguous, not failed.
@@ -66,6 +69,12 @@ func (c *Client) Pay(ctx context.Context, id string) (Charge, error) {
 	var ch Charge
 	err := c.do(ctx, http.MethodPost, "/control/charges/"+url.PathEscape(id)+"/pay", "", nil, http.StatusOK, &ch)
 	return ch, err
+}
+
+// Redeliver is the control endpoint that sends an event again, as a provider that
+// retries a delivery it thinks was lost.
+func (c *Client) Redeliver(ctx context.Context, eventID string) error {
+	return c.do(ctx, http.MethodPost, "/control/events/"+url.PathEscape(eventID)+"/deliver", "", nil, http.StatusNoContent, nil)
 }
 
 // InjectFault is the control endpoint that schedules failures.
@@ -131,6 +140,10 @@ func problemError(status int, body []byte) error {
 		return ErrNotFound
 	case status == http.StatusConflict && p.Code == CodeNotPayable:
 		return ErrNotPayable
+	case status == http.StatusNotFound && p.Code == CodeEventNotFound:
+		return ErrEventNotFound
+	case status == http.StatusBadGateway && p.Code == CodeDeliveryFailed:
+		return ErrDeliveryFailed
 	default:
 		return fmt.Errorf("%w: status %d, code %q", ErrBadResponse, status, p.Code)
 	}

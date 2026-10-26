@@ -71,9 +71,9 @@ const providerTimeout = 300 * time.Millisecond
 
 func startPixSim(t *testing.T, c *clock.Fake) *pixsim.Client {
 	t.Helper()
-	sim, err := pixsimserver.New(pixsimserver.Config{
+	sim, err := pixsimserver.New(&pixsimserver.Config{
 		Seed: 1, PixKey: "123e4567-e12b-12d1-a456-426655440000", MerchantName: "CROSS BORDER PAY", MerchantCity: "SAO PAULO",
-	}, c)
+	}, c, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

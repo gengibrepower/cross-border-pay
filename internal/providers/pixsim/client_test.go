@@ -3,6 +3,7 @@ package pixsim_test
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,10 +33,10 @@ type sim struct {
 	url    string
 }
 
-func start(t *testing.T, cfg server.Config, timeout time.Duration) *sim {
+func start(t *testing.T, cfg *server.Config, timeout time.Duration) *sim {
 	t.Helper()
 	c := clock.NewFake(t0)
-	s, err := server.New(cfg, c)
+	s, err := server.New(cfg, c, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func (s *sim) fault(t *testing.T, f pixsim.Fault) {
 }
 
 func TestCreateReturnsAPayableBRCode(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	ch := s.create(t, "att_1", charge(10150))
 
 	if ch.Status != pixsim.Active || !strings.HasPrefix(ch.ID, "chg_") || ch.IdempotencyKey != "att_1" ||
@@ -92,7 +93,7 @@ func TestCreateReturnsAPayableBRCode(t *testing.T) {
 }
 
 func TestCreateIsIdempotentPerKey(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	first := s.create(t, "att_1", charge(10150))
 	again := s.create(t, "att_1", charge(10150))
 	if again != first {
@@ -114,7 +115,7 @@ func TestCreateIsIdempotentPerKey(t *testing.T) {
 }
 
 func TestPay(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	ch := s.create(t, "att_1", charge(10150))
 	s.clock.Advance(time.Hour) // past expiry: a static code is still payable (decision 8)
 
@@ -135,7 +136,7 @@ func TestPay(t *testing.T) {
 }
 
 func TestRejectFault(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.Reject, Count: 1})
 
 	if _, err := s.client.Create(t.Context(), "att_1", charge(10150)); !errors.Is(err, pixsim.ErrRejected) {
@@ -157,7 +158,7 @@ func TestRejectFault(t *testing.T) {
 }
 
 func TestFailBeforeFaultDoesNothing(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.FailBefore, Count: 1})
 
 	_, err := s.client.Create(t.Context(), "att_1", charge(10150))
@@ -175,7 +176,7 @@ func TestFailBeforeFaultDoesNothing(t *testing.T) {
 // The case section 4.3 is about: the provider created the charge, the caller saw only
 // a timeout. Looking it up by key finds it, and retrying returns that same charge.
 func TestTimeoutAfterFaultCreatesTheCharge(t *testing.T) {
-	s := start(t, receiver, 200*time.Millisecond)
+	s := start(t, &receiver, 200*time.Millisecond)
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.TimeoutAfter, Count: 1})
 
 	_, err := s.client.Create(t.Context(), "att_1", charge(10150))
@@ -192,14 +193,14 @@ func TestTimeoutAfterFaultCreatesTheCharge(t *testing.T) {
 }
 
 func TestDelayFault(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.Delay, Count: 1, DelayMS: 50})
 	begin := time.Now()
 	if ch := s.create(t, "att_1", charge(10150)); ch.Status != pixsim.Active || time.Since(begin) < 50*time.Millisecond {
 		t.Errorf("delayed Create() = %s after %v, want active after 50ms", ch.Status, time.Since(begin))
 	}
 
-	impatient := start(t, receiver, 100*time.Millisecond)
+	impatient := start(t, &receiver, 100*time.Millisecond)
 	impatient.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.Delay, Count: 1, DelayMS: 5000})
 	if _, err := impatient.client.Create(t.Context(), "att_1", charge(10150)); err == nil {
 		t.Fatal("Create() past the client timeout succeeded")
@@ -210,7 +211,7 @@ func TestDelayFault(t *testing.T) {
 }
 
 func TestGetFaults(t *testing.T) {
-	s := start(t, receiver, 200*time.Millisecond)
+	s := start(t, &receiver, 200*time.Millisecond)
 	s.create(t, "att_1", charge(10150))
 	s.fault(t, pixsim.Fault{Op: pixsim.OpGet, Kind: pixsim.FailBefore, Count: 1})
 	s.fault(t, pixsim.Fault{Op: pixsim.OpGet, Kind: pixsim.TimeoutAfter, Count: 1})
@@ -227,7 +228,7 @@ func TestGetFaults(t *testing.T) {
 }
 
 func TestFaultsAreUsedInOrderPerOp(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.Reject, Count: 2})
 	s.fault(t, pixsim.Fault{Op: pixsim.OpGet, Kind: pixsim.FailBefore, Count: 1})
 	s.fault(t, pixsim.Fault{Op: pixsim.OpCreate, Kind: pixsim.FailBefore, Count: 1})
@@ -240,7 +241,7 @@ func TestFaultsAreUsedInOrderPerOp(t *testing.T) {
 }
 
 func TestInvalidFaultsAreRefused(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	for _, f := range []pixsim.Fault{
 		{Op: pixsim.OpGet, Kind: pixsim.Reject, Count: 1},
 		{Op: "pay", Kind: pixsim.FailBefore, Count: 1},
@@ -265,13 +266,13 @@ func TestSameSeedSameCharges(t *testing.T) {
 		keys[i] = fmt.Sprintf("att_%02d", i)
 	}
 
-	inOrder := start(t, receiver, 5*time.Second)
+	inOrder := start(t, &receiver, 5*time.Second)
 	want := map[string]pixsim.Charge{}
 	for _, k := range keys {
 		want[k] = inOrder.create(t, k, charge(1000))
 	}
 
-	concurrent := start(t, receiver, 5*time.Second)
+	concurrent := start(t, &receiver, 5*time.Second)
 	got := make([]pixsim.Charge, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
@@ -287,7 +288,7 @@ func TestSameSeedSameCharges(t *testing.T) {
 
 	otherSeed := receiver
 	otherSeed.Seed++
-	if ch := start(t, otherSeed, time.Second).create(t, keys[0], charge(1000)); ch.ID == want[keys[0]].ID {
+	if ch := start(t, &otherSeed, time.Second).create(t, keys[0], charge(1000)); ch.ID == want[keys[0]].ID {
 		t.Errorf("seeds %d and %d gave the same ID %s", receiver.Seed, otherSeed.Seed, ch.ID)
 	}
 }
@@ -301,7 +302,7 @@ func TestNewClientRejectsRelativeURL(t *testing.T) {
 }
 
 func TestServerRefusesBadRequests(t *testing.T) {
-	s := start(t, receiver, time.Second)
+	s := start(t, &receiver, time.Second)
 	post := func(key, body string) int {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.url+"/v1/charges", strings.NewReader(body))
@@ -341,7 +342,7 @@ func TestServerRefusesBadRequests(t *testing.T) {
 func TestNewRejectsAnInvalidReceiver(t *testing.T) {
 	bad := receiver
 	bad.MerchantCity = "SAO PAULO DO OESTE"
-	if _, err := server.New(bad, clock.NewFake(t0)); !errors.Is(err, brcode.ErrFieldTooLong) {
+	if _, err := server.New(&bad, clock.NewFake(t0), slog.New(slog.DiscardHandler)); !errors.Is(err, brcode.ErrFieldTooLong) {
 		t.Errorf("New() error = %v, want %v", err, brcode.ErrFieldTooLong)
 	}
 }

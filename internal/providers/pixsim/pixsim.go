@@ -66,10 +66,12 @@ type Fault struct {
 
 // Problem codes the simulator answers with.
 const (
-	CodeRejected    = "charge_rejected"
-	CodeKeyReused   = "idempotency_key_reused"
-	CodeNotFound    = "charge_not_found"
-	CodeInvalid     = "invalid_request"
-	CodeNotPayable  = "charge_not_payable"
-	CodeFailedFault = "internal_error"
+	CodeRejected       = "charge_rejected"
+	CodeKeyReused      = "idempotency_key_reused"
+	CodeNotFound       = "charge_not_found"
+	CodeInvalid        = "invalid_request"
+	CodeNotPayable     = "charge_not_payable"
+	CodeFailedFault    = "internal_error"
+	CodeEventNotFound  = "event_not_found"
+	CodeDeliveryFailed = "event_delivery_failed"
 )

@@ -6,6 +6,8 @@ sqlc = "1.31.1"
 
 [env]
 DATABASE_URL = "postgres://cbp:cbp@localhost:5432/cbp?sslmode=disable"
+# Dev only: signs the simulator's events. A real deployment sets its own.
+PIXSIM_WEBHOOK_SECRET = "dev-pixsim-webhook-secret"
 
 [tasks.fmt]
 description = "Formata o código (gofumpt + goimports pela config do golangci-lint)"
@@ -55,5 +57,5 @@ description = "Aplica as migrations embutidas no DATABASE_URL"
 run = "go run ./cmd/migrate"
 
 [tasks.pixsim]
-description = "Sobe o simulador PIX (PIXSIM_ADDR, padrão :8090; PIXSIM_SEED, padrão 1)"
+description = "Sobe o simulador PIX (PIXSIM_ADDR, padrão :8090; PIXSIM_SEED, padrão 1; eventos para PIXSIM_WEBHOOK_URL)"
 run = "go run ./cmd/pixsim"

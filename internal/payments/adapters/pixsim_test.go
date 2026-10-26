@@ -2,6 +2,7 @@ package adapters_test
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,9 +23,9 @@ var _ app.Provider = (*adapters.PixSim)(nil)
 
 func newPixSim(t *testing.T) (*adapters.PixSim, *pixsim.Client) {
 	t.Helper()
-	sim, err := server.New(server.Config{
+	sim, err := server.New(&server.Config{
 		Seed: 1, PixKey: "123e4567-e12b-12d1-a456-426655440000", MerchantName: "CROSS BORDER PAY", MerchantCity: "SAO PAULO",
-	}, clock.NewFake(t0))
+	}, clock.NewFake(t0), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

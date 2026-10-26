@@ -37,7 +37,9 @@ func TestRunServesAndStopsWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	var out syncBuffer
 	result := make(chan error, 1)
-	go func() { result <- run(ctx, env(map[string]string{"PIXSIM_ADDR": "127.0.0.1:0"}), &out) }()
+	go func() {
+		result <- run(ctx, env(map[string]string{"PIXSIM_ADDR": "127.0.0.1:0", "PIXSIM_WEBHOOK_SECRET": "test-secret"}), &out)
+	}()
 
 	var addr string
 	deadline := time.Now().Add(5 * time.Second)
@@ -80,18 +82,24 @@ func TestRunServesAndStopsWhenCanceled(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	s, err := load(env(nil))
-	if err != nil || s.addr != defaultAddr || s.sim.Seed != defaultSeed || s.sim.PixKey != defaultPixKey {
+	secret := map[string]string{"PIXSIM_WEBHOOK_SECRET": "s3cret"}
+	s, err := load(env(secret))
+	if err != nil || s.addr != defaultAddr || s.sim.Seed != defaultSeed || s.sim.PixKey != defaultPixKey ||
+		s.sim.WebhookURL != defaultWebhookURL || string(s.sim.WebhookSecret) != "s3cret" {
 		t.Errorf("load(defaults) = %+v, %v", s, err)
 	}
-	s, err = load(env(map[string]string{"PIXSIM_ADDR": ":9000", "PIXSIM_SEED": "18446744073709551615", "PIXSIM_PIX_KEY": "k@example.com"}))
-	if err != nil || s.addr != ":9000" || s.sim.Seed != 1<<64-1 || s.sim.PixKey != "k@example.com" {
+	s, err = load(env(map[string]string{
+		"PIXSIM_ADDR": ":9000", "PIXSIM_SEED": "18446744073709551615", "PIXSIM_PIX_KEY": "k@example.com",
+		"PIXSIM_WEBHOOK_URL": "http://api:8080/hook", "PIXSIM_WEBHOOK_SECRET": "s3cret",
+	}))
+	if err != nil || s.addr != ":9000" || s.sim.Seed != 1<<64-1 || s.sim.PixKey != "k@example.com" || s.sim.WebhookURL != "http://api:8080/hook" {
 		t.Errorf("load(set) = %+v, %v", s, err)
 	}
 	for name, vars := range map[string]map[string]string{
-		"bad addr":      {"PIXSIM_ADDR": "9000"},
-		"negative seed": {"PIXSIM_SEED": "-1"},
-		"text seed":     {"PIXSIM_SEED": "abc"},
+		"bad addr":      {"PIXSIM_ADDR": "9000", "PIXSIM_WEBHOOK_SECRET": "s3cret"},
+		"negative seed": {"PIXSIM_SEED": "-1", "PIXSIM_WEBHOOK_SECRET": "s3cret"},
+		"text seed":     {"PIXSIM_SEED": "abc", "PIXSIM_WEBHOOK_SECRET": "s3cret"},
+		"no secret":     {},
 	} {
 		if _, err := load(env(vars)); err == nil {
 			t.Errorf("%s: load() succeeded", name)
@@ -100,7 +108,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestRunRejectsAnInvalidReceiver(t *testing.T) {
-	err := run(t.Context(), env(map[string]string{"PIXSIM_PIX_KEY": strings.Repeat("k", 78)}), io.Discard)
+	err := run(t.Context(), env(map[string]string{"PIXSIM_PIX_KEY": strings.Repeat("k", 78), "PIXSIM_WEBHOOK_SECRET": "s3cret"}), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "config") {
 		t.Errorf("run() error = %v, want a config error", err)
 	}
