@@ -23,6 +23,14 @@ func TestConnectUsesUTC(t *testing.T) {
 	}
 }
 
+// Regression: pgx sizes a pool by the CPU count, which made the ledger's race tests
+// pass on a 12-core laptop and fail on a 4-core CI runner. Test pools are fixed.
+func TestTestPoolsDoNotDependOnTheMachine(t *testing.T) {
+	if got := pgtest.NewPool(t).Config().MaxConns; got != pgtest.MaxConns {
+		t.Errorf("test pool MaxConns = %d, want %d", got, pgtest.MaxConns)
+	}
+}
+
 func TestConnectRejectsUnreachableDatabase(t *testing.T) {
 	_, err := postgres.Connect(t.Context(), "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
 	if err == nil {
