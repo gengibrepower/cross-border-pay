@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getAttempt = `-- name: GetAttempt :one
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at FROM payment_attempts WHERE id = $1
+`
+
+func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
+	row := q.db.QueryRow(ctx, getAttempt, id)
+	var i PaymentAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.Provider,
+		&i.Status,
+		&i.ExternalID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getPayment = `-- name: GetPayment :one
 SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at FROM payments WHERE merchant_id = $1 AND id = $2
 `
@@ -32,6 +51,33 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.Amount,
 		&i.Currency,
 		&i.Reference,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertAttempt = `-- name: InsertAttempt :one
+INSERT INTO payment_attempts (payment_id, provider, status, created_at, updated_at)
+VALUES ($1, $2, 'created', $3, $3)
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at
+`
+
+type InsertAttemptParams struct {
+	PaymentID pgtype.UUID
+	Provider  string
+	CreatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (PaymentAttempt, error) {
+	row := q.db.QueryRow(ctx, insertAttempt, arg.PaymentID, arg.Provider, arg.CreatedAt)
+	var i PaymentAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.Provider,
+		&i.Status,
+		&i.ExternalID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -123,4 +169,46 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockAttempt = `-- name: LockAttempt :one
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at FROM payment_attempts WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
+	row := q.db.QueryRow(ctx, lockAttempt, id)
+	var i PaymentAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.Provider,
+		&i.Status,
+		&i.ExternalID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateAttempt = `-- name: UpdateAttempt :exec
+UPDATE payment_attempts
+SET status = $1, external_id = $2, updated_at = $3
+WHERE id = $4
+`
+
+type UpdateAttemptParams struct {
+	Status     string
+	ExternalID pgtype.Text
+	UpdatedAt  pgtype.Timestamptz
+	ID         pgtype.UUID
+}
+
+func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) error {
+	_, err := q.db.Exec(ctx, updateAttempt,
+		arg.Status,
+		arg.ExternalID,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	return err
 }

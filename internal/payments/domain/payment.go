@@ -36,15 +36,23 @@ var idEncoding = base32.NewEncoding("0123456789abcdefghjkmnpqrstvwxyz").WithPadd
 func (id PaymentID) String() string { return "pay_" + idEncoding.EncodeToString(id[:]) }
 
 func ParsePaymentID(s string) (PaymentID, error) {
-	encoded, ok := strings.CutPrefix(s, "pay_")
-	if !ok || len(encoded) != idEncoding.EncodedLen(len(PaymentID{})) {
+	id, ok := parseID("pay_", s)
+	if !ok {
 		return PaymentID{}, fmt.Errorf("%w: %q", ErrInvalidPaymentID, s)
+	}
+	return id, nil
+}
+
+func parseID(prefix, s string) ([16]byte, bool) {
+	encoded, ok := strings.CutPrefix(s, prefix)
+	if !ok || len(encoded) != idEncoding.EncodedLen(16) {
+		return [16]byte{}, false
 	}
 	b, err := idEncoding.DecodeString(encoded)
 	if err != nil {
-		return PaymentID{}, fmt.Errorf("%w: %q", ErrInvalidPaymentID, s)
+		return [16]byte{}, false
 	}
-	return PaymentID(b), nil
+	return [16]byte(b), true
 }
 
 type Method string
