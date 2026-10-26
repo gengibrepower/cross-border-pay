@@ -82,6 +82,7 @@ type PaymentAttempt struct {
 	ExternalID pgtype.Text
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
+	BrCode     pgtype.Text
 }
 
 type Quote struct {

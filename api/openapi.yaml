@@ -264,9 +264,28 @@ components:
           type: string
         quote:
           $ref: "#/components/schemas/Quote"
+        pix:
+          $ref: "#/components/schemas/Pix"
         created_at:
           type: string
           format: date-time
+
+    Pix:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: >
+        The PIX code for the payer. `ready` carries the BR Code to show as text or QR.
+        `processing` means the provider's answer is not known yet: fetch the payment
+        again later. `failed` means the provider refused, and this payment cannot be
+        paid; create a new one.
+      properties:
+        status:
+          type: string
+          enum: [ready, processing, failed]
+        br_code:
+          type: string
+          description: The BR Code (EMV payload with CRC16), present when status is ready.
 
     Problem:
       type: object

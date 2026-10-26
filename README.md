@@ -42,6 +42,7 @@ Every number below is measured, not estimated. Every test that touches the datab
 | BR Code (`internal/brcode`) | The 5 complete examples of the Banco Central's [Manual de Padrões para Iniciação do Pix v2.10.0](https://www.bcb.gov.br/content/estabilidadefinanceira/pix/Regulamento_Pix/II_ManualdePadroesparaIniciacaodoPix.pdf) parse with their CRC checked, and the encoder reproduces the static and dynamic ones character for character. The CRC16 covers the `6304`, as the manual says; a CRC computed without it is rejected. Field 54 without floats (`10150` ↔ `"101.50"`). | Property test `Parse(Encode(c)) == c`: 100 cases per run, 20/20 runs; 14 invalid payloads and 14 invalid codes rejected, each for the right reason |
 | Provider attempts (`payments`) | Every (status, event) pair of the attempt state machine is checked against section 3.5, written out again inside the test; an ambiguous answer never rejects an attempt, and the payment event may arrive before the create response. Against a real Postgres, a payment has at most one live attempt (a partial unique index: only a rejection frees it), and events on one attempt are serialized by a row lock. | All 30 pairs. 20 concurrent creates for one payment leave exactly 1 attempt, and 8 concurrent accept/reject events on one attempt change it exactly once, 25 attempts per run, 20/20 runs with `-race -count=20`. Dropping the `FOR UPDATE` or the index's `WHERE` makes these tests fail |
 | PIX simulator (`cmd/pixsim`) | A real HTTP provider with charges in memory and faults on command: `reject`, `fail_before` (500, nothing done), `timeout_after` (the charge is created and the answer never comes) and `delay`. After a `timeout_after`, looking the charge up by our attempt ID finds it, and retrying with the same key returns that same charge. Every BR Code it issues parses with `internal/brcode`. Only an explicit refusal reaches the payments port as `Rejected`; a 500, a timeout or an unknown answer is an error, so the attempt goes to `unknown`. | Same seed and same 50 keys sent concurrently in reverse order give the same charges, byte for byte, as sent one by one; 8 malformed requests refused with `400`. 20/20 runs with `-race -count=20`. 10 mutants killed, among them seeding by arrival order, creating the charge after the hang instead of before, and reading a 500 as a refusal |
+| PIX attempt on create (`POST /v1/payments`) | Each payment gets its provider attempt and a BR Code that parses for R$ 101.50, identical in the `POST`, the `GET` and the list. A refusal is a `201` with `pix.status: failed`; a timeout after the provider acted, or a `500` from it, is a `201` with `processing` and the attempt in `unknown`, bounded by the 300 ms test timeout. **Crashes at each step:** after the first transaction (attempt `created`) the retry calls the provider once; after `sent` it does not call again and marks `unknown`; after the answer is stored it only replies. A client that disconnects mid-call does not stop it: the attempt still ends `accepted`. | 10 concurrent requests with one key and a retry: 1 provider call, 1 attempt. 20/20 runs with `-race -count=20`. 11 mutants killed, among them calling again from `sent`, dropping `WithoutCancel`, dropping the service's timeout, reading a provider error as a refusal and showing the oldest attempt instead of the latest |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
 CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
@@ -107,6 +108,8 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 | Provider errors | A refusal is a result (`Rejected`); any error, and any result the adapter left unset, moves the attempt to `unknown` | An `ErrAmbiguous` sentinel from the adapter: an error it forgets to wrap would read as a definitive failure, the expensive mistake |
 | Provider simulator | Real HTTP server with charges in memory; every random choice comes from a generator seeded by the seed and the idempotency key; failures scripted through `/control/faults`. The client speaks only the simulator's types and a ~60-line translation in `payments` adapts them to the port | An in-process fake: never produces a real timeout. One generator for the whole simulator: concurrent requests would draw in a different order each run. The adapter inside `providers` returning `payments` types: inverts the module dependency of the scope |
 | PIX txid | Chosen by the simulator (25 characters from the seed) and returned with the charge; our attempt ID travels as the `Idempotency-Key` | Packing the 26-character attempt ID into 25 by dropping the UUIDv7 version and variant bits: lossless, but cleverness with nothing gained |
+| Writes around the provider call | Payment, quote, attempt `created` and the recovery point in one transaction; `sent` written before the call; the answer written after it. `created` therefore proves the provider was never called, and only `sent` is ambiguous | Not writing `sent`: a crash after the first transaction could not tell "never called" from "maybe called", so every crash would end in `unknown` |
+| Create response | Always `201` once the payment exists, with `pix.status` `ready` (with the BR Code), `processing` or `failed`; internal attempt statuses never leak | A `5xx` while `unknown`: clients would retry a request that already did its work. A `422` on refusal: it would hide a payment that exists |
 | HTTP | Standard library `net/http` router; hand-written OpenAPI validated in contract tests | Frameworks and generated code: more to explain, little gained with Go's method+path patterns |
 
 ## Status
@@ -138,9 +141,9 @@ mise run test         # go test -race ./... (starts Postgres containers by itsel
 mise run db           # local Postgres via docker compose
 mise run migrate      # apply embedded migrations
 go run ./cmd/admin merchant create -name GameStore -mode test   # prints the API key once
-go run ./cmd/api      # /healthz and /readyz on :8080; FX_USD_BRL_RATE sets the base rate (default 5.0000)
-go run ./cmd/worker   # background jobs; for now, deleting idempotency keys older than 24 h
 mise run pixsim      # PIX simulator on :8090; PIXSIM_SEED picks the seed (default 1)
+go run ./cmd/api      # :8080; FX_USD_BRL_RATE sets the base rate (default 5.0000), PIXSIM_URL the simulator (default http://localhost:8090)
+go run ./cmd/worker   # background jobs; for now, deleting idempotency keys older than 24 h
 ```
 
 Creating the GameStore payment with the key `cmd/admin` printed:
@@ -149,7 +152,8 @@ Creating the GameStore payment with the key `cmd/admin` printed:
 curl -s localhost:8080/v1/payments \
   -H "Authorization: Bearer sk_test_..." -H "Idempotency-Key: order-123" \
   -d '{"amount": {"value": 2000, "currency": "USD"}, "method": "pix", "reference": "order-123"}'
-# 201: pending, payer pays {"value": 10150, "currency": "BRL"}, fee 60, net 1940, quote valid 30 min
+# 201: pending, payer pays {"value": 10150, "currency": "BRL"}, fee 60, net 1940, quote valid 30 min,
+#      pix {"status": "ready", "br_code": "000201...6304XXXX"}
 # The same command again returns the same 201 with Idempotent-Replayed: true, creating nothing
 
 curl -s localhost:8080/v1/payments/pay_... -H "Authorization: Bearer sk_test_..."

@@ -12,11 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/config"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
 
 const readinessTimeout = 2 * time.Second
@@ -47,7 +49,16 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 	defer pool.Close()
 
-	api, err := newAPI(pool, logger, cfg.USDBRLRate, clock.System{})
+	pixsimClient, err := pixsim.NewClient(cfg.PixSimURL, &http.Client{Timeout: cfg.ProviderTimeout})
+	if err != nil {
+		return fmt.Errorf("config: PIXSIM_URL: %w", err)
+	}
+	api, err := newAPI(pool, logger, &deps{
+		usdbrl:          cfg.USDBRLRate,
+		clock:           clock.System{},
+		provider:        paymentsadapters.NewPixSim(pixsimClient),
+		providerTimeout: cfg.ProviderTimeout,
+	})
 	if err != nil {
 		return err
 	}

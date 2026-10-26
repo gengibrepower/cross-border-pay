@@ -10,6 +10,7 @@ var (
 	ErrInvalidAttemptID = errors.New("payments: invalid attempt ID")
 	// ErrExternalIDMismatch is a provider naming one attempt with two different IDs.
 	ErrExternalIDMismatch = errors.New("payments: provider changed the attempt's external ID")
+	ErrBRCodeMismatch     = errors.New("payments: provider changed the attempt's BR Code")
 )
 
 // AttemptID is also the idempotency key sent to the provider, so an attempt in unknown
@@ -37,15 +38,16 @@ type PaymentAttempt struct {
 	provider   ProviderName
 	status     AttemptStatus
 	externalID string
+	brCode     string
 	createdAt  time.Time
 	updatedAt  time.Time
 }
 
 // RestoreAttempt rebuilds an attempt from storage; only adapters call it.
-func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, status AttemptStatus, externalID string, createdAt, updatedAt time.Time) PaymentAttempt {
+func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, status AttemptStatus, externalID, brCode string, createdAt, updatedAt time.Time) PaymentAttempt {
 	return PaymentAttempt{
 		id: id, payment: payment, provider: provider, status: status,
-		externalID: externalID, createdAt: createdAt, updatedAt: updatedAt,
+		externalID: externalID, brCode: brCode, createdAt: createdAt, updatedAt: updatedAt,
 	}
 }
 
@@ -60,35 +62,61 @@ func (a *PaymentAttempt) Status() AttemptStatus { return a.status }
 // ExternalID is the provider's ID for the attempt, empty until the provider names it.
 func (a *PaymentAttempt) ExternalID() string { return a.externalID }
 
+// BRCode is the PIX code the payer pays, empty until the provider returns it.
+func (a *PaymentAttempt) BRCode() string { return a.brCode }
+
 func (a *PaymentAttempt) CreatedAt() time.Time { return a.createdAt }
 
 func (a *PaymentAttempt) UpdatedAt() time.Time { return a.updatedAt }
 
-// Apply moves the attempt by the event and records the provider's ID when the event
-// brings one. changed is false when there is nothing new to store, so a duplicate that
-// first reveals the external ID still counts as a change.
-func (a *PaymentAttempt) Apply(e AttemptEvent, externalID string, now time.Time) (changed bool, err error) {
-	to, moved, err := TransitionAttempt(a.status, e)
+// AttemptUpdate is what one answer or event says about an attempt. ExternalID and
+// BRCode are empty when it does not carry them.
+type AttemptUpdate struct {
+	Event      AttemptEvent
+	ExternalID string
+	BRCode     string
+}
+
+// Apply moves the attempt by the update's event and records what the provider named
+// for the first time. A value the attempt already has with another content is refused:
+// the provider cannot rename an attempt or change the code a payer may have scanned.
+// changed is false when there is nothing new to store, so a duplicate that first
+// reveals the external ID still counts as a change.
+func (a *PaymentAttempt) Apply(u AttemptUpdate, now time.Time) (changed bool, err error) {
+	to, moved, err := TransitionAttempt(a.status, u.Event)
 	if err != nil {
 		return false, err
 	}
-	learned := false
-	if externalID != "" {
-		switch a.externalID {
-		case "":
-			learned = true
-		case externalID:
-		default:
-			return false, fmt.Errorf("%w: attempt %s is %q, got %q", ErrExternalIDMismatch, a.id, a.externalID, externalID)
-		}
+	learnedID, err := learn(a.externalID, u.ExternalID, ErrExternalIDMismatch)
+	if err != nil {
+		return false, fmt.Errorf("attempt %s: %w", a.id, err)
 	}
-	if !moved && !learned {
+	learnedCode, err := learn(a.brCode, u.BRCode, ErrBRCodeMismatch)
+	if err != nil {
+		return false, fmt.Errorf("attempt %s: %w", a.id, err)
+	}
+	if !moved && !learnedID && !learnedCode {
 		return false, nil
 	}
 	a.status = to
-	if learned {
-		a.externalID = externalID
+	if learnedID {
+		a.externalID = u.ExternalID
+	}
+	if learnedCode {
+		a.brCode = u.BRCode
 	}
 	a.updatedAt = now
 	return true, nil
+}
+
+// learn reports whether got is new for a field that holds have.
+func learn(have, got string, mismatch error) (bool, error) {
+	switch {
+	case got == "" || got == have:
+		return false, nil
+	case have == "":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: has %q, got %q", mismatch, have, got)
+	}
 }

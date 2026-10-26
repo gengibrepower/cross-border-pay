@@ -24,7 +24,7 @@ import (
 const maxBodyBytes = 1 << 20
 
 type Payments interface {
-	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (domain.Payment, fx.Quote, error)
+	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (app.Priced, error)
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
 }
@@ -72,7 +72,42 @@ type paymentResponse struct {
 	Amount    money.Money   `json:"amount"`
 	Reference string        `json:"reference"`
 	Quote     quoteResponse `json:"quote"`
+	Pix       *pixResponse  `json:"pix,omitempty"`
 	CreatedAt time.Time     `json:"created_at"`
+}
+
+// pixResponse shows the attempt without its internal statuses: a merchant only needs
+// to know whether there is a code to show, one is coming, or there will be none.
+type pixResponse struct {
+	Status pixStatus `json:"status"`
+	BRCode string    `json:"br_code,omitempty"`
+}
+
+type pixStatus string
+
+const (
+	pixReady      pixStatus = "ready"
+	pixProcessing pixStatus = "processing"
+	pixFailed     pixStatus = "failed"
+)
+
+func newPixResponse(a *domain.PaymentAttempt) *pixResponse {
+	if a == nil {
+		return nil
+	}
+	switch a.Status() {
+	case domain.AttemptAccepted, domain.AttemptSucceeded:
+		if a.BRCode() != "" {
+			return &pixResponse{Status: pixReady, BRCode: a.BRCode()}
+		}
+		return &pixResponse{Status: pixProcessing}
+	case domain.AttemptRejected:
+		return &pixResponse{Status: pixFailed}
+	case domain.AttemptCreated, domain.AttemptSent, domain.AttemptUnknown:
+		return &pixResponse{Status: pixProcessing}
+	default:
+		return &pixResponse{Status: pixProcessing}
+	}
 }
 
 type listResponse struct {
@@ -112,14 +147,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, quote, err := h.payments.Create(r.Context(), held, merchant, req.Method, *req.Amount, req.Reference)
+	p, err := h.payments.Create(r.Context(), held, merchant, req.Method, *req.Amount, req.Reference)
 	if err != nil {
 		h.createError(w, r, err)
 		return
 	}
 
-	w.Header().Set("Location", "/v1/payments/"+payment.ID().String())
-	writeJSON(w, http.StatusCreated, newPaymentResponse(&payment, &quote))
+	w.Header().Set("Location", "/v1/payments/"+p.Payment.ID().String())
+	writeJSON(w, http.StatusCreated, newPaymentResponse(&p))
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +178,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		httpapi.WriteInternalError(w, r, h.logger, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newPaymentResponse(&p.Payment, &p.Quote))
+	writeJSON(w, http.StatusOK, newPaymentResponse(&p))
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +224,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := listResponse{Data: make([]paymentResponse, len(page.Payments))}
 	for i := range page.Payments {
-		resp.Data[i] = newPaymentResponse(&page.Payments[i].Payment, &page.Payments[i].Quote)
+		resp.Data[i] = newPaymentResponse(&page.Payments[i])
 	}
 	if page.More {
 		cursor := encodeCursor(page.Payments[len(page.Payments)-1].Payment.ID())
@@ -230,7 +265,8 @@ func writeNotFound(w http.ResponseWriter, r *http.Request) {
 	writeProblem(w, r, http.StatusNotFound, "payment_not_found", "no payment with this ID")
 }
 
-func newPaymentResponse(p *domain.Payment, q *fx.Quote) paymentResponse {
+func newPaymentResponse(priced *app.Priced) paymentResponse {
+	p, q := &priced.Payment, &priced.Quote
 	return paymentResponse{
 		ID:        p.ID().String(),
 		Status:    p.Status(),
@@ -244,6 +280,7 @@ func newPaymentResponse(p *domain.Payment, q *fx.Quote) paymentResponse {
 			NetAmount:   q.MerchantNet(),
 			ExpiresAt:   q.ExpiresAt(),
 		},
+		Pix:       newPixResponse(priced.Attempt),
 		CreatedAt: p.CreatedAt(),
 	}
 }

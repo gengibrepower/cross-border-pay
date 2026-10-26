@@ -12,7 +12,7 @@ import (
 )
 
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at FROM payment_attempts WHERE id = $1
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -26,6 +26,7 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 		&i.ExternalID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BrCode,
 	)
 	return i, err
 }
@@ -60,7 +61,7 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 const insertAttempt = `-- name: InsertAttempt :one
 INSERT INTO payment_attempts (payment_id, provider, status, created_at, updated_at)
 VALUES ($1, $2, 'created', $3, $3)
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code
 `
 
 type InsertAttemptParams struct {
@@ -80,6 +81,7 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		&i.ExternalID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BrCode,
 	)
 	return i, err
 }
@@ -115,6 +117,41 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (p
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const latestAttempts = `-- name: LatestAttempts :many
+SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts
+WHERE payment_id = ANY($1::uuid[])
+ORDER BY payment_id, id DESC
+`
+
+func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) ([]PaymentAttempt, error) {
+	rows, err := q.db.Query(ctx, latestAttempts, paymentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PaymentAttempt
+	for rows.Next() {
+		var i PaymentAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.PaymentID,
+			&i.Provider,
+			&i.Status,
+			&i.ExternalID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.BrCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPayments = `-- name: ListPayments :many
@@ -172,7 +209,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at FROM payment_attempts WHERE id = $1 FOR UPDATE
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -186,19 +223,21 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 		&i.ExternalID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BrCode,
 	)
 	return i, err
 }
 
 const updateAttempt = `-- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = $1, external_id = $2, updated_at = $3
-WHERE id = $4
+SET status = $1, external_id = $2, br_code = $3, updated_at = $4
+WHERE id = $5
 `
 
 type UpdateAttemptParams struct {
 	Status     string
 	ExternalID pgtype.Text
+	BrCode     pgtype.Text
 	UpdatedAt  pgtype.Timestamptz
 	ID         pgtype.UUID
 }
@@ -207,6 +246,7 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 	_, err := q.db.Exec(ctx, updateAttempt,
 		arg.Status,
 		arg.ExternalID,
+		arg.BrCode,
 		arg.UpdatedAt,
 		arg.ID,
 	)

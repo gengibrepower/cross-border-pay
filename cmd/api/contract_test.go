@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,8 +24,12 @@ import (
 	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
 	merchantsapp "github.com/gengibrepower/cross-border-pay/internal/merchants/app"
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
+	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
+	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
+	pixsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/pixsim/server"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
@@ -38,6 +44,50 @@ type contract struct {
 	handler http.Handler
 	pool    *pgxpool.Pool
 	clock   *clock.Fake
+	// sim is the PIX simulator's client, for injecting faults and paying charges.
+	sim      *pixsim.Client
+	provider *countingProvider
+	deps     *deps
+}
+
+// countingProvider counts the calls to create an attempt and can run a hook first,
+// so a test can act at the moment the provider is called.
+type countingProvider struct {
+	paymentsapp.Provider
+	creates atomic.Int64
+	before  func()
+}
+
+func (p *countingProvider) CreateAttempt(ctx context.Context, req *paymentsapp.AttemptRequest) (paymentsapp.AttemptResult, error) {
+	p.creates.Add(1)
+	if p.before != nil {
+		p.before()
+	}
+	return p.Provider.CreateAttempt(ctx, req) //nolint:wrapcheck // a test double passes the provider's error through untouched.
+}
+
+// providerTimeout is short so that the timeout tests do not wait long.
+const providerTimeout = 300 * time.Millisecond
+
+func startPixSim(t *testing.T, c *clock.Fake) *pixsim.Client {
+	t.Helper()
+	sim, err := pixsimserver.New(pixsimserver.Config{
+		Seed: 1, PixKey: "123e4567-e12b-12d1-a456-426655440000", MerchantName: "CROSS BORDER PAY", MerchantCity: "SAO PAULO",
+	}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	sim.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// The client waits longer than providerTimeout, so the timeout tests exercise the
+	// payments service's own bound on the call.
+	client, err := pixsim.NewClient(srv.URL, &http.Client{Timeout: pixsim.DefaultTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func newContract(t *testing.T) *contract {
@@ -58,11 +108,14 @@ func newContract(t *testing.T) *contract {
 	pool := pgtest.NewPool(t)
 	logger := slog.New(slog.DiscardHandler)
 	fake := clock.NewFake(t0)
-	a, err := newAPI(pool, logger, "5.0000", fake)
+	sim := startPixSim(t, fake)
+	provider := &countingProvider{Provider: paymentsadapters.NewPixSim(sim)}
+	d := &deps{usdbrl: "5.0000", clock: fake, provider: provider, providerTimeout: providerTimeout}
+	a, err := newAPI(pool, logger, d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &contract{t: t, router: router, handler: routes(pool, logger, a.register), pool: pool, clock: fake}
+	return &contract{t: t, router: router, handler: routes(pool, logger, a.register), pool: pool, clock: fake, sim: sim, provider: provider, deps: d}
 }
 
 func (c *contract) merchantKey() string {

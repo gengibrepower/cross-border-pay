@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -145,8 +146,8 @@ func TestConcurrentRetriesCreateOnePayment(t *testing.T) {
 	}
 }
 
-// Section 4.2, case 4, the reason for recovery points: the request created the payment
-// and died before storing its answer. The retry, once the lease is over, returns that
+// Section 4.2, case 4, the reason for recovery points: the request created the payment,
+// got the provider's answer and died before storing its own. The retry, once the lease is over, returns that
 // same payment instead of creating a second one.
 func TestRetryAfterACrashReturnsThePaymentAlreadyCreated(t *testing.T) {
 	c := newContract(t)
@@ -172,8 +173,8 @@ func TestRetryAfterACrashReturnsThePaymentAlreadyCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), c.clock, fx.DefaultPricing)
-	svc := paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(c.pool))
-	created, _, err := svc.Create(t.Context(), acquired.Held, payments.MerchantID(principal.MerchantID),
+	svc := paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(c.pool), c.deps.provider, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
+	created, err := svc.Create(t.Context(), acquired.Held, payments.MerchantID(principal.MerchantID),
 		"pix", money.New(2000, money.USD), "order-123")
 	if err != nil {
 		t.Fatal(err)
@@ -185,15 +186,19 @@ func TestRetryAfterACrashReturnsThePaymentAlreadyCreated(t *testing.T) {
 
 	c.clock.Advance(idempotency.Lease)
 	retry := c.do(postPayment(t, key, "order-123", gameStore), true)
-	if retry.Code != http.StatusCreated || paymentID(t, retry) != created.ID().String() {
-		t.Fatalf("retry after the lease got %d %s, want 201 with %s", retry.Code, retry.Body, created.ID())
+	if retry.Code != http.StatusCreated || paymentID(t, retry) != created.Payment.ID().String() {
+		t.Fatalf("retry after the lease got %d %s, want 201 with %s", retry.Code, retry.Body, created.Payment.ID())
 	}
-	get := c.do(getRequest(t, key, "/v1/payments/"+created.ID().String()), true)
+	get := c.do(getRequest(t, key, "/v1/payments/"+created.Payment.ID().String()), true)
 	if retry.Body.String() != get.Body.String() {
 		t.Errorf("resumed answer differs from the stored payment:\n got %s\nwant %s", retry.Body, get.Body)
 	}
 	if p, q := c.count("payments"), c.count("quotes"); p != 1 || q != 1 {
 		t.Errorf("%d payments and %d quotes stored, want 1 and 1", p, q)
+	}
+	// The dead request got the provider's answer stored; resuming only answers from it.
+	if n := c.provider.creates.Load(); n != 1 {
+		t.Errorf("provider called %d times, want only the dead request's call", n)
 	}
 
 	// The resumed request completed the key, so the next retry is a plain replay.

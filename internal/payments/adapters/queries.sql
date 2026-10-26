@@ -29,5 +29,10 @@ SELECT * FROM payment_attempts WHERE id = @id FOR UPDATE;
 
 -- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = @status, external_id = sqlc.narg(external_id), updated_at = @updated_at
+SET status = @status, external_id = sqlc.narg(external_id), br_code = sqlc.narg(br_code), updated_at = @updated_at
 WHERE id = @id;
+
+-- name: LatestAttempts :many
+SELECT DISTINCT ON (payment_id) * FROM payment_attempts
+WHERE payment_id = ANY(@payment_ids::uuid[])
+ORDER BY payment_id, id DESC;
