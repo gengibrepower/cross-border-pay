@@ -28,6 +28,7 @@ const (
 	defaultPixKey       = "123e4567-e12b-12d1-a456-426655440000"
 	defaultMerchantName = "CROSS BORDER PAY"
 	defaultMerchantCity = "SAO PAULO"
+	defaultWebhookURL   = "http://localhost:8080/v1/providers/pixsim/events"
 )
 
 func main() {
@@ -51,6 +52,7 @@ func load(getenv func(string) string) (settings, error) {
 		sim: server.Config{
 			Seed: defaultSeed, PixKey: defaultPixKey,
 			MerchantName: defaultMerchantName, MerchantCity: defaultMerchantCity,
+			WebhookURL: defaultWebhookURL,
 		},
 	}
 	var errs []error
@@ -70,6 +72,13 @@ func load(getenv func(string) string) (settings, error) {
 	if v := getenv("PIXSIM_PIX_KEY"); v != "" {
 		s.sim.PixKey = v
 	}
+	if v := getenv("PIXSIM_WEBHOOK_URL"); v != "" {
+		s.sim.WebhookURL = v
+	}
+	s.sim.WebhookSecret = []byte(getenv("PIXSIM_WEBHOOK_SECRET"))
+	if len(s.sim.WebhookSecret) == 0 {
+		errs = append(errs, errors.New("PIXSIM_WEBHOOK_SECRET is required: it signs the events sent to PIXSIM_WEBHOOK_URL"))
+	}
 	return s, errors.Join(errs...)
 }
 
@@ -84,7 +93,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 	logger := logging.New(stdout, cfg.LogLevel)
 
-	sim, err := server.New(s.sim, clock.System{})
+	sim, err := server.New(&s.sim, clock.System{}, logger)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -100,7 +109,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	logger.Info("pix simulator configured", "seed", s.sim.Seed)
+	logger.Info("pix simulator configured", "seed", s.sim.Seed, "webhook", s.sim.WebhookURL)
 	if err := httpapi.Serve(ctx, "pixsim", ln, httpapi.Handler(mux, logger), logger, cfg.ShutdownTimeout); err != nil {
 		return fmt.Errorf("http: %w", err)
 	}

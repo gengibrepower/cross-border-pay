@@ -3,11 +3,15 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -21,6 +25,9 @@ import (
 
 // HangLimit bounds a TimeoutAfter fault, in case the caller never gives up.
 const HangLimit = time.Minute
+
+// DeliveryTimeout bounds one webhook delivery.
+const DeliveryTimeout = 5 * time.Second
 
 const (
 	maxKeyLength   = 255
@@ -37,6 +44,10 @@ type Config struct {
 	PixKey       string
 	MerchantName string
 	MerchantCity string
+	// WebhookURL receives an event, signed with WebhookSecret, for every fact the
+	// gateway must learn about. Empty means no events are sent.
+	WebhookURL    string
+	WebhookSecret []byte
 }
 
 type Clock interface {
@@ -49,21 +60,31 @@ type record struct {
 }
 
 type Simulator struct {
-	cfg   Config
-	clock Clock
+	cfg    Config
+	clock  Clock
+	logger *slog.Logger
+	http   *http.Client
 
 	mu      sync.Mutex
 	byKey   map[string]*record
 	keyByID map[string]string
 	faults  []pixsim.Fault
+	// events holds each event already encoded, so a redelivery sends the same bytes.
+	events map[string][]byte
 }
 
-func New(cfg Config, clock Clock) (*Simulator, error) {
+func New(cfg *Config, clock Clock, logger *slog.Logger) (*Simulator, error) {
 	probe := brcode.Code{Key: cfg.PixKey, MerchantName: cfg.MerchantName, MerchantCity: cfg.MerchantCity}
 	if _, err := brcode.Encode(&probe); err != nil {
 		return nil, fmt.Errorf("pixsim: receiver: %w", err)
 	}
-	return &Simulator{cfg: cfg, clock: clock, byKey: map[string]*record{}, keyByID: map[string]string{}}, nil
+	if cfg.WebhookURL != "" && len(cfg.WebhookSecret) == 0 {
+		return nil, errors.New("pixsim: a webhook URL needs a webhook secret")
+	}
+	return &Simulator{
+		cfg: *cfg, clock: clock, logger: logger, http: &http.Client{Timeout: DeliveryTimeout},
+		byKey: map[string]*record{}, keyByID: map[string]string{}, events: map[string][]byte{},
+	}, nil
 }
 
 func (s *Simulator) Register(mux *http.ServeMux) {
@@ -71,6 +92,7 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/charges/by-key/{key}", s.get)
 	mux.HandleFunc("POST /control/charges/{id}/pay", s.pay)
 	mux.HandleFunc("POST /control/faults", s.injectFault)
+	mux.HandleFunc("POST /control/events/{id}/deliver", s.redeliver)
 }
 
 func (s *Simulator) create(w http.ResponseWriter, r *http.Request) {
@@ -132,22 +154,34 @@ func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // pay plays the payer. A static PIX code can be paid at any time, so a charge past
-// its expiry is paid too: that is the late payment of decision 8.
+// its expiry is paid too: that is the late payment of decision 8. Only the payment
+// itself sends charge.paid; paying a paid charge again is no new fact.
 func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	key, ok := s.keyByID[r.PathValue("id")]
 	var ch pixsim.Charge
+	var event []byte
 	if ok {
 		rec := s.byKey[key]
 		if rec.charge.Status == pixsim.Active {
 			paidAt := s.clock.Now()
 			rec.charge.Status = pixsim.Paid
 			rec.charge.PaidAt = &paidAt
+			event = s.record(&pixsim.Event{
+				ID: "evt_" + text(s.rng(string(pixsim.ChargePaid)+"\x00"+key), idLength), Type: pixsim.ChargePaid,
+				CreatedAt: paidAt, Charge: rec.charge,
+			})
 		}
 		ch = rec.charge
 	}
 	s.mu.Unlock()
 
+	if event != nil {
+		// The payer is done once paid; a client that gives up must not cut the delivery.
+		if err := s.deliver(context.WithoutCancel(r.Context()), event); err != nil {
+			s.logger.Warn("event delivery failed", "charge", ch.ID, "error", err)
+		}
+	}
 	switch {
 	case !ok:
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeNotFound, "no charge with this ID"))
@@ -156,6 +190,55 @@ func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, ch)
 	}
+}
+
+func (s *Simulator) redeliver(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	event, ok := s.events[r.PathValue("id")]
+	s.mu.Unlock()
+	if !ok {
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeEventNotFound, "no event with this ID"))
+		return
+	}
+	if err := s.deliver(r.Context(), event); err != nil {
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusBadGateway, pixsim.CodeDeliveryFailed, err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// record encodes and keeps e; the caller holds s.mu. It returns nil when no webhook
+// is configured, so nothing is sent.
+func (s *Simulator) record(e *pixsim.Event) []byte {
+	if s.cfg.WebhookURL == "" {
+		return nil
+	}
+	body, err := json.Marshal(e)
+	if err != nil {
+		panic(fmt.Sprintf("pixsim: encode event: %v", err)) // only plain fields: cannot fail
+	}
+	s.events[e.ID] = body
+	return body
+}
+
+// deliver posts body to the webhook, signed at the current time. Any 2xx counts.
+func (s *Simulator) deliver(ctx context.Context, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.WebhookURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(pixsim.SignatureHeader, pixsim.Sign(s.cfg.WebhookSecret, s.clock.Now(), body))
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("webhook: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRequestBody))
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("webhook answered %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *Simulator) injectFault(w http.ResponseWriter, r *http.Request) {
