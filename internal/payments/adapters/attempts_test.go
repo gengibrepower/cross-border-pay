@@ -22,7 +22,7 @@ func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
 
 var t0 = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
-const pixsim domain.ProviderName = "pixsim"
+const provider domain.ProviderName = "pixsim"
 
 func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
 	t.Helper()
@@ -54,7 +54,7 @@ func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
 
 func create(t *testing.T, store *adapters.Postgres, payment domain.PaymentID) domain.PaymentAttempt {
 	t.Helper()
-	a, err := store.CreateAttempt(t.Context(), payment, pixsim, t0)
+	a, err := store.CreateAttempt(t.Context(), payment, provider, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestCreateAttemptStoresItCreated(t *testing.T) {
 	payment := newPayment(t, pool)
 
 	created := create(t, store, payment)
-	if created.Status() != domain.AttemptCreated || created.Payment() != payment || created.Provider() != pixsim ||
+	if created.Status() != domain.AttemptCreated || created.Payment() != payment || created.Provider() != provider ||
 		created.ExternalID() != "" || !created.CreatedAt().Equal(t0) || !created.UpdatedAt().Equal(t0) {
 		t.Fatalf("CreateAttempt() = %+v", created)
 	}
@@ -131,7 +131,7 @@ func TestOneLiveAttemptPerPayment(t *testing.T) {
 	payment := newPayment(t, pool)
 
 	first := create(t, store, payment)
-	if _, err := store.CreateAttempt(t.Context(), payment, pixsim, t0); !errors.Is(err, app.ErrLiveAttempt) {
+	if _, err := store.CreateAttempt(t.Context(), payment, provider, t0); !errors.Is(err, app.ErrLiveAttempt) {
 		t.Fatalf("second attempt while the first is created: error = %v, want %v", err, app.ErrLiveAttempt)
 	}
 
@@ -139,7 +139,7 @@ func TestOneLiveAttemptPerPayment(t *testing.T) {
 	second := create(t, store, payment)
 
 	apply(t, store, second.ID(), domain.Send, domain.Succeed)
-	if _, err := store.CreateAttempt(t.Context(), payment, pixsim, t0); !errors.Is(err, app.ErrLiveAttempt) {
+	if _, err := store.CreateAttempt(t.Context(), payment, provider, t0); !errors.Is(err, app.ErrLiveAttempt) {
 		t.Errorf("attempt after a success: error = %v, want %v", err, app.ErrLiveAttempt)
 	}
 }
@@ -156,7 +156,7 @@ func TestConcurrentCreatesLeaveOneAttempt(t *testing.T) {
 	for i := range workers {
 		done.Go(func() {
 			start.Wait()
-			_, errs[i] = store.CreateAttempt(t.Context(), payment, pixsim, t0)
+			_, errs[i] = store.CreateAttempt(t.Context(), payment, provider, t0)
 		})
 	}
 	start.Done()

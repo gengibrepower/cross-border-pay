@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -58,38 +57,9 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	return serve(ctx, ln, routes(pool, logger, api.register), logger, cfg.ShutdownTimeout)
-}
-
-func serve(ctx context.Context, ln net.Listener, handler http.Handler, logger *slog.Logger, shutdownTimeout time.Duration) error {
-	srv := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	if err := httpapi.Serve(ctx, "api", ln, routes(pool, logger, api.register), logger, cfg.ShutdownTimeout); err != nil {
+		return fmt.Errorf("http: %w", err)
 	}
-
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(ln) }()
-	logger.Info("api started", "addr", ln.Addr().String())
-
-	select {
-	case err := <-served:
-		return fmt.Errorf("serve: %w", err)
-	case <-ctx.Done():
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
-	}
-	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serve: %w", err)
-	}
-	logger.Info("api stopped")
 	return nil
 }
 

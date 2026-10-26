@@ -53,3 +53,7 @@ run = "docker compose up -d --wait"
 [tasks.migrate]
 description = "Aplica as migrations embutidas no DATABASE_URL"
 run = "go run ./cmd/migrate"
+
+[tasks.pixsim]
+description = "Sobe o simulador PIX (PIXSIM_ADDR, padrão :8090; PIXSIM_SEED, padrão 1)"
+run = "go run ./cmd/pixsim"

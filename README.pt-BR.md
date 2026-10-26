@@ -41,6 +41,7 @@ Todos os números abaixo são medidos, não estimados. Todo teste que toca o ban
 | Limpeza das keys (`cmd/worker`) | O job apaga, a cada hora e em lotes de 1.000, as keys com mais de 24 h, e nenhuma mais nova. Com `FOR UPDATE SKIP LOCKED`, uma key travada por outra transação é pulada sem espera e apagada na rodada seguinte. Uma rodada que falha vai para o log e não derruba o worker. | 7 keys vencidas apagadas em lotes de 3, 20/20 rodadas com `-race -count=20`. Tirar o `SKIP LOCKED` faz o `Cleanup` esperar o lock até estourar o prazo, e o teste falha |
 | BR Code (`internal/brcode`) | Os 5 exemplos completos do [Manual de Padrões para Iniciação do Pix v2.10.0](https://www.bcb.gov.br/content/estabilidadefinanceira/pix/Regulamento_Pix/II_ManualdePadroesparaIniciacaodoPix.pdf) do BC são lidos com o CRC conferido, e o estático e o dinâmico são reproduzidos caractere por caractere pelo gerador. O CRC16 inclui o `6304`, como o manual manda; o CRC calculado sem ele é recusado. Valor no campo 54 sem float (`10150` ↔ `"101.50"`). | Teste de propriedade `Parse(Encode(c)) == c`: 100 casos por rodada, 20/20 rodadas; 14 payloads e 14 códigos inválidos recusados, cada um pelo motivo certo |
 | Tentativas no provedor (`payments`) | Cada par (estado, evento) da máquina de estados da tentativa é comparado com a seção 3.5, reescrita dentro do teste; uma resposta ambígua nunca recusa a tentativa, e o evento de pagamento pode chegar antes da resposta da criação. Contra Postgres real, uma cobrança tem no máximo uma tentativa viva (índice único parcial: só a recusa libera), e os eventos de uma tentativa são serializados por lock de linha. | Os 30 pares. 20 criações simultâneas para a mesma cobrança deixam exatamente 1 tentativa, e 8 eventos accept/reject simultâneos na mesma tentativa a mudam exatamente uma vez, 25 tentativas por rodada, 20/20 rodadas com `-race -count=20`. Tirar o `FOR UPDATE` ou o `WHERE` do índice faz esses testes falharem |
+| Simulador PIX (`cmd/pixsim`) | Um provedor HTTP real, com cobranças em memória e falhas sob comando: `reject`, `fail_before` (500 sem fazer nada), `timeout_after` (a cobrança é criada e a resposta nunca chega) e `delay`. Depois de um `timeout_after`, a busca pelo ID da nossa tentativa encontra a cobrança, e repetir com a mesma key devolve essa mesma cobrança. Todo BR Code emitido é lido pelo `internal/brcode`. Só a recusa explícita chega à porta de pagamentos como `Rejected`; um 500, um timeout ou uma resposta desconhecida é erro, e a tentativa vai para `unknown`. | Mesma seed e as mesmas 50 keys enviadas em paralelo e em ordem inversa geram as mesmas cobranças, byte a byte, que enviadas uma a uma; 8 requests malformados recusados com `400`. 20/20 rodadas com `-race -count=20`. 10 mutantes mortos, entre eles semear pela ordem de chegada, criar a cobrança depois do travamento em vez de antes e ler um 500 como recusa |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
 A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
@@ -104,6 +105,8 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 | BR Code | Codec próprio, só ASCII imprimível; o simulador emite o código estático com valor e txid | Biblioteca de terceiros: dependência para ~380 linhas testáveis contra o manual. Código dinâmico no simulador: o valor fica num JSON assinado (JWS) hospedado na URL, sem relação com o que a F5 prova |
 | Tentativas no provedor | Gravadas como `created` antes da chamada ao provedor, uma tentativa viva por cobrança garantida por índice único parcial, toda mudança pela máquina de estados sob lock de linha | Chamar primeiro e gravar depois: uma queda no meio da chamada não deixa rastro de um pagador que talvez tenha sido cobrado. Unicidade só no código: dois requests simultâneos passam |
 | Erros do provedor | Recusa é um resultado (`Rejected`); qualquer erro, e qualquer resultado que o adapter deixou sem preencher, leva a tentativa a `unknown` | Sentinela `ErrAmbiguous` vinda do adapter: um erro que ele esqueça de embrulhar seria lido como falha definitiva, o erro caro |
+| Simulador de provedor | Servidor HTTP real com cobranças em memória; toda escolha aleatória sai de um gerador semeado pela seed e pela key de idempotência; falhas roteirizadas por `/control/faults`. O cliente fala só os tipos do simulador, e uma tradução de ~60 linhas em `payments` os adapta à porta | Fake no mesmo processo: nunca produz um timeout de verdade. Um gerador único para o simulador: requests simultâneos sorteariam em ordem diferente a cada rodada. O adapter dentro de `providers` devolvendo tipos de `payments`: inverte a dependência entre módulos do escopo |
+| txid do PIX | Escolhido pelo simulador (25 caracteres tirados da seed) e devolvido com a cobrança; o ID da nossa tentativa viaja como `Idempotency-Key` | Compactar os 26 caracteres do ID da tentativa em 25, tirando os bits de versão e variante do UUIDv7: sem perda, mas engenhosidade sem ganho |
 | HTTP | Roteador da stdlib `net/http`; OpenAPI escrito à mão, validado nos testes de contrato | Frameworks e código gerado: mais a explicar, pouco ganho com os padrões de método+caminho do Go |
 
 ## Status
@@ -137,6 +140,7 @@ mise run migrate      # aplica as migrations embutidas
 go run ./cmd/admin merchant create -name GameStore -mode test   # imprime a API key uma única vez
 go run ./cmd/api      # /healthz e /readyz em :8080; FX_USD_BRL_RATE define a taxa base (padrão 5.0000)
 go run ./cmd/worker   # jobs em segundo plano; hoje, a limpeza das keys de idempotência com mais de 24 h
+mise run pixsim      # simulador PIX em :8090; PIXSIM_SEED escolhe a seed (padrão 1)
 ```
 
 Criando a cobrança da GameStore com a chave que o `cmd/admin` imprimiu:
@@ -165,13 +169,15 @@ cmd/
   worker/     jobs em segundo plano (limpeza de idempotência) com shutdown gracioso
   migrate/    aplica as migrations do goose embutidas
   admin/      tarefas de operação: criar lojista e API key, revogar chave
+  pixsim/     simulador de provedor PIX: seed, falhas sob comando, "pagar agora"
 internal/
   money/      Money e Currency em minor units
   brcode/     BR Code do PIX: TLV EMV e CRC16, gerador e leitor
   fx/         taxas, conversão, cotações
   ledger/     transações de partidas dobradas, invariantes, adapter Postgres
   merchants/  lojistas, API keys (só hash), middleware de autenticação
-  payments/   máquina de estados da cobrança, criação, handlers HTTP
+  payments/   máquinas de estados da cobrança e da tentativa, criação, handlers HTTP, porta do provedor
+  providers/  clientes e simuladores de provedores (pixsim)
   idempotency/ keys de idempotência: lock, lease, pontos de retomada
   platform/   config, logs, relógio, Postgres (WithTx), runner de workers, HTTP (erros RFC 9457, request ID)
 api/          openapi.yaml, o contrato escrito à mão

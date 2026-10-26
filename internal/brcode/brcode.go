@@ -56,7 +56,7 @@ const (
 	maxKey          = 77
 	maxURL          = 77
 	maxInfo         = 72
-	maxTxID         = 25
+	MaxTxID         = 25
 	maxMerchantName = 25
 	maxMerchantCity = 15
 	maxAmount       = 13
@@ -176,7 +176,7 @@ func (c *Code) validate() error {
 
 // validateTxID applies section 2.6.2: letters and digits only, up to 25.
 func validateTxID(s string) error {
-	if len(s) > maxTxID {
+	if len(s) > MaxTxID {
 		return fmt.Errorf("%w: got %d characters", ErrInvalidTxID, len(s))
 	}
 	for _, r := range s {
