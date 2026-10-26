@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -136,9 +137,17 @@ func connect(t testing.TB, databaseURL string) *pgxpool.Pool {
 	return pool
 }
 
+// MaxConns fixes the pool size of every test database. Left alone, pgx sizes a pool
+// by the CPU count, so a concurrency test that passed on a 12-core laptop failed on a
+// 4-core CI runner.
+const MaxConns = 20
+
 func databaseURL(name string) string {
 	u := *adminURL
 	u.Path = "/" + name
+	q := u.Query()
+	q.Set("pool_max_conns", strconv.Itoa(MaxConns))
+	u.RawQuery = q.Encode()
 	return u.String()
 }
 

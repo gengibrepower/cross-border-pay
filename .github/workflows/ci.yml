@@ -22,6 +22,9 @@ jobs:
       - run: mise run gen:check
       - run: mise run lint
       - name: mise run test:cover
+        # An explicit bash runs with pipefail; the default shell does not, and the tee
+        # below would turn every failing test into a green step.
+        shell: bash
         run: |
           mise run test:cover | tee coverage.txt
           {
