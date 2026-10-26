@@ -15,3 +15,19 @@ WHERE merchant_id = @merchant_id
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
 ORDER BY id DESC
 LIMIT @max_rows::bigint;
+
+-- name: InsertAttempt :one
+INSERT INTO payment_attempts (payment_id, provider, status, created_at, updated_at)
+VALUES (@payment_id, @provider, 'created', @created_at, @created_at)
+RETURNING *;
+
+-- name: GetAttempt :one
+SELECT * FROM payment_attempts WHERE id = @id;
+
+-- name: LockAttempt :one
+SELECT * FROM payment_attempts WHERE id = @id FOR UPDATE;
+
+-- name: UpdateAttempt :exec
+UPDATE payment_attempts
+SET status = @status, external_id = sqlc.narg(external_id), updated_at = @updated_at
+WHERE id = @id;

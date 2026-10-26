@@ -74,6 +74,16 @@ type Payment struct {
 	UpdatedAt  pgtype.Timestamptz
 }
 
+type PaymentAttempt struct {
+	ID         pgtype.UUID
+	PaymentID  pgtype.UUID
+	Provider   string
+	Status     string
+	ExternalID pgtype.Text
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type Quote struct {
 	ID            pgtype.UUID
 	BaseCurrency  string
