@@ -11,6 +11,8 @@ permissions:
 jobs:
   stress:
     runs-on: ubuntu-latest
+    # Above the 60 min test timeout, far below GitHub's 6 h default: a real hang ends here.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5

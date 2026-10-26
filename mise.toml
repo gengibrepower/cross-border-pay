@@ -34,7 +34,8 @@ run = [
 
 [tasks."test:stress"]
 description = "Testes repetidos 100 vezes com o detector de corrida, como o job noturno"
-run = "go test -race -count=100 ./..."
+# 100 rounds of the integration packages take over 10 min, go test's default.
+run = "go test -race -count=100 -timeout=60m ./..."
 
 [tasks.vuln]
 description = "Vulnerabilidades conhecidas no código e nas dependências"
