@@ -28,14 +28,16 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
 }
 
-func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote) (domain.Payment, error) {
+func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote, provider domain.ProviderName) (app.Priced, error) {
+	var attempt paymentsdb.PaymentAttempt
 	var id pgtype.UUID
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		quoteID, err := fxadapters.SaveQuote(ctx, tx, q)
 		if err != nil {
 			return fmt.Errorf("quote: %w", err)
 		}
-		id, err = paymentsdb.New(tx).InsertPayment(ctx, paymentsdb.InsertPaymentParams{
+		queries := paymentsdb.New(tx)
+		id, err = queries.InsertPayment(ctx, paymentsdb.InsertPaymentParams{
 			MerchantID: pgtype.UUID{Bytes: d.Merchant(), Valid: true},
 			QuoteID:    pgtype.UUID{Bytes: quoteID, Valid: true},
 			Status:     string(domain.Pending),
@@ -48,18 +50,31 @@ func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain
 		if err != nil {
 			return fmt.Errorf("insert payment: %w", err)
 		}
-		// A lost lease fails here and rolls the payment back: the request that resumed
-		// the key creates it instead.
-		return idempotencyadapters.SetRecoveryPoint(ctx, tx, held, app.PaymentCreated, id.Bytes)
+		attempt, err = insertAttempt(ctx, queries, id.Bytes, provider, q.CreatedAt())
+		if err != nil {
+			return err
+		}
+		// A lost lease fails here and rolls everything back: the request that resumed
+		// the key creates the payment instead.
+		return idempotencyadapters.SetRecoveryPoint(ctx, tx, held, app.AttemptRequested, id.Bytes)
 	})
 	if err != nil {
-		return domain.Payment{}, fmt.Errorf("payments: store: %w", err)
+		return app.Priced{}, fmt.Errorf("payments: store: %w", err)
 	}
-	return domain.Restore(id.Bytes, d.Merchant(), domain.Pending, d.Method(), d.Amount(), d.Reference(), q.CreatedAt()), nil
+	a, err := restoreAttempt(&attempt)
+	if err != nil {
+		return app.Priced{}, err
+	}
+	return app.Priced{
+		Payment: domain.Restore(id.Bytes, d.Merchant(), domain.Pending, d.Method(), d.Amount(), d.Reference(), q.CreatedAt()),
+		Quote:   *q,
+		Attempt: &a,
+	}, nil
 }
 
-// Get and List read the payment and then its quote outside a transaction: a quote never
-// changes after it is stored, so there is nothing for the two reads to disagree on.
+// Get and List read the payments, then their quotes and latest attempts, outside a
+// transaction. A quote never changes; an attempt may move between the reads, and then
+// the newer status is the one returned, as a later GET would.
 func (p *Postgres) Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error) {
 	row, err := paymentsdb.New(p.pool).GetPayment(ctx, paymentsdb.GetPaymentParams{
 		MerchantID: pgtype.UUID{Bytes: merchant, Valid: true},
@@ -71,7 +86,7 @@ func (p *Postgres) Get(ctx context.Context, merchant domain.MerchantID, id domai
 	if err != nil {
 		return app.Priced{}, fmt.Errorf("payments: get: %w", err)
 	}
-	priced, err := p.withQuotes(ctx, []paymentsdb.Payment{row})
+	priced, err := p.withDetails(ctx, []paymentsdb.Payment{row})
 	if err != nil {
 		return app.Priced{}, err
 	}
@@ -88,18 +103,33 @@ func (p *Postgres) List(ctx context.Context, merchant domain.MerchantID, q app.L
 	if err != nil {
 		return nil, fmt.Errorf("payments: list: %w", err)
 	}
-	return p.withQuotes(ctx, rows)
+	return p.withDetails(ctx, rows)
 }
 
-func (p *Postgres) withQuotes(ctx context.Context, rows []paymentsdb.Payment) ([]app.Priced, error) {
-	ids := make([]fx.QuoteID, len(rows))
+func (p *Postgres) withDetails(ctx context.Context, rows []paymentsdb.Payment) ([]app.Priced, error) {
+	quoteIDs := make([]fx.QuoteID, len(rows))
+	paymentIDs := make([]pgtype.UUID, len(rows))
 	for i := range rows {
-		ids[i] = rows[i].QuoteID.Bytes
+		quoteIDs[i] = rows[i].QuoteID.Bytes
+		paymentIDs[i] = rows[i].ID
 	}
-	quotes, err := fxadapters.LoadQuotes(ctx, p.pool, ids)
+	quotes, err := fxadapters.LoadQuotes(ctx, p.pool, quoteIDs)
 	if err != nil {
 		return nil, fmt.Errorf("payments: %w", err)
 	}
+	attemptRows, err := paymentsdb.New(p.pool).LatestAttempts(ctx, paymentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("payments: latest attempts: %w", err)
+	}
+	attempts := make(map[[16]byte]*domain.PaymentAttempt, len(attemptRows))
+	for i := range attemptRows {
+		a, err := restoreAttempt(&attemptRows[i])
+		if err != nil {
+			return nil, err
+		}
+		attempts[attemptRows[i].PaymentID.Bytes] = &a
+	}
+
 	priced := make([]app.Priced, len(rows))
 	for i := range rows {
 		payment, err := restorePayment(&rows[i])
@@ -110,7 +140,7 @@ func (p *Postgres) withQuotes(ctx context.Context, rows []paymentsdb.Payment) ([
 		if !ok {
 			return nil, fmt.Errorf("payments: quote %x of payment %s is missing", rows[i].QuoteID.Bytes, payment.ID())
 		}
-		priced[i] = app.Priced{Payment: payment, Quote: quote}
+		priced[i] = app.Priced{Payment: payment, Quote: quote, Attempt: attempts[rows[i].ID.Bytes]}
 	}
 	return priced, nil
 }

@@ -18,6 +18,12 @@ type Config struct {
 	// USDBRLRate is the fixed base rate of decision 12, as a decimal string; fx parses
 	// it so that this package does not depend on a domain module.
 	USDBRLRate string
+	// PixSimURL is where the PIX simulator answers; every key mode uses it until a
+	// real provider arrives in F9.
+	PixSimURL string
+	// ProviderTimeout bounds each call to a provider, below the server's write timeout
+	// so that the answer can still be stored and sent.
+	ProviderTimeout time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -26,6 +32,8 @@ func Load(getenv func(string) string) (Config, error) {
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 10 * time.Second,
 		USDBRLRate:      "5.0000",
+		PixSimURL:       "http://localhost:8090",
+		ProviderTimeout: 5 * time.Second,
 	}
 	var errs []error
 
@@ -60,13 +68,29 @@ func Load(getenv func(string) string) (Config, error) {
 		cfg.USDBRLRate = v
 	}
 
+	if v := getenv("PIXSIM_URL"); v != "" {
+		cfg.PixSimURL = v
+	}
+
+	if v := getenv("PROVIDER_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("PROVIDER_TIMEOUT: %w", err))
+		case d <= 0:
+			errs = append(errs, fmt.Errorf("PROVIDER_TIMEOUT: must be positive, got %s", d))
+		default:
+			cfg.ProviderTimeout = d
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func (c Config) RequireDatabase() error {
+func (c *Config) RequireDatabase() error {
 	if c.DatabaseURL == "" {
 		return ErrMissingDatabaseURL
 	}

@@ -64,7 +64,7 @@ func create(t *testing.T, store *adapters.Postgres, payment domain.PaymentID) do
 func apply(t *testing.T, store *adapters.Postgres, id domain.AttemptID, events ...domain.AttemptEvent) {
 	t.Helper()
 	for _, e := range events {
-		if _, _, err := store.ApplyAttempt(t.Context(), id, e, "", t0); err != nil {
+		if _, _, err := store.ApplyAttempt(t.Context(), id, domain.AttemptUpdate{Event: e}, t0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -91,7 +91,7 @@ func TestUnknownAttempt(t *testing.T) {
 	if _, err := store.GetAttempt(t.Context(), domain.AttemptID{1}); !errors.Is(err, app.ErrAttemptNotFound) {
 		t.Errorf("GetAttempt() error = %v, want %v", err, app.ErrAttemptNotFound)
 	}
-	if _, _, err := store.ApplyAttempt(t.Context(), domain.AttemptID{1}, domain.Send, "", t0); !errors.Is(err, app.ErrAttemptNotFound) {
+	if _, _, err := store.ApplyAttempt(t.Context(), domain.AttemptID{1}, domain.AttemptUpdate{Event: domain.Send}, t0); !errors.Is(err, app.ErrAttemptNotFound) {
 		t.Errorf("ApplyAttempt() error = %v, want %v", err, app.ErrAttemptNotFound)
 	}
 }
@@ -103,7 +103,7 @@ func TestApplyAttemptStoresTheTransition(t *testing.T) {
 	apply(t, store, a.ID(), domain.Send)
 
 	at := t0.Add(time.Minute)
-	moved, changed, err := store.ApplyAttempt(t.Context(), a.ID(), domain.Accept, "ext-1", at)
+	moved, changed, err := store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at)
 	if err != nil || !changed {
 		t.Fatalf("ApplyAttempt(accept) = %v, %v; want a change", changed, err)
 	}
@@ -112,11 +112,11 @@ func TestApplyAttemptStoresTheTransition(t *testing.T) {
 		t.Fatalf("stored attempt = %+v, %v; want accepted ext-1 at %v", got, err, at)
 	}
 
-	_, changed, err = store.ApplyAttempt(t.Context(), a.ID(), domain.Accept, "ext-1", at.Add(time.Minute))
+	_, changed, err = store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at.Add(time.Minute))
 	if err != nil || changed {
 		t.Errorf("duplicate accept = %v, %v; want a no-op", changed, err)
 	}
-	_, _, err = store.ApplyAttempt(t.Context(), a.ID(), domain.Reject, "", at.Add(time.Minute))
+	_, _, err = store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Reject}, at.Add(time.Minute))
 	if !errors.Is(err, domain.ErrInvalidTransition) {
 		t.Errorf("reject on accepted error = %v, want %v", err, domain.ErrInvalidTransition)
 	}
@@ -203,7 +203,7 @@ func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 			}
 			done.Go(func() {
 				start.Wait()
-				_, changed, err := store.ApplyAttempt(t.Context(), a.ID(), e, "", t0)
+				_, changed, err := store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: e}, t0)
 				results[i] = result{e, changed, err}
 			})
 		}
@@ -237,5 +237,31 @@ func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 		if winners != 1 {
 			t.Fatalf("%d events changed the attempt, want 1", winners)
 		}
+	}
+}
+
+// A payment's latest attempt is the one reads show: after a rejection and a new
+// attempt, GET and List return the new one.
+func TestReadsShowTheLatestAttempt(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	store := adapters.NewPostgres(pool)
+	payment := newPayment(t, pool)
+	var merchant domain.MerchantID
+	if err := pool.QueryRow(t.Context(), "SELECT merchant_id FROM payments WHERE id = $1", payment).Scan(&merchant); err != nil {
+		t.Fatal(err)
+	}
+
+	first := create(t, store, payment)
+	apply(t, store, first.ID(), domain.Send, domain.Reject)
+	second := create(t, store, payment)
+	apply(t, store, second.ID(), domain.Send)
+
+	got, err := store.Get(t.Context(), merchant, payment)
+	if err != nil || got.Attempt == nil || got.Attempt.ID() != second.ID() || got.Attempt.Status() != domain.AttemptSent {
+		t.Fatalf("Get() attempt = %+v, %v; want the second attempt, sent", got.Attempt, err)
+	}
+	listed, err := store.List(t.Context(), merchant, app.ListQuery{Limit: 10})
+	if err != nil || len(listed) != 1 || listed[0].Attempt == nil || listed[0].Attempt.ID() != second.ID() {
+		t.Errorf("List() = %+v, %v; want the payment with its second attempt", listed, err)
 	}
 }

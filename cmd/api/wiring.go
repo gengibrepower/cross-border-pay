@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -31,23 +32,39 @@ type api struct {
 	idempotent func(http.Handler) http.Handler
 }
 
-func newAPI(pool *pgxpool.Pool, logger *slog.Logger, usdbrl string, clock fxapp.Clock) (*api, error) {
-	rate, err := fx.ParseRate(money.USD, money.BRL, usdbrl)
+// deps are what the API needs from outside the database: the base rate, the clock and
+// the provider, which tests replace.
+type deps struct {
+	usdbrl          string
+	clock           moduleClock
+	provider        paymentsapp.Provider
+	providerTimeout time.Duration
+}
+
+// moduleClock is every module's Clock at once, so one clock drives them all.
+type moduleClock interface {
+	fxapp.Clock
+	paymentsapp.Clock
+	idempotencyapp.Clock
+}
+
+func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
+	rate, err := fx.ParseRate(money.USD, money.BRL, d.usdbrl)
 	if err != nil {
 		return nil, fmt.Errorf("config: FX_USD_BRL_RATE: %w", err)
 	}
-	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), clock, fx.DefaultPricing)
+	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), d.clock, fx.DefaultPricing)
 	merchants := merchantsapp.NewService(merchantsadapters.NewPostgres(pool), rand.Reader)
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool)),
+			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool), d.provider, d.clock, logger, d.providerTimeout),
 			merchantFrom,
 			logger,
 		),
 		auth: merchantsadapters.RequireAPIKey(merchants, logger),
 		idempotent: idempotencyadapters.Require(
-			idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock, rand.Reader),
+			idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), d.clock, rand.Reader),
 			idempotencyMerchant,
 			logger,
 		),

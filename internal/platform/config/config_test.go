@@ -21,7 +21,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			vars: nil,
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000"},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second},
 		},
 		{
 			name: "all set",
@@ -31,6 +31,8 @@ func TestLoad(t *testing.T) {
 				"SHUTDOWN_TIMEOUT": "30s",
 				"DATABASE_URL":     "postgres://localhost/cbp",
 				"FX_USD_BRL_RATE":  "5.4321",
+				"PIXSIM_URL":       "http://pixsim:8090",
+				"PROVIDER_TIMEOUT": "2s",
 			},
 			want: Config{
 				HTTPAddr:        "127.0.0.1:9000",
@@ -38,12 +40,14 @@ func TestLoad(t *testing.T) {
 				ShutdownTimeout: 30 * time.Second,
 				DatabaseURL:     "postgres://localhost/cbp",
 				USDBRLRate:      "5.4321",
+				PixSimURL:       "http://pixsim:8090",
+				ProviderTimeout: 2 * time.Second,
 			},
 		},
 		{
 			name: "level is case insensitive",
 			vars: map[string]string{"LOG_LEVEL": "WARN"},
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000"},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second},
 		},
 	}
 	for _, tt := range tests {
@@ -70,6 +74,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{name: "unparsable timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "ten"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
 		{name: "zero timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
 		{name: "negative timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "-1s"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
+		{name: "unparsable provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "soon"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
+		{name: "zero provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "0s"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
 		{
 			name: "every error reported at once",
 			vars: map[string]string{
@@ -96,10 +102,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 }
 
 func TestRequireDatabase(t *testing.T) {
-	if err := (Config{}).RequireDatabase(); !errors.Is(err, ErrMissingDatabaseURL) {
+	if err := (&Config{}).RequireDatabase(); !errors.Is(err, ErrMissingDatabaseURL) {
 		t.Errorf("RequireDatabase() without URL = %v, want %v", err, ErrMissingDatabaseURL)
 	}
-	if err := (Config{DatabaseURL: "postgres://localhost/cbp"}).RequireDatabase(); err != nil {
+	if err := (&Config{DatabaseURL: "postgres://localhost/cbp"}).RequireDatabase(); err != nil {
 		t.Errorf("RequireDatabase() with URL = %v, want nil", err)
 	}
 }
