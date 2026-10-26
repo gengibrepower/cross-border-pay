@@ -13,6 +13,9 @@ var (
 	ErrAttemptNotFound = errors.New("payments: attempt not found")
 	// ErrLiveAttempt is a second attempt for a payment whose last one was not rejected.
 	ErrLiveAttempt = errors.New("payments: payment already has a live attempt")
+	// ErrNotAtProvider is GetAttempt finding no attempt with that ID: the provider never
+	// received it, or has not yet.
+	ErrNotAtProvider = errors.New("payments: provider has no such attempt")
 )
 
 // Provider is the port of section 4.3. Refund joins it in F7, when refunds exist.
@@ -24,7 +27,7 @@ type Provider interface {
 	Name() domain.ProviderName
 	CreateAttempt(ctx context.Context, req *AttemptRequest) (AttemptResult, error)
 	// GetAttempt looks the attempt up by our ID, which CreateAttempt sent as the
-	// provider's idempotency key.
+	// provider's idempotency key. It returns ErrNotAtProvider when there is none.
 	GetAttempt(ctx context.Context, id domain.AttemptID) (AttemptResult, error)
 }
 

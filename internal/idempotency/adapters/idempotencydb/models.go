@@ -75,14 +75,17 @@ type Payment struct {
 }
 
 type PaymentAttempt struct {
-	ID         pgtype.UUID
-	PaymentID  pgtype.UUID
-	Provider   string
-	Status     string
-	ExternalID pgtype.Text
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	BrCode     pgtype.Text
+	ID          pgtype.UUID
+	PaymentID   pgtype.UUID
+	Provider    string
+	Status      string
+	ExternalID  pgtype.Text
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	BrCode      pgtype.Text
+	Checks      int32
+	NextCheckAt pgtype.Timestamptz
+	EscalatedAt pgtype.Timestamptz
 }
 
 type Quote struct {

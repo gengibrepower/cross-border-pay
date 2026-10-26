@@ -11,8 +11,79 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimDueAttempts = `-- name: ClaimDueAttempts :many
+UPDATE payment_attempts SET next_check_at = $1
+WHERE id IN (
+    SELECT due.id FROM payment_attempts AS due
+    WHERE due.next_check_at <= $2
+    ORDER BY due.next_check_at
+    LIMIT $3::bigint
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at
+`
+
+type ClaimDueAttemptsParams struct {
+	LeaseUntil pgtype.Timestamptz
+	Now        pgtype.Timestamptz
+	MaxRows    int64
+}
+
+// SKIP LOCKED keeps two workers off the same rows during this short transaction; the
+// lease written into next_check_at keeps them off after it commits, while the provider
+// is being called.
+func (q *Queries) ClaimDueAttempts(ctx context.Context, arg ClaimDueAttemptsParams) ([]PaymentAttempt, error) {
+	rows, err := q.db.Query(ctx, claimDueAttempts, arg.LeaseUntil, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PaymentAttempt
+	for rows.Next() {
+		var i PaymentAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.PaymentID,
+			&i.Provider,
+			&i.Status,
+			&i.ExternalID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.BrCode,
+			&i.Checks,
+			&i.NextCheckAt,
+			&i.EscalatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const escalateAttempt = `-- name: EscalateAttempt :execrows
+UPDATE payment_attempts SET next_check_at = NULL, escalated_at = $1
+WHERE id = $2 AND status IN ('sent', 'unknown')
+`
+
+type EscalateAttemptParams struct {
+	EscalatedAt pgtype.Timestamptz
+	ID          pgtype.UUID
+}
+
+func (q *Queries) EscalateAttempt(ctx context.Context, arg EscalateAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, escalateAttempt, arg.EscalatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts WHERE id = $1
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -27,6 +98,9 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BrCode,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -61,7 +135,7 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 const insertAttempt = `-- name: InsertAttempt :one
 INSERT INTO payment_attempts (payment_id, provider, status, created_at, updated_at)
 VALUES ($1, $2, 'created', $3, $3)
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at
 `
 
 type InsertAttemptParams struct {
@@ -82,6 +156,9 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BrCode,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -120,7 +197,7 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (p
 }
 
 const latestAttempts = `-- name: LatestAttempts :many
-SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts
+SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts
 WHERE payment_id = ANY($1::uuid[])
 ORDER BY payment_id, id DESC
 `
@@ -143,6 +220,9 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.BrCode,
+			&i.Checks,
+			&i.NextCheckAt,
+			&i.EscalatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -209,7 +289,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code FROM payment_attempts WHERE id = $1 FOR UPDATE
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -224,22 +304,46 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BrCode,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
 
+const rescheduleAttempt = `-- name: RescheduleAttempt :execrows
+UPDATE payment_attempts SET checks = checks + 1, next_check_at = $1
+WHERE id = $2 AND status = 'unknown'
+`
+
+type RescheduleAttemptParams struct {
+	NextCheckAt pgtype.Timestamptz
+	ID          pgtype.UUID
+}
+
+func (q *Queries) RescheduleAttempt(ctx context.Context, arg RescheduleAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleAttempt, arg.NextCheckAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateAttempt = `-- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = $1, external_id = $2, br_code = $3, updated_at = $4
-WHERE id = $5
+SET status = $1, external_id = $2, br_code = $3, updated_at = $4,
+    checks = $5, next_check_at = $6
+WHERE id = $7
 `
 
 type UpdateAttemptParams struct {
-	Status     string
-	ExternalID pgtype.Text
-	BrCode     pgtype.Text
-	UpdatedAt  pgtype.Timestamptz
-	ID         pgtype.UUID
+	Status      string
+	ExternalID  pgtype.Text
+	BrCode      pgtype.Text
+	UpdatedAt   pgtype.Timestamptz
+	Checks      int32
+	NextCheckAt pgtype.Timestamptz
+	ID          pgtype.UUID
 }
 
 func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) error {
@@ -248,6 +352,8 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 		arg.ExternalID,
 		arg.BrCode,
 		arg.UpdatedAt,
+		arg.Checks,
+		arg.NextCheckAt,
 		arg.ID,
 	)
 	return err

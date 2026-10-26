@@ -85,6 +85,7 @@ func applyAttempt(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptI
 	if err != nil {
 		return domain.PaymentAttempt{}, false, err
 	}
+	from := attempt.Status()
 	changed, err := attempt.Apply(u, now)
 	if err != nil {
 		return domain.PaymentAttempt{}, false, fmt.Errorf("apply: %w", err)
@@ -92,17 +93,70 @@ func applyAttempt(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptI
 	if !changed {
 		return attempt, false, nil
 	}
+	// A new status restarts the check schedule: sent and unknown enter the queue,
+	// every other status leaves it.
+	checks, next := row.Checks, row.NextCheckAt
+	if attempt.Status() != from {
+		at, ok := domain.FirstCheck(attempt.Status(), now)
+		checks, next = 0, pgtype.Timestamptz{Time: at, Valid: ok}
+	}
 	err = q.UpdateAttempt(ctx, paymentsdb.UpdateAttemptParams{
-		ID:         row.ID,
-		Status:     string(attempt.Status()),
-		ExternalID: pgtype.Text{String: attempt.ExternalID(), Valid: attempt.ExternalID() != ""},
-		BrCode:     pgtype.Text{String: attempt.BRCode(), Valid: attempt.BRCode() != ""},
-		UpdatedAt:  pgtype.Timestamptz{Time: attempt.UpdatedAt(), Valid: true},
+		ID:          row.ID,
+		Status:      string(attempt.Status()),
+		ExternalID:  pgtype.Text{String: attempt.ExternalID(), Valid: attempt.ExternalID() != ""},
+		BrCode:      pgtype.Text{String: attempt.BRCode(), Valid: attempt.BRCode() != ""},
+		UpdatedAt:   pgtype.Timestamptz{Time: attempt.UpdatedAt(), Valid: true},
+		Checks:      checks,
+		NextCheckAt: next,
 	})
 	if err != nil {
 		return domain.PaymentAttempt{}, false, fmt.Errorf("update: %w", err)
 	}
 	return attempt, true, nil
+}
+
+func (p *Postgres) ClaimDueAttempts(ctx context.Context, now, leaseUntil time.Time, limit int) ([]app.DueAttempt, error) {
+	rows, err := paymentsdb.New(p.pool).ClaimDueAttempts(ctx, paymentsdb.ClaimDueAttemptsParams{
+		Now:        pgtype.Timestamptz{Time: now, Valid: true},
+		LeaseUntil: pgtype.Timestamptz{Time: leaseUntil, Valid: true},
+		MaxRows:    int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("payments: claim attempts: %w", err)
+	}
+	due := make([]app.DueAttempt, len(rows))
+	for i := range rows {
+		a, err := restoreAttempt(&rows[i])
+		if err != nil {
+			return nil, err
+		}
+		due[i] = app.DueAttempt{Attempt: a, Checks: int(rows[i].Checks)}
+	}
+	return due, nil
+}
+
+// RescheduleAttempt is a no-op once the attempt left unknown, such as when an event
+// resolved it during the lookup.
+func (p *Postgres) RescheduleAttempt(ctx context.Context, id domain.AttemptID, next time.Time) error {
+	_, err := paymentsdb.New(p.pool).RescheduleAttempt(ctx, paymentsdb.RescheduleAttemptParams{
+		ID:          pgtype.UUID{Bytes: id, Valid: true},
+		NextCheckAt: pgtype.Timestamptz{Time: next, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("payments: reschedule attempt %s: %w", id, err)
+	}
+	return nil
+}
+
+func (p *Postgres) EscalateAttempt(ctx context.Context, id domain.AttemptID, now time.Time) error {
+	_, err := paymentsdb.New(p.pool).EscalateAttempt(ctx, paymentsdb.EscalateAttemptParams{
+		ID:          pgtype.UUID{Bytes: id, Valid: true},
+		EscalatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("payments: escalate attempt %s: %w", id, err)
+	}
+	return nil
 }
 
 func restoreAttempt(row *paymentsdb.PaymentAttempt) (domain.PaymentAttempt, error) {
