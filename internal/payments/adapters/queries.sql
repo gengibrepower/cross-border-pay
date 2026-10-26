@@ -29,10 +29,33 @@ SELECT * FROM payment_attempts WHERE id = @id FOR UPDATE;
 
 -- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = @status, external_id = sqlc.narg(external_id), br_code = sqlc.narg(br_code), updated_at = @updated_at
+SET status = @status, external_id = sqlc.narg(external_id), br_code = sqlc.narg(br_code), updated_at = @updated_at,
+    checks = @checks, next_check_at = sqlc.narg(next_check_at)
 WHERE id = @id;
 
 -- name: LatestAttempts :many
 SELECT DISTINCT ON (payment_id) * FROM payment_attempts
 WHERE payment_id = ANY(@payment_ids::uuid[])
 ORDER BY payment_id, id DESC;
+
+-- name: ClaimDueAttempts :many
+-- SKIP LOCKED keeps two workers off the same rows during this short transaction; the
+-- lease written into next_check_at keeps them off after it commits, while the provider
+-- is being called.
+UPDATE payment_attempts SET next_check_at = @lease_until
+WHERE id IN (
+    SELECT due.id FROM payment_attempts AS due
+    WHERE due.next_check_at <= @now
+    ORDER BY due.next_check_at
+    LIMIT @max_rows::bigint
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+
+-- name: RescheduleAttempt :execrows
+UPDATE payment_attempts SET checks = checks + 1, next_check_at = @next_check_at
+WHERE id = @id AND status = 'unknown';
+
+-- name: EscalateAttempt :execrows
+UPDATE payment_attempts SET next_check_at = NULL, escalated_at = @escalated_at
+WHERE id = @id AND status IN ('sent', 'unknown');

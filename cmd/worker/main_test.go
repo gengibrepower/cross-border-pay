@@ -34,7 +34,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// The worker starts its jobs against a real database and stops cleanly on cancel,
+// The worker starts its jobs, the cleanup and the attempt resolver, against a real database and stops cleanly on cancel,
 // as on SIGTERM.
 func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 	url := pgtest.NewDatabase(t)
@@ -50,9 +50,9 @@ func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 	go func() { result <- run(ctx, getenv, &out) }()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), `"job":"idempotency-cleanup"`) {
+	for !strings.Contains(out.String(), `"job":"idempotency-cleanup"`) || !strings.Contains(out.String(), `"job":"attempt-resolver"`) {
 		if time.Now().After(deadline) {
-			t.Fatalf("cleanup job not started after 5 s; log:\n%s", out.String())
+			t.Fatalf("jobs not started after 5 s; log:\n%s", out.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

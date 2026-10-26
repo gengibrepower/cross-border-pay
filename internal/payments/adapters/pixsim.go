@@ -40,6 +40,9 @@ func (p *PixSim) CreateAttempt(ctx context.Context, req *app.AttemptRequest) (ap
 
 func (p *PixSim) GetAttempt(ctx context.Context, id domain.AttemptID) (app.AttemptResult, error) {
 	ch, err := p.client.Get(ctx, id.String())
+	if errors.Is(err, pixsim.ErrNotFound) {
+		return app.AttemptResult{}, fmt.Errorf("pixsim: get attempt %s: %w: %w", id, app.ErrNotAtProvider, err)
+	}
 	if err != nil {
 		return app.AttemptResult{}, fmt.Errorf("pixsim: get attempt %s: %w", id, err)
 	}
