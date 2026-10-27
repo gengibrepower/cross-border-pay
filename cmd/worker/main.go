@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
+	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
 	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
 	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
@@ -31,6 +33,8 @@ const (
 	// attemptResolverInterval is how often due attempts are looked for; each attempt's
 	// own backoff lives in its next_check_at.
 	attemptResolverInterval = time.Second
+	// inboxInterval paces the inbox; a pending event's own backoff is in its row.
+	inboxInterval = time.Second
 )
 
 func main() {
@@ -65,16 +69,17 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 	resolver := paymentsapp.NewResolver(paymentsadapters.NewPostgres(pool), paymentsadapters.NewPixSim(pixsimClient),
 		clock.System{}, logger, cfg.ProviderTimeout)
+	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}}, clock.System{}, logger)
 
 	logger.Info("worker started")
-	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, logger)...); err != nil {
+	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, inbox, logger)...); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")
 	return nil
 }
 
-func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, logger *slog.Logger) []worker.Job {
+func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, inbox *eventsapp.Processor, logger *slog.Logger) []worker.Job {
 	keys := idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock.System{}, rand.Reader)
 	return []worker.Job{
 		worker.Every("idempotency-cleanup", idempotencyCleanupInterval, logger, func(ctx context.Context) error {
@@ -90,6 +95,12 @@ func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, logger *slog.Logge
 		worker.Every("attempt-resolver", attemptResolverInterval, logger, func(ctx context.Context) error {
 			if _, err := resolver.Resolve(ctx, paymentsapp.ResolveBatch); err != nil {
 				return fmt.Errorf("resolve: %w", err)
+			}
+			return nil
+		}),
+		worker.Every("inbox", inboxInterval, logger, func(ctx context.Context) error {
+			if _, err := inbox.Process(ctx, eventsapp.ProcessBatch); err != nil {
+				return fmt.Errorf("inbox: %w", err)
 			}
 			return nil
 		}),

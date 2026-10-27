@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,7 +37,7 @@ func main() {
 func run(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
 	cfg, err := config.Load(getenv)
 	if err == nil {
-		err = cfg.RequireDatabase()
+		err = errors.Join(cfg.RequireDatabase(), cfg.RequireWebhookSecret())
 	}
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -58,6 +59,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		clock:           clock.System{},
 		provider:        paymentsadapters.NewPixSim(pixsimClient),
 		providerTimeout: cfg.ProviderTimeout,
+		webhookSecret:   cfg.PixSimWebhookSecret,
 	})
 	if err != nil {
 		return err

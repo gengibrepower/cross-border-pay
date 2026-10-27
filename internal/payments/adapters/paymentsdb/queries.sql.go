@@ -311,6 +311,31 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 	return i, err
 }
 
+const lockPaymentOfAttempt = `-- name: LockPaymentOfAttempt :one
+SELECT p.id AS payment_id, q.payer_amount, q.quote_currency
+FROM payment_attempts AS a
+JOIN payments AS p ON p.id = a.payment_id
+JOIN quotes AS q ON q.id = p.quote_id
+WHERE a.id = $1
+FOR NO KEY UPDATE OF p
+`
+
+type LockPaymentOfAttemptRow struct {
+	PaymentID     pgtype.UUID
+	PayerAmount   int64
+	QuoteCurrency string
+}
+
+// Section 4.4: events of one payment are applied one at a time. NO KEY UPDATE is the
+// lock an update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a
+// foreign key check holds on the payment.
+func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (LockPaymentOfAttemptRow, error) {
+	row := q.db.QueryRow(ctx, lockPaymentOfAttempt, id)
+	var i LockPaymentOfAttemptRow
+	err := row.Scan(&i.PaymentID, &i.PayerAmount, &i.QuoteCurrency)
+	return i, err
+}
+
 const rescheduleAttempt = `-- name: RescheduleAttempt :execrows
 UPDATE payment_attempts SET checks = checks + 1, next_check_at = $1
 WHERE id = $2 AND status = 'unknown'

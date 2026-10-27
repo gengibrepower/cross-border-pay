@@ -59,3 +59,14 @@ WHERE id = @id AND status = 'unknown';
 -- name: EscalateAttempt :execrows
 UPDATE payment_attempts SET next_check_at = NULL, escalated_at = @escalated_at
 WHERE id = @id AND status IN ('sent', 'unknown');
+
+-- name: LockPaymentOfAttempt :one
+-- Section 4.4: events of one payment are applied one at a time. NO KEY UPDATE is the
+-- lock an update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a
+-- foreign key check holds on the payment.
+SELECT p.id AS payment_id, q.payer_amount, q.quote_currency
+FROM payment_attempts AS a
+JOIN payments AS p ON p.id = a.payment_id
+JOIN quotes AS q ON q.id = p.quote_id
+WHERE a.id = @id
+FOR NO KEY UPDATE OF p;

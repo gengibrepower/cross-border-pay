@@ -16,6 +16,11 @@ var (
 	// ErrNotAtProvider is GetAttempt finding no attempt with that ID: the provider never
 	// received it, or has not yet.
 	ErrNotAtProvider = errors.New("payments: provider has no such attempt")
+	// ErrUnknownEventType is a provider event payments does not act on.
+	ErrUnknownEventType = errors.New("payments: event type not handled")
+	// ErrEventDivergent is a provider event that contradicts what payments knows, such
+	// as another amount or a payment for a rejected attempt: it can never be applied.
+	ErrEventDivergent = errors.New("payments: event diverges from the payment")
 )
 
 // Provider is the port of section 4.3. Refund joins it in F7, when refunds exist.

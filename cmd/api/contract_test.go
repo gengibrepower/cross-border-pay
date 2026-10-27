@@ -69,10 +69,15 @@ func (p *countingProvider) CreateAttempt(ctx context.Context, req *paymentsapp.A
 // providerTimeout is short so that the timeout tests do not wait long.
 const providerTimeout = 300 * time.Millisecond
 
-func startPixSim(t *testing.T, c *clock.Fake) *pixsim.Client {
+// webhookSecret signs the simulator's events in these tests.
+const webhookSecret = "test-webhook-secret" //nolint:gosec // G101: a signing key that exists only between this test and its in-process simulator.
+
+// startPixSim starts the simulator sending its events to webhookURL.
+func startPixSim(t *testing.T, c *clock.Fake, webhookURL string) *pixsim.Client {
 	t.Helper()
 	sim, err := pixsimserver.New(&pixsimserver.Config{
 		Seed: 1, PixKey: "123e4567-e12b-12d1-a456-426655440000", MerchantName: "CROSS BORDER PAY", MerchantCity: "SAO PAULO",
+		WebhookURL: webhookURL, WebhookSecret: []byte(webhookSecret),
 	}, c, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
@@ -108,14 +113,22 @@ func newContract(t *testing.T) *contract {
 	pool := pgtest.NewPool(t)
 	logger := slog.New(slog.DiscardHandler)
 	fake := clock.NewFake(t0)
-	sim := startPixSim(t, fake)
-	provider := &countingProvider{Provider: paymentsadapters.NewPixSim(sim)}
-	d := &deps{usdbrl: "5.0000", clock: fake, provider: provider, providerTimeout: providerTimeout}
-	a, err := newAPI(pool, logger, d)
+	// The simulator delivers its events over real HTTP to the API under test, which
+	// is built after it: the hook forwards to it once it exists.
+	c := &contract{t: t, router: router, pool: pool, clock: fake}
+	var api atomic.Pointer[http.Handler]
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*api.Load()).ServeHTTP(w, r) }))
+	t.Cleanup(hook.Close)
+	c.sim = startPixSim(t, fake, hook.URL+"/v1/providers/pixsim/events")
+	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
+	c.deps = &deps{usdbrl: "5.0000", clock: fake, provider: c.provider, providerTimeout: providerTimeout, webhookSecret: webhookSecret}
+	a, err := newAPI(pool, logger, c.deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &contract{t: t, router: router, handler: routes(pool, logger, a.register), pool: pool, clock: fake, sim: sim, provider: provider, deps: d}
+	c.handler = routes(pool, logger, a.register)
+	api.Store(&c.handler)
+	return c
 }
 
 func (c *contract) merchantKey() string {
