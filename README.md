@@ -54,9 +54,10 @@ Every number below is measured, not estimated. Every test that touches the datab
 | Webhook delivery (`internal/webhooks`) | The worker claims due outbox events with `FOR UPDATE SKIP LOCKED` and a lease (`next_attempt_at` pushed past the timeout + 1 min), commits and only then posts, outside any transaction (section 4.3); the result goes into another short transaction. `attempts` fences the claim: once the lease ran out and another worker took the event, the first can no longer reschedule or fail it, while a 2xx, being a fact, is still recorded. Every post carries `Webhook-Signature: t=…,v1=…` (HMAC-SHA256 of the timestamp and the stored body), with a second `v1` from the previous secret for 24 h after a rotation. Only a 2xx is success: redirects are not followed, and the IP is checked again at `connect`, after DNS, under the same policy as registration. A failure waits a draw from [0, 30 s · 2ⁿ⁻¹], up to 6 h (decision 23), and becomes `failed` 72 h after creation. Each round takes up to 4 events per merchant, merchants with the oldest event first. | **Cited test 4:** the worker is killed mid-way through the second round over 100 events of 5 merchants, with 10 posts received by the merchant and never answered; after the restart and the lease running out, all 100 are delivered, the 10 cut off twice and the other 90 once, and the cut-off ones get no retry or error recorded. 4 workers over 300 events of 10 merchants: each posted once, no bad signature. 13 decision cases, 7 forgeries refused, 10 addresses through the post-DNS check. 20/20 runs with `-race -count=20`. 21 mutants killed, among them dropping `FOR UPDATE SKIP LOCKED`, the per-merchant cap, the `attempts` fence, the lease margin, the 2xx's decoupled context, `CheckRedirect`, the post-DNS check, the timestamp in the MAC and the previous secret's deadline |
 | Disabled destination and cleanup (decision 24) | Each round tells each merchant's breaker once: a 2xx ends the run of failures, and a failure 72 h after the first one with no success between disables the endpoint, in one conditional `UPDATE`, so only one of many concurrent failures disables and warns. Disabled, the endpoint gets no post: its events wait with the usual backoff and fail at 72 h, and failures cut short by shutdown do not count. The notice is `GET /v1/webhook-endpoint`, which shows `failing_since`, `disabled_at` and `disabled_reason`, plus an `ERROR` log line for the operator; any `PUT`, with the same URL too, turns it back on. An hourly job deletes, in batches of 1,000 with `SKIP LOCKED`, events delivered more than 30 days ago; `pending` and `failed` stay. The `GET` test found a bug from #32: times read from the database came out in the local zone (`-03:00`); they now come out in UTC (section 4.9). | 20 concurrent failures at the 72 h mark: 1 disables. No post to a disabled destination, and delivery resumes after the `PUT`. A round with 2xx and 500 mixed ends the run. 5 delivered at the cutoff deleted over 3 batches; the one delivered 1 µs after it, the `failed` and the `pending` stay. 20/20 runs with `-race -count=20`. 15 mutants killed, among them `<` instead of `<=` at the mark, every failure restarting the run, a success turning a disabled destination back on, posting to a disabled destination, counting shutdown failures, the cleanup deleting `failed`, a 3-day retention and reading without UTC |
 | Events and manual redelivery (`GET /v1/events`, `POST /v1/events/{id}/redeliver`) | The list shows the merchant's events, newest first, with an opaque cursor and a `delivery_status` filter: each with the exact body every delivery sends and where its delivery stands (attempts, next attempt, last status and error). Redelivery works from any status: `failed` is retried, `delivered` sent again, `pending` sent without waiting for its backoff; it answers `202`, with no `Idempotency-Key`, since repeating it only queues the event again. It opens a new retry window: the backoff restarts at 30 s and the 72 h count from it, without resetting `attempts`, which keeps fencing claims. A post in flight before the redelivery cannot push the "now" back to its own backoff. With no endpoint or a disabled one, `409`; another merchant's event, an unknown one or a malformed ID, the same `404`. `evt_`/`pay_`/`att_` now come from one place, `internal/platform/publicid`. | 7 events in pages of 3: each seen once, newest first, none of another merchant's, each `event` equal to the stored bytes. 6 invalid parameters refused. Redelivery from all 3 statuses. An event that failed its whole window (over 20 attempts), redelivered, waits 30 s after its first failure, stays `pending` until 72 h after the redelivery and is delivered. 20/20 runs with `-race -count=20`. 15 mutants killed, among them redelivery not reopening the deadline or not restarting the backoff, dropping the window fence, redelivering another merchant's event, the cursor with `<=`, backoff by the total attempt and rewriting the event's JSON |
+| GameStore walkthrough end to end (`e2e/`, section 4.1) | The real `api`, `worker` and `pixsim` as processes, on a database migrated by `cmd/migrate` and a merchant created by `cmd/admin`, over HTTP only. The US$ 20.00 charge comes back with the BR Code for R$ 101.50; repeating it with the same key answers the same bytes; the payer pays through the simulator; the worker confirms, posts to the ledger and delivers `payment.paid`, which the merchant checks by its signature and which matches the charge's `GET`. The provider sending the same event again changes nothing. Deviations: the provider takes the creation and never answers, the attempt stays `processing` and the worker's resolver finds it by its key; a merchant that is down does not delay the other, and a manual redelivery reaches it without waiting for the backoff. At the end all three stop on `SIGTERM` and exit cleanly | 3 walkthroughs in ~18 s, in parallel. 5/5 runs with `-race -count=5`. Ledger summing to zero per currency with 1 posting per paid charge, checked by SQL until the F7 balance API. 0 signatures refused by the merchant. 8 wiring mutants killed: the worker without its resolver, inbox or delivery, signing with another key, the API or the worker ignoring `SIGTERM`, the API without the provider inbox or the event routes |
 | `TestEntriesAreImmutable` | Postgres triggers reject `UPDATE`, `DELETE` and `TRUNCATE` on entries and transactions. Corrections are new transactions. | Enforced in the schema itself |
 
-CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`.
+CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`, and the end-to-end walkthrough with `-count=10`.
 
 ## Architecture
 
@@ -88,6 +89,29 @@ USD:  FX (USD)                -2030      (10150 / 5.0000)
       fee revenue               +60
       spread revenue            +30      USD sums to 0
 ```
+
+End to end, the walkthrough `e2e/` runs against the real binaries:
+
+```mermaid
+sequenceDiagram
+    participant M as Merchant
+    participant A as cmd/api
+    participant DB as Postgres
+    participant W as cmd/worker
+    participant P as pixsim
+    M->>A: POST /v1/payments (Idempotency-Key)
+    A->>DB: key, quote, attempt intent
+    A->>P: create the charge (attempt ID as key)
+    P-->>A: BR Code
+    A-->>M: 201 pending + BR Code (a repeat answers the same 201)
+    Note over P: the payer pays
+    P->>A: signed charge.paid
+    A->>DB: inbox (unique by external ID)
+    W->>DB: in one transaction: paid + ledger + outbox
+    W->>M: payment.paid signed with HMAC
+    M-->>W: 2xx, or a retry with backoff
+```
+
 
 ## Key decisions
 
@@ -154,6 +178,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 | Provider attempts | Written as `created` before the provider is called, one live attempt per payment enforced by a partial unique index, every change through the state machine under a row lock | Calling first and writing after: a crash mid-call leaves no trace of a payer who may have been charged. Uniqueness checked only in code: two concurrent requests both pass |
 | Provider errors | A refusal is a result (`Rejected`); any error, and any result the adapter left unset, moves the attempt to `unknown` | An `ErrAmbiguous` sentinel from the adapter: an error it forgets to wrap would read as a definitive failure, the expensive mistake |
 | Provider simulator | Real HTTP server with charges in memory; every random choice comes from a generator seeded by the seed and the idempotency key; failures scripted through `/control/faults`. The client speaks only the simulator's types and a ~60-line translation in `payments` adapts them to the port | An in-process fake: never produces a real timeout. One generator for the whole simulator: concurrent requests would draw in a different order each run. The adapter inside `providers` returning `payments` types: inverts the module dependency of the scope |
+| End-to-end test | `api`, `worker` and `pixsim` built with `-race` and run as processes, with Postgres from `testcontainers` and a fake merchant checking every signature; all three stop on `SIGTERM` and must exit cleanly | `docker compose` with a Dockerfile per binary: closer to the deploy, but brings F10 forward and is slower and flakier in CI. Wiring everything in one process: duplicates the `main` wiring and stops testing real config, signals and HTTP |
 | PIX txid | Chosen by the simulator (25 characters from the seed) and returned with the charge; our attempt ID travels as the `Idempotency-Key` | Packing the 26-character attempt ID into 25 by dropping the UUIDv7 version and variant bits: lossless, but cleverness with nothing gained |
 | Simulator event signature | `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t.body)>`, compared with `hmac.Equal` and a 5-minute tolerance; several `v1` allowed, so a secret can rotate | Signing only the body: a captured delivery replays forever. A plain shared token in a header: proves nothing about the body. mTLS: the real provider's job (F9), not the simulator's |
 | Writes around the provider call | Payment, quote, attempt `created` and the recovery point in one transaction; `sent` written before the call; the answer written after it. `created` therefore proves the provider was never called, and only `sent` is ambiguous | Not writing `sent`: a crash after the first transaction could not tell "never called" from "maybe called", so every crash would end in `unknown` |
@@ -174,7 +199,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F3 | Payments, state machine, base API | ✅ done |
 | F4 | Idempotency | ✅ done |
 | F5 | Simulated PIX, inbox, confirmation | ✅ done |
-| F6 | Outbox and webhooks; GameStore end to end over HTTP | ⏳ in progress: the end-to-end walkthrough is left |
+| F6 | Outbox and webhooks; GameStore end to end over HTTP | ✅ done |
 | F7 | Refunds and settlement | planned |
 | F8 | Card, boleto, chargebacks | planned |
 | F9 | Hostile simulator, CNAB 240 reconciliation, Efí sandbox | planned |
@@ -232,14 +257,14 @@ With the worker running, every event reaches that URL with `Webhook-Signature: t
 
 The contract is [api/openapi.yaml](api/openapi.yaml).
 
-Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test:stress` (the nightly `-count=100` run), `mise run gen` (`sqlc`).
+Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run e2e` (only the end-to-end walkthrough), `mise run test:stress` (the nightly `-count=100` run), `mise run gen` (`sqlc`).
 
 ## Repository layout
 
 ```
 cmd/
   api/        HTTP server
-  worker/     background jobs (unknown attempt resolver, idempotency cleanup) with graceful shutdown
+  worker/     background jobs (inbox, unknown attempts, expiry, webhook delivery, cleanups) with graceful shutdown
   migrate/    applies embedded goose migrations
   admin/      operator tasks: create a merchant and its API key, revoke a key
   pixsim/     PIX provider simulator: seed, faults on command, "pay now", signed events
@@ -256,6 +281,7 @@ internal/
 api/          openapi.yaml, the hand-written contract
 migrations/   SQL migrations, embedded in the binaries
 docs/         scope, rules and decisions (Portuguese)
+e2e/          GameStore walkthrough against the real binaries
 ```
 
 ## Stack
