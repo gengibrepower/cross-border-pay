@@ -1,12 +1,12 @@
 package domain
 
 import (
-	"encoding/base32"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
@@ -29,30 +29,16 @@ type MerchantID [16]byte
 
 type PaymentID [16]byte
 
-var idEncoding = base32.NewEncoding("0123456789abcdefghjkmnpqrstvwxyz").WithPadding(base32.NoPadding)
-
 // String is the public ID (decision 37): "pay_" and the UUIDv7 in Crockford base32,
 // whose alphabet is in ASCII order, so IDs sort by creation time as strings too.
-func (id PaymentID) String() string { return "pay_" + idEncoding.EncodeToString(id[:]) }
+func (id PaymentID) String() string { return publicid.Encode("pay_", id) }
 
 func ParsePaymentID(s string) (PaymentID, error) {
-	id, ok := parseID("pay_", s)
+	id, ok := publicid.Parse("pay_", s)
 	if !ok {
 		return PaymentID{}, fmt.Errorf("%w: %q", ErrInvalidPaymentID, s)
 	}
 	return id, nil
-}
-
-func parseID(prefix, s string) ([16]byte, bool) {
-	encoded, ok := strings.CutPrefix(s, prefix)
-	if !ok || len(encoded) != idEncoding.EncodedLen(16) {
-		return [16]byte{}, false
-	}
-	b, err := idEncoding.DecodeString(encoded)
-	if err != nil {
-		return [16]byte{}, false
-	}
-	return [16]byte(b), true
 }
 
 type Method string

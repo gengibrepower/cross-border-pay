@@ -82,7 +82,7 @@ func (s hangingSender) Send(ctx context.Context, _, _ string, _ []byte) (int, er
 // recorded, not even to the breaker, the lease brings the event back, and the round
 // ends without an error.
 func TestDeliverRecordsNothingForAPostCutByShutdown(t *testing.T) {
-	q := &fakeQueue{batch: []events.Delivery{{Event: events.Outgoing{Payload: []byte("{}"), CreatedAt: time.Now()}, Attempt: 1}}}
+	q := &fakeQueue{batch: []events.Delivery{{Event: events.Outgoing{Payload: []byte("{}"), CreatedAt: time.Now()}, Attempt: 1, WindowStart: time.Now(), WindowFirstAttempt: 1}}}
 	sender := hangingSender{started: make(chan struct{})}
 	endpoints := &oneEndpoint{}
 	d, err := NewDeliverer(q, endpoints, sender, make([]byte, merchants.MinSigningKeyBytes), clock.System{}, FullJitter, time.Hour, slog.New(slog.DiscardHandler))

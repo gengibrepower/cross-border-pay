@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
+
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
 type EventID [16]byte
 
-func (id EventID) String() string { return "evt_" + idEncoding.EncodeToString(id[:]) }
+func (id EventID) String() string { return publicid.Encode("evt_", id) }
 
 type EventType string
 

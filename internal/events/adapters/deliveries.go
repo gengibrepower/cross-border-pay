@@ -2,10 +2,12 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -47,7 +49,9 @@ func (d *Deliveries) Claim(ctx context.Context, now, leaseUntil time.Time, perMe
 				ID: r.ID.Bytes, Merchant: r.MerchantID.Bytes, Type: r.Type, Subject: r.SubjectID,
 				Payload: r.Payload, CreatedAt: r.CreatedAt.Time.UTC(),
 			},
-			Attempt: int(r.Attempts),
+			Attempt:            int(r.Attempts),
+			WindowStart:        r.WindowStartedAt.Time.UTC(),
+			WindowFirstAttempt: int(r.WindowFirstAttempt),
 		}
 	}
 	return out, nil
@@ -98,6 +102,85 @@ func (d *Deliveries) DeleteDelivered(ctx context.Context, cutoff time.Time, limi
 		return n, fmt.Errorf("events: delete delivered: %w", err)
 	}
 	return n, nil
+}
+
+// List returns one page of the merchant's events, newest first.
+func (d *Deliveries) List(ctx context.Context, q *domain.ListQuery) ([]domain.Listed, error) {
+	rows, err := eventsdb.New(d.pool).ListOutboxEvents(ctx, eventsdb.ListOutboxEventsParams{
+		MerchantID:     pgtype.UUID{Bytes: q.Merchant, Valid: true},
+		Before:         pgtype.UUID{Bytes: q.Before, Valid: q.Before != [16]byte{}},
+		DeliveryStatus: text(string(q.Status)),
+		MaxRows:        int64(q.Limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("events: list outbox: %w", err)
+	}
+	out := make([]domain.Listed, len(rows))
+	for i := range rows {
+		r := &rows[i]
+		out[i] = listed(&outboxRow{
+			r.ID, r.MerchantID, r.Type, r.SubjectID, r.Payload, r.CreatedAt, r.DeliveryStatus, r.Attempts,
+			r.NextAttemptAt, r.LastStatusCode, r.LastError, r.FinishedAt,
+		})
+	}
+	return out, nil
+}
+
+// Redeliver makes the merchant's event due at now, from any status, in a new retry
+// window. It returns domain.ErrOutgoingNotFound for an ID the merchant has no event at.
+func (d *Deliveries) Redeliver(ctx context.Context, merchant, id [16]byte, now time.Time) (domain.Listed, error) {
+	r, err := eventsdb.New(d.pool).RedeliverOutboxEvent(ctx, eventsdb.RedeliverOutboxEventParams{
+		ID: pgtype.UUID{Bytes: id, Valid: true}, MerchantID: pgtype.UUID{Bytes: merchant, Valid: true}, Now: timestamptz(now),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Listed{}, domain.ErrOutgoingNotFound
+	}
+	if err != nil {
+		return domain.Listed{}, fmt.Errorf("events: redeliver %x: %w", id, err)
+	}
+	return listed(&outboxRow{
+		r.ID, r.MerchantID, r.Type, r.SubjectID, r.Payload, r.CreatedAt, r.DeliveryStatus, r.Attempts,
+		r.NextAttemptAt, r.LastStatusCode, r.LastError, r.FinishedAt,
+	}), nil
+}
+
+// outboxRow is the shape both ListOutboxEventsRow and RedeliverOutboxEventRow have;
+// sqlc gives each query its own type.
+type outboxRow struct {
+	id, merchant   pgtype.UUID
+	typ, subject   string
+	payload        []byte
+	createdAt      pgtype.Timestamptz
+	status         string
+	attempts       int32
+	nextAttemptAt  pgtype.Timestamptz
+	lastStatusCode pgtype.Int4
+	lastError      pgtype.Text
+	finishedAt     pgtype.Timestamptz
+}
+
+func listed(r *outboxRow) domain.Listed {
+	return domain.Listed{
+		Event: domain.Outgoing{
+			ID: r.id.Bytes, Merchant: r.merchant.Bytes, Type: r.typ, Subject: r.subject, Payload: r.payload,
+			CreatedAt: r.createdAt.Time.UTC(),
+		},
+		Status:         domain.DeliveryStatus(r.status),
+		Attempts:       int(r.attempts),
+		NextAttemptAt:  utc(r.nextAttemptAt),
+		LastStatusCode: int(r.lastStatusCode.Int32),
+		LastError:      r.lastError.String,
+		FinishedAt:     utc(r.finishedAt),
+	}
+}
+
+// utc keeps times in UTC (section 4.9): pgx reads timestamptz in the local zone. A NULL
+// stays the zero time.
+func utc(t pgtype.Timestamptz) time.Time {
+	if !t.Valid {
+		return time.Time{}
+	}
+	return t.Time.UTC()
 }
 
 func statusInt4(code int) pgtype.Int4 {

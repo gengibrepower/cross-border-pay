@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
+
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
@@ -19,10 +21,10 @@ var (
 // can be looked up before the provider's own ID is known.
 type AttemptID [16]byte
 
-func (id AttemptID) String() string { return "att_" + idEncoding.EncodeToString(id[:]) }
+func (id AttemptID) String() string { return publicid.Encode("att_", id) }
 
 func ParseAttemptID(s string) (AttemptID, error) {
-	id, ok := parseID("att_", s)
+	id, ok := publicid.Parse("att_", s)
 	if !ok {
 		return AttemptID{}, fmt.Errorf("%w: %q", ErrInvalidAttemptID, s)
 	}

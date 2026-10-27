@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,6 +67,9 @@ func newEnv(t *testing.T) *env {
 	}
 	return &env{t: t, pool: pool, clock: c, deliveries: eventsadapters.NewDeliveries(pool), endpoints: endpoints}
 }
+
+// at moves the clock forward to t.
+func (e *env) at(t time.Time) { e.clock.Advance(t.Sub(e.clock.Now())) }
 
 func (e *env) deliverer() *app.Deliverer {
 	e.t.Helper()
@@ -768,5 +772,126 @@ func TestCleanupDeletesOnlyDeliveredEventsPastTheRetention(t *testing.T) {
 	}
 	if err := e.pool.QueryRow(t.Context(), "SELECT count(*) FROM outbox_events WHERE id = ANY($1)", kept).Scan(&left); err != nil || left != 3 {
 		t.Errorf("%d of the recent, failed and pending events kept, want 3 (%v)", left, err)
+	}
+}
+
+// A failed event redelivered by hand gets a new window: the backoff restarts from
+// RetryBase instead of the 6 h ceiling the old attempts reached, and the 72 h count
+// from the redelivery.
+func TestARedeliveredEventRetriesInANewWindow(t *testing.T) {
+	e := newEnv(t)
+	srv := newMerchantServer(t, e.clock)
+	srv.answer.Store(http.StatusInternalServerError)
+	merchant := e.merchant()
+	srv.register(e, merchant)
+	id := e.event(merchant, 1)
+	d := e.deliverer()
+
+	for e.row(id).status == "pending" {
+		if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+			t.Fatal(err)
+		}
+		if r := e.row(id); r.next != nil {
+			e.at(*r.next)
+		}
+	}
+	gaveUp := e.row(id)
+	if gaveUp.status != "failed" || gaveUp.attempts < 20 {
+		t.Fatalf("row = %+v, want failed after the whole window", gaveUp)
+	}
+
+	// The same 72 h of failures disabled the endpoint (decision 24): the merchant fixes
+	// it with a PUT before redelivering, which the API asks for.
+	if ep, _ := e.endpoints.Get(t.Context(), merchant); !ep.Disabled() {
+		t.Fatalf("endpoint = %+v, want disabled by the same failures", ep)
+	}
+	e.clock.Advance(time.Hour)
+	e.endpoint(merchant, fmt.Sprintf("%s/%x", srv.URL, merchant))
+	redelivered := e.clock.Now()
+	if _, err := e.deliveries.Redeliver(t.Context(), merchant, id, redelivered); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	r := e.row(id)
+	if r.status != "pending" || r.attempts != gaveUp.attempts+1 || !r.next.Equal(redelivered.Add(domain.RetryBase)) {
+		t.Fatalf("row = %+v, want pending until %v: the backoff restarted", r, redelivered.Add(domain.RetryBase))
+	}
+	e.at(redelivered.Add(domain.GiveUpAfter - time.Microsecond))
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.row(id); r.status != "pending" {
+		t.Fatalf("row = %+v, want pending within 72 h of the redelivery", r)
+	}
+
+	srv.answer.Store(0)
+	e.at(*e.row(id).next)
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.row(id); r.status != "delivered" || r.lastError != nil {
+		t.Errorf("row = %+v, want delivered", r)
+	}
+}
+
+// A delivered event redelivered is sent again, the same bytes, for a merchant that
+// lost it.
+func TestARedeliveredDeliveredEventIsSentAgain(t *testing.T) {
+	e := newEnv(t)
+	srv := newMerchantServer(t, e.clock)
+	merchant := e.merchant()
+	srv.register(e, merchant)
+	id := e.event(merchant, 1)
+	d := e.deliverer()
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.deliveries.Redeliver(t.Context(), merchant, id, e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if srv.times(id) != 2 || e.row(id).status != "delivered" || !bytes.Equal(srv.bodies[0], srv.bodies[1]) {
+		t.Errorf("received %d times, row %+v; want twice, the same bytes", srv.times(id), e.row(id))
+	}
+}
+
+// A post in flight when the merchant redelivers must not push the "due now" back with
+// its own backoff: its claim is from before the window and is fenced off.
+func TestAClaimFromBeforeARedeliveryCannotReschedule(t *testing.T) {
+	e := newEnv(t)
+	merchant := e.merchant()
+	id := e.event(merchant, 1)
+	ctx := t.Context()
+	inFlight, err := e.deliveries.Claim(ctx, t0, t0.Add(time.Minute), app.PerMerchant, app.DeliverBatch)
+	if err != nil || len(inFlight) != 1 {
+		t.Fatalf("Claim() = %v, %v", inFlight, err)
+	}
+	if _, err := e.deliveries.Redeliver(ctx, merchant, id, t0); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.deliveries.Reschedule(ctx, &inFlight[0], 500, "late", t0.Add(time.Hour)); ok || err != nil {
+		t.Errorf("Reschedule() from before the redelivery = %v, %v, want false", ok, err)
+	}
+	if ok, _ := e.deliveries.Fail(ctx, &inFlight[0], 500, "late", t0); ok {
+		t.Error("Fail() from before the redelivery changed the event")
+	}
+	again, err := e.deliveries.Claim(ctx, t0, t0.Add(time.Minute), app.PerMerchant, app.DeliverBatch)
+	if err != nil || len(again) != 1 || again[0].WindowAttempt() != 1 || !again[0].WindowStart.Equal(t0) {
+		t.Fatalf("Claim() after the redelivery = %+v, %v; want the first attempt of the new window", again, err)
+	}
+	if ok, err := e.deliveries.Reschedule(ctx, &again[0], 500, "now", t0.Add(time.Hour)); !ok || err != nil {
+		t.Errorf("Reschedule() of the new claim = %v, %v, want true", ok, err)
+	}
+}
+
+func TestRedeliverFindsOnlyTheMerchantsOwnEvent(t *testing.T) {
+	e := newEnv(t)
+	id := e.event(e.merchant(), 1)
+	if _, err := e.deliveries.Redeliver(t.Context(), e.merchant(), id, t0); !errors.Is(err, events.ErrOutgoingNotFound) {
+		t.Errorf("Redeliver() of another merchant's event = %v, want %v", err, events.ErrOutgoingNotFound)
 	}
 }

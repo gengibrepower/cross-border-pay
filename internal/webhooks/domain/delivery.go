@@ -9,7 +9,8 @@ import (
 )
 
 // Decision 23: full-jitter exponential backoff from RetryBase, doubling up to RetryCap
-// per wait, until GiveUpAfter since the event was created: about 20 attempts.
+// per wait, until GiveUpAfter since the retry window opened, at the event's creation or
+// at its last manual redelivery: about 20 attempts.
 const (
 	RetryBase   = 30 * time.Second
 	RetryCap    = 6 * time.Hour
@@ -52,21 +53,23 @@ const (
 	GiveUp
 )
 
-// Decide is where an event goes after an attempt at now that ended in a.
-func Decide(a Answer, createdAt, now time.Time) Next {
+// Decide is where an event goes after an attempt at now that ended in a, in a retry
+// window opened at windowStart.
+func Decide(a Answer, windowStart, now time.Time) Next {
 	switch {
 	case a.Succeeded():
 		return Delivered
-	case now.Sub(createdAt) >= GiveUpAfter:
+	case now.Sub(windowStart) >= GiveUpAfter:
 		return GiveUp
 	default:
 		return Retry
 	}
 }
 
-// RetryCeiling bounds the wait after the attempt-th one: RetryBase · 2^(attempt-1), at
-// most RetryCap. Full jitter draws the actual wait uniformly from [0, ceiling], so the
-// events of a merchant that was down and came back do not all return at once.
+// RetryCeiling bounds the wait after the attempt-th one of a window: RetryBase ·
+// 2^(attempt-1), at most RetryCap. Full jitter draws the actual wait uniformly from
+// [0, ceiling], so the events of a merchant that was down and came back do not all
+// return at once.
 func RetryCeiling(attempt int) time.Duration {
 	d := RetryBase
 	for i := 1; i < attempt; i++ {

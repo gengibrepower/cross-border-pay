@@ -241,7 +241,7 @@ func (d *Deliverer) record(ctx context.Context, dl *events.Delivery, a domain.An
 	attrs := []any{"event", fmt.Sprintf("%x", dl.Event.ID), "type", dl.Event.Type, "subject", dl.Event.Subject, "attempt", dl.Attempt}
 	var changed bool
 	var err error
-	switch next := domain.Decide(a, dl.Event.CreatedAt, now); next {
+	switch next := domain.Decide(a, dl.WindowStart, now); next {
 	case domain.Delivered:
 		// The merchant has the event: record it even when the worker is stopping, or
 		// it would be sent again for nothing.
@@ -255,7 +255,7 @@ func (d *Deliverer) record(ctx context.Context, dl *events.Delivery, a domain.An
 			// Cut short by shutdown, not refused by the merchant: the lease brings it back.
 			return nil
 		}
-		at := now.Add(d.jitter(domain.RetryCeiling(dl.Attempt)))
+		at := now.Add(d.jitter(domain.RetryCeiling(dl.WindowAttempt())))
 		if changed, err = d.queue.Reschedule(ctx, dl, a.StatusCode, a.Reason(), at); changed {
 			d.logger.WarnContext(ctx, "webhook failed, will retry", append(attrs, "reason", a.Reason(), "retry_at", at)...)
 		}

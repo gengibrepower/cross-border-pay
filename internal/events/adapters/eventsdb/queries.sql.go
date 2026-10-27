@@ -12,8 +12,8 @@ import (
 )
 
 const appendOutboxEvent = `-- name: AppendOutboxEvent :exec
-INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at)
-VALUES ($1, $2, $3, $4, $5, $6, $6)
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at, window_started_at)
+VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
 `
 
 type AppendOutboxEventParams struct {
@@ -61,7 +61,8 @@ UPDATE outbox_events o
 SET attempts = o.attempts + 1, next_attempt_at = $1
 FROM claimed
 WHERE o.id = claimed.id
-RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts
+RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts,
+    o.window_started_at, o.window_first_attempt
 `
 
 type ClaimDueDeliveriesParams struct {
@@ -73,13 +74,15 @@ type ClaimDueDeliveriesParams struct {
 }
 
 type ClaimDueDeliveriesRow struct {
-	ID         pgtype.UUID
-	MerchantID pgtype.UUID
-	Type       string
-	SubjectID  string
-	Payload    []byte
-	CreatedAt  pgtype.Timestamptz
-	Attempts   int32
+	ID                 pgtype.UUID
+	MerchantID         pgtype.UUID
+	Type               string
+	SubjectID          string
+	Payload            []byte
+	CreatedAt          pgtype.Timestamptz
+	Attempts           int32
+	WindowStartedAt    pgtype.Timestamptz
+	WindowFirstAttempt int32
 }
 
 // Up to per_merchant events of each merchant with something due, oldest merchant
@@ -109,6 +112,8 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, arg ClaimDueDeliveries
 			&i.Payload,
 			&i.CreatedAt,
 			&i.Attempts,
+			&i.WindowStartedAt,
+			&i.WindowFirstAttempt,
 		); err != nil {
 			return nil, err
 		}
@@ -180,7 +185,7 @@ const failDelivery = `-- name: FailDelivery :execrows
 UPDATE outbox_events
 SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = $1,
     last_status_code = $2, last_error = $3
-WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5
+WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5 AND window_first_attempt <= $5
 `
 
 type FailDeliveryParams struct {
@@ -290,6 +295,79 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (pgtyp
 	return id, err
 }
 
+const listOutboxEvents = `-- name: ListOutboxEvents :many
+SELECT id, merchant_id, type, subject_id, payload, created_at, delivery_status, attempts,
+       next_attempt_at, last_status_code, last_error, finished_at
+FROM outbox_events
+WHERE merchant_id = $1
+  AND ($2::uuid IS NULL OR id < $2)
+  AND ($3::text IS NULL OR delivery_status = $3)
+ORDER BY id DESC
+LIMIT $4::bigint
+`
+
+type ListOutboxEventsParams struct {
+	MerchantID     pgtype.UUID
+	Before         pgtype.UUID
+	DeliveryStatus pgtype.Text
+	MaxRows        int64
+}
+
+type ListOutboxEventsRow struct {
+	ID             pgtype.UUID
+	MerchantID     pgtype.UUID
+	Type           string
+	SubjectID      string
+	Payload        []byte
+	CreatedAt      pgtype.Timestamptz
+	DeliveryStatus string
+	Attempts       int32
+	NextAttemptAt  pgtype.Timestamptz
+	LastStatusCode pgtype.Int4
+	LastError      pgtype.Text
+	FinishedAt     pgtype.Timestamptz
+}
+
+// Keyset pagination on outbox_events_merchant_id: newest first (the IDs are UUIDv7),
+// each page starts below the last ID of the previous one.
+func (q *Queries) ListOutboxEvents(ctx context.Context, arg ListOutboxEventsParams) ([]ListOutboxEventsRow, error) {
+	rows, err := q.db.Query(ctx, listOutboxEvents,
+		arg.MerchantID,
+		arg.Before,
+		arg.DeliveryStatus,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOutboxEventsRow
+	for rows.Next() {
+		var i ListOutboxEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MerchantID,
+			&i.Type,
+			&i.SubjectID,
+			&i.Payload,
+			&i.CreatedAt,
+			&i.DeliveryStatus,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastStatusCode,
+			&i.LastError,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markDelivered = `-- name: MarkDelivered :execrows
 UPDATE outbox_events
 SET delivery_status = 'delivered', next_attempt_at = NULL, finished_at = $1,
@@ -312,10 +390,62 @@ func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (i
 	return result.RowsAffected(), nil
 }
 
+const redeliverOutboxEvent = `-- name: RedeliverOutboxEvent :one
+UPDATE outbox_events
+SET delivery_status = 'pending', next_attempt_at = $1, finished_at = NULL,
+    window_started_at = $1, window_first_attempt = attempts + 1
+WHERE id = $2 AND merchant_id = $3
+RETURNING id, merchant_id, type, subject_id, payload, created_at, delivery_status, attempts,
+          next_attempt_at, last_status_code, last_error, finished_at
+`
+
+type RedeliverOutboxEventParams struct {
+	Now        pgtype.Timestamptz
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+}
+
+type RedeliverOutboxEventRow struct {
+	ID             pgtype.UUID
+	MerchantID     pgtype.UUID
+	Type           string
+	SubjectID      string
+	Payload        []byte
+	CreatedAt      pgtype.Timestamptz
+	DeliveryStatus string
+	Attempts       int32
+	NextAttemptAt  pgtype.Timestamptz
+	LastStatusCode pgtype.Int4
+	LastError      pgtype.Text
+	FinishedAt     pgtype.Timestamptz
+}
+
+// From any status: due now, in a new window. A post in flight may still land, which
+// at-least-once allows; whatever else it records is fenced off.
+func (q *Queries) RedeliverOutboxEvent(ctx context.Context, arg RedeliverOutboxEventParams) (RedeliverOutboxEventRow, error) {
+	row := q.db.QueryRow(ctx, redeliverOutboxEvent, arg.Now, arg.ID, arg.MerchantID)
+	var i RedeliverOutboxEventRow
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.Type,
+		&i.SubjectID,
+		&i.Payload,
+		&i.CreatedAt,
+		&i.DeliveryStatus,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastStatusCode,
+		&i.LastError,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const rescheduleDelivery = `-- name: RescheduleDelivery :execrows
 UPDATE outbox_events
 SET next_attempt_at = $1, last_status_code = $2, last_error = $3
-WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5
+WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5 AND window_first_attempt <= $5
 `
 
 type RescheduleDeliveryParams struct {
@@ -326,6 +456,8 @@ type RescheduleDeliveryParams struct {
 	Attempts      int32
 }
 
+// A claim from before a redelivery is also fenced off by the window: its answer must
+// not push back the "due now" the merchant asked for.
 func (q *Queries) RescheduleDelivery(ctx context.Context, arg RescheduleDeliveryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, rescheduleDelivery,
 		arg.NextAttemptAt,
