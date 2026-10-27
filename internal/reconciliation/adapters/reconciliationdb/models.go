@@ -148,3 +148,14 @@ type ReviewCase struct {
 	CreatedAt       pgtype.Timestamptz
 	ResolvedAt      pgtype.Timestamptz
 }
+
+type WebhookEndpoint struct {
+	MerchantID            pgtype.UUID
+	Url                   string
+	SecretVersion         int32
+	PreviousSecretVersion pgtype.Int4
+	RotatedAt             pgtype.Timestamptz
+	DisabledAt            pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+}

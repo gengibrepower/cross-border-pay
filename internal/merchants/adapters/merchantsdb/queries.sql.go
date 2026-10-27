@@ -65,6 +65,51 @@ func (q *Queries) FindActiveAPIKey(ctx context.Context, lookup string) (FindActi
 	return i, err
 }
 
+const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
+SELECT merchant_id, url, secret_version, previous_secret_version, rotated_at, created_at, updated_at
+FROM webhook_endpoints
+WHERE merchant_id = $1
+`
+
+type GetWebhookEndpointRow struct {
+	MerchantID            pgtype.UUID
+	Url                   string
+	SecretVersion         int32
+	PreviousSecretVersion pgtype.Int4
+	RotatedAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+}
+
+func (q *Queries) GetWebhookEndpoint(ctx context.Context, merchantID pgtype.UUID) (GetWebhookEndpointRow, error) {
+	row := q.db.QueryRow(ctx, getWebhookEndpoint, merchantID)
+	var i GetWebhookEndpointRow
+	err := row.Scan(
+		&i.MerchantID,
+		&i.Url,
+		&i.SecretVersion,
+		&i.PreviousSecretVersion,
+		&i.RotatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockMerchant = `-- name: LockMerchant :one
+SELECT id FROM merchants WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// Serializes changes to one merchant's webhook endpoint, including its first
+// registration, when there is no endpoint row to lock yet. NO KEY UPDATE does not wait
+// for the KEY SHARE that inserts referencing the merchant take.
+func (q *Queries) LockMerchant(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockMerchant, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys
 SET revoked_at = now()
@@ -77,4 +122,38 @@ func (q *Queries) RevokeAPIKey(ctx context.Context, lookup string) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const saveWebhookEndpoint = `-- name: SaveWebhookEndpoint :exec
+INSERT INTO webhook_endpoints (merchant_id, url, secret_version, previous_secret_version, rotated_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (merchant_id) DO UPDATE
+SET url = excluded.url,
+    secret_version = excluded.secret_version,
+    previous_secret_version = excluded.previous_secret_version,
+    rotated_at = excluded.rotated_at,
+    updated_at = excluded.updated_at
+`
+
+type SaveWebhookEndpointParams struct {
+	MerchantID            pgtype.UUID
+	Url                   string
+	SecretVersion         int32
+	PreviousSecretVersion pgtype.Int4
+	RotatedAt             pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+}
+
+func (q *Queries) SaveWebhookEndpoint(ctx context.Context, arg SaveWebhookEndpointParams) error {
+	_, err := q.db.Exec(ctx, saveWebhookEndpoint,
+		arg.MerchantID,
+		arg.Url,
+		arg.SecretVersion,
+		arg.PreviousSecretVersion,
+		arg.RotatedAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
 }
