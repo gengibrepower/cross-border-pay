@@ -34,6 +34,8 @@ func TestLoad(t *testing.T) {
 				"PIXSIM_URL":            "http://pixsim:8090",
 				"PROVIDER_TIMEOUT":      "2s",
 				"PIXSIM_WEBHOOK_SECRET": "s3cret",
+				"WEBHOOK_SIGNING_KEY":   "0123456789abcdef0123456789abcdef",
+				"WEBHOOK_ALLOW_PRIVATE": "true",
 			},
 			want: Config{
 				HTTPAddr:            "127.0.0.1:9000",
@@ -44,6 +46,8 @@ func TestLoad(t *testing.T) {
 				PixSimURL:           "http://pixsim:8090",
 				ProviderTimeout:     2 * time.Second,
 				PixSimWebhookSecret: "s3cret",
+				WebhookSigningKey:   "0123456789abcdef0123456789abcdef",
+				WebhookAllowPrivate: true,
 			},
 		},
 		{
@@ -77,6 +81,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{name: "zero timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
 		{name: "negative timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "-1s"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
 		{name: "unparsable provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "soon"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
+		{name: "unparsable private webhooks", vars: map[string]string{"WEBHOOK_ALLOW_PRIVATE": "sometimes"}, wantVars: []string{"WEBHOOK_ALLOW_PRIVATE"}},
 		{name: "zero provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "0s"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
 		{
 			name: "every error reported at once",
@@ -109,6 +114,18 @@ func TestRequireWebhookSecret(t *testing.T) {
 	}
 	if err := (&Config{PixSimWebhookSecret: "s3cret"}).RequireWebhookSecret(); err != nil {
 		t.Errorf("RequireWebhookSecret() with secret = %v", err)
+	}
+}
+
+func TestRequireSigningKey(t *testing.T) {
+	for key, want := range map[string]error{
+		"":                                 ErrWeakSigningKey,
+		"0123456789abcdef0123456789abcde":  ErrWeakSigningKey,
+		"0123456789abcdef0123456789abcdef": nil,
+	} {
+		if err := (&Config{WebhookSigningKey: key}).RequireSigningKey(); !errors.Is(err, want) {
+			t.Errorf("RequireSigningKey() with %d bytes = %v, want %v", len(key), err, want)
+		}
 	}
 }
 

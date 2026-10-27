@@ -189,6 +189,61 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/webhook-endpoint:
+    put:
+      operationId: putWebhookEndpoint
+      summary: Register or change where the merchant receives webhooks
+      description: |
+        One endpoint per merchant. The URL must be https on the public internet: an IP
+        literal or name inside a private network, loopback or cloud metadata is refused
+        here, and the IPs a name resolves to are checked again on every delivery.
+
+        The signing secret is shown only on the first registration and on a rotation.
+        To rotate it, send `rotate_secret_from` with the current `secret_version`.
+        Repeating that same request, after a timeout for instance, does not rotate again:
+        it shows the secret the first one created. A secret that was never received is
+        recovered by rotating from the version returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutWebhookEndpointRequest"
+      responses:
+        "200":
+          description: The endpoint as stored.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "409":
+          description: "`secret_version_conflict`: `rotate_secret_from` is not the current version."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: "`invalid_webhook_url`: the URL is malformed or points inside a network."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
 components:
   securitySchemes:
     apiKey:
@@ -377,6 +432,41 @@ components:
           type: string
           description: The BR Code (EMV payload with CRC16), present when status is ready.
 
+    PutWebhookEndpointRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          example: https://gamestore.example/webhooks
+        rotate_secret_from:
+          type: integer
+          minimum: 1
+          description: The current `secret_version`, to get a new secret.
+    WebhookEndpoint:
+      type: object
+      additionalProperties: false
+      required: [url, secret_version, created_at, updated_at]
+      properties:
+        url:
+          type: string
+        secret_version:
+          type: integer
+          minimum: 1
+        secret:
+          type: string
+          pattern: "^whsec_[A-Za-z0-9_-]{43}$"
+          description: |
+            Signs every webhook (HMAC-SHA256). Present only on the first registration and
+            on a rotation; it is not stored and cannot be read back.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     Problem:
       type: object
       required: [type, title, status, code]

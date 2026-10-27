@@ -19,6 +19,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
 
@@ -37,7 +38,7 @@ func main() {
 func run(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
 	cfg, err := config.Load(getenv)
 	if err == nil {
-		err = errors.Join(cfg.RequireDatabase(), cfg.RequireWebhookSecret())
+		err = errors.Join(cfg.RequireDatabase(), cfg.RequireWebhookSecret(), cfg.RequireSigningKey())
 	}
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -60,6 +61,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		provider:        paymentsadapters.NewPixSim(pixsimClient),
 		providerTimeout: cfg.ProviderTimeout,
 		webhookSecret:   cfg.PixSimWebhookSecret,
+		signingKey:      []byte(cfg.WebhookSigningKey),
+		webhooks:        ssrf.Policy{AllowPrivate: cfg.WebhookAllowPrivate},
 	})
 	if err != nil {
 		return err

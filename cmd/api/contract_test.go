@@ -28,6 +28,7 @@ import (
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	pixsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/pixsim/server"
 )
@@ -72,6 +73,9 @@ const providerTimeout = 300 * time.Millisecond
 
 // webhookSecret signs the simulator's events in these tests.
 const webhookSecret = "test-webhook-secret" //nolint:gosec // G101: a signing key that exists only between this test and its in-process simulator.
+
+// signingKey derives the merchants' webhook secrets in these tests.
+const signingKey = "test-signing-key-of-at-least-32-bytes" //nolint:gosec // G101: exists only in these tests.
 
 // startPixSim starts the simulator sending its events to webhookURL.
 func startPixSim(t *testing.T, c *clock.Fake, webhookURL string) *pixsim.Client {
@@ -122,7 +126,10 @@ func newContract(t *testing.T) *contract {
 	t.Cleanup(hook.Close)
 	c.sim = startPixSim(t, fake, hook.URL+"/v1/providers/pixsim/events")
 	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
-	c.deps = &deps{usdbrl: "5.0000", clock: fake, provider: c.provider, providerTimeout: providerTimeout, webhookSecret: webhookSecret}
+	c.deps = &deps{
+		usdbrl: "5.0000", clock: fake, provider: c.provider, providerTimeout: providerTimeout, webhookSecret: webhookSecret,
+		signingKey: []byte(signingKey), webhooks: ssrf.Policy{},
+	}
 	a, err := newAPI(pool, logger, c.deps)
 	if err != nil {
 		t.Fatal(err)

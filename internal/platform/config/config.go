@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"time"
 )
 
 var (
 	ErrMissingDatabaseURL   = errors.New("DATABASE_URL is required")
 	ErrMissingWebhookSecret = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
+	ErrWeakSigningKey       = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
 )
+
+// minSigningKeyBytes is the merchants domain's MinSigningKeyBytes, repeated so that
+// config does not import a domain module.
+const minSigningKeyBytes = 32
 
 type Config struct {
 	HTTPAddr        string
@@ -29,6 +35,12 @@ type Config struct {
 	ProviderTimeout time.Duration
 	// PixSimWebhookSecret verifies the signature of the simulator's events.
 	PixSimWebhookSecret string
+	// WebhookSigningKey derives the merchants' webhook secrets; it never enters the
+	// database.
+	WebhookSigningKey string
+	// WebhookAllowPrivate lets webhooks reach private networks over http, for
+	// development and the GameStore walkthrough. Never in a real deployment.
+	WebhookAllowPrivate bool
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -78,6 +90,15 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cfg.PixSimWebhookSecret = getenv("PIXSIM_WEBHOOK_SECRET")
+	cfg.WebhookSigningKey = getenv("WEBHOOK_SIGNING_KEY")
+
+	if v := getenv("WEBHOOK_ALLOW_PRIVATE"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WEBHOOK_ALLOW_PRIVATE: %w", err))
+		}
+		cfg.WebhookAllowPrivate = b
+	}
 
 	if v := getenv("PROVIDER_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -100,6 +121,13 @@ func Load(getenv func(string) string) (Config, error) {
 func (c *Config) RequireWebhookSecret() error {
 	if c.PixSimWebhookSecret == "" {
 		return ErrMissingWebhookSecret
+	}
+	return nil
+}
+
+func (c *Config) RequireSigningKey() error {
+	if len(c.WebhookSigningKey) < minSigningKeyBytes {
+		return ErrWeakSigningKey
 	}
 	return nil
 }

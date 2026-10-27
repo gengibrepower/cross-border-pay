@@ -10,6 +10,10 @@ DATABASE_URL = "postgres://cbp:cbp@localhost:5432/cbp?sslmode=disable"
 PIXSIM_WEBHOOK_SECRET = "dev-pixsim-webhook-secret"
 # Where the simulator posts its events: the local API's webhook.
 PIXSIM_WEBHOOK_URL = "http://localhost:8080/v1/providers/pixsim/events"
+# Dev only: derives the merchants' webhook secrets. A real deployment sets its own.
+WEBHOOK_SIGNING_KEY = "dev-webhook-signing-key-0123456789abcdef"
+# Dev only: lets webhooks reach a local fake merchant over http.
+WEBHOOK_ALLOW_PRIVATE = "true"
 
 [tasks.fmt]
 description = "Formata o código (gofumpt + goimports pela config do golangci-lint)"

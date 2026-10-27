@@ -27,6 +27,7 @@ import (
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
@@ -37,6 +38,7 @@ import (
 type api struct {
 	payments   *paymentsadapters.Handler
 	events     *eventsadapters.Handler
+	endpoints  *merchantsadapters.EndpointHandler
 	auth       func(http.Handler) http.Handler
 	idempotent func(http.Handler) http.Handler
 }
@@ -49,6 +51,8 @@ type deps struct {
 	provider        paymentsapp.Provider
 	providerTimeout time.Duration
 	webhookSecret   string
+	signingKey      []byte
+	webhooks        ssrf.Policy
 }
 
 // moduleClock is every module's Clock at once, so one clock drives them all.
@@ -57,6 +61,7 @@ type moduleClock interface {
 	paymentsapp.Clock
 	idempotencyapp.Clock
 	eventsapp.Clock
+	merchantsapp.Clock
 }
 
 func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
@@ -65,7 +70,12 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 		return nil, fmt.Errorf("config: FX_USD_BRL_RATE: %w", err)
 	}
 	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), d.clock, fx.DefaultPricing)
-	merchants := merchantsapp.NewService(merchantsadapters.NewPostgres(pool), rand.Reader)
+	merchantsStore := merchantsadapters.NewPostgres(pool)
+	merchants := merchantsapp.NewService(merchantsStore, rand.Reader)
+	endpoints, err := merchantsapp.NewEndpoints(merchantsStore, d.webhooks, d.signingKey, d.clock)
+	if err != nil {
+		return nil, fmt.Errorf("config: WEBHOOK_SIGNING_KEY: %w", err)
+	}
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
@@ -79,7 +89,8 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 			}, d.clock, logger),
 			logger,
 		),
-		auth: merchantsadapters.RequireAPIKey(merchants, logger),
+		endpoints: merchantsadapters.NewEndpointHandler(endpoints, logger),
+		auth:      merchantsadapters.RequireAPIKey(merchants, logger),
 		idempotent: idempotencyadapters.Require(
 			idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), d.clock, rand.Reader),
 			idempotencyMerchant,
@@ -91,6 +102,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 func (a *api) register(mux *http.ServeMux) {
 	a.payments.Register(mux, a.auth, a.idempotent)
 	a.events.Register(mux)
+	a.endpoints.Register(mux, a.auth)
 }
 
 // pixsimVerifier is the bridge that keeps events from importing the simulator: it
