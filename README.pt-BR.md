@@ -54,9 +54,10 @@ Todos os números abaixo são medidos, não estimados. Todo teste que toca o ban
 | Entrega de webhooks (`internal/webhooks`) | O worker reivindica os eventos vencidos da outbox com `FOR UPDATE SKIP LOCKED` e uma lease (`next_attempt_at` empurrado para depois do timeout + 1 min), faz commit e só então posta, fora de qualquer transação (seção 4.3); o resultado entra em outra transação curta. `attempts` cerca a reivindicação: depois que a lease venceu e outro worker pegou o evento, a primeira não consegue mais reagendar nem desistir dele, e um 2xx, que é fato, ainda é gravado. Cada post leva `Webhook-Signature: t=…,v1=…` (HMAC-SHA256 do timestamp e do corpo guardado), com um segundo `v1` do segredo anterior por 24 h depois de uma rotação. Só 2xx é sucesso: redirect não é seguido, e o IP é conferido de novo no `connect`, depois do DNS, pela mesma política do cadastro. Falha espera um sorteio em [0, 30 s · 2ⁿ⁻¹], até 6 h (decisão 23), e vira `failed` 72 h depois da criação. Cada rodada pega até 4 eventos por lojista, os lojistas com evento mais antigo primeiro. | **Teste citado 4:** o worker é morto no meio da segunda rodada de 100 eventos de 5 lojistas, com 10 posts recebidos pelo lojista e não respondidos; depois do reinício e do fim da lease, os 100 são entregues, os 10 cortados duas vezes e os outros 90 uma vez, e os cortados não ganham retry nem erro registrado. 4 workers sobre 300 eventos de 10 lojistas: cada um postado 1 vez, nenhuma assinatura inválida. 13 casos de decisão, 7 falsificações recusadas, 10 endereços na checagem pós-DNS. 20/20 rodadas com `-race -count=20`. 21 mutantes mortos, entre eles tirar o `FOR UPDATE SKIP LOCKED`, o limite por lojista, a cerca de `attempts`, a margem da lease, o contexto desacoplado do 2xx, o `CheckRedirect`, a checagem pós-DNS, o timestamp do MAC e o prazo do segredo anterior |
 | Destino desativado e limpeza (decisão 24) | Cada rodada informa o breaker de cada lojista uma vez: um 2xx encerra a sequência de falhas, e uma falha 72 h depois da primeira sem sucesso no meio desativa o endpoint, num único `UPDATE` condicional, então só uma de muitas falhas simultâneas desativa e avisa. Desativado, o endpoint não recebe post: os eventos esperam com o backoff normal e falham em 72 h, e falhas cortadas pelo shutdown não contam. O aviso é o `GET /v1/webhook-endpoint`, que mostra `failing_since`, `disabled_at` e `disabled_reason`, e uma linha `ERROR` no log para o operador; qualquer `PUT`, com a mesma URL também, reativa. Um job horário apaga, em lotes de 1.000 com `SKIP LOCKED`, os eventos entregues há mais de 30 dias; `pending` e `failed` ficam. O teste do `GET` achou um bug do #32: os horários lidos do banco saíam no fuso local (`-03:00`), e agora saem em UTC (seção 4.9). | 20 falhas simultâneas na marca de 72 h: 1 desativa. Nenhum post a um destino desativado, e a entrega volta depois do `PUT`. Uma rodada com 2xx e 500 misturados encerra a sequência. 5 entregues no corte apagados em 3 lotes; o entregue 1 µs depois do corte, o `failed` e o `pending` ficam. 20/20 rodadas com `-race -count=20`. 15 mutantes mortos, entre eles `<` no lugar de `<=` na marca, cada falha reiniciar a sequência, um sucesso reativar um destino desativado, postar em destino desativado, contar falhas do shutdown, a limpeza apagar `failed`, a retenção de 3 dias e ler sem UTC |
 | Eventos e reentrega manual (`GET /v1/events`, `POST /v1/events/{id}/redeliver`) | A lista mostra os eventos do lojista, do mais novo para o mais antigo, com cursor opaco e filtro `delivery_status`: cada um com o corpo exato que toda entrega envia e onde a entrega dele está (tentativas, próxima tentativa, último status e erro). A reentrega vale para qualquer status: `failed` é tentado de novo, `delivered` é enviado de novo, `pending` sai sem esperar o backoff; responde `202`, sem `Idempotency-Key`, porque repetir só reenfileira. Ela abre uma janela nova de retry: o backoff recomeça em 30 s e as 72 h contam dela, sem zerar o `attempts`, que continua cercando a reivindicação. Um post em voo antes da reentrega não consegue empurrar o "agora" para o backoff dele. Sem endpoint ou com o endpoint desativado, `409`; evento de outro lojista, desconhecido ou com ID malformado, o mesmo `404`. O `evt_`/`pay_`/`att_` agora vêm de um só lugar, `internal/platform/publicid`. | 7 eventos em páginas de 3: cada um visto 1 vez, do mais novo para o mais antigo, nenhum de outro lojista, cada `event` igual aos bytes guardados. 6 parâmetros inválidos recusados. Reentrega a partir dos 3 status. Um evento que falhou a janela inteira (mais de 20 tentativas) reentregue espera 30 s na primeira falha, continua `pending` até 72 h depois da reentrega e é entregue. 20/20 rodadas com `-race -count=20`. 15 mutantes mortos, entre eles a reentrega não reabrir o prazo ou não reiniciar o backoff, tirar a cerca da janela, reentregar evento de outro lojista, o cursor com `<=`, o backoff pela tentativa total e reescrever o JSON do evento |
+| Roteiro GameStore ponta a ponta (`e2e/`, seção 4.1) | `api`, `worker` e `pixsim` de verdade, como processos, sobre um banco migrado pelo `cmd/migrate` e um lojista criado pelo `cmd/admin`, só por HTTP. A cobrança de US$ 20,00 sai com o BR Code de R$ 101,50; a repetição com a mesma key devolve os mesmos bytes; o pagador paga pelo simulador; o worker confirma, lança no ledger e entrega o `payment.paid`, que o lojista confere pela assinatura e que bate com o `GET` da cobrança. A reentrega do mesmo evento pelo provedor não muda nada. Desvios: o provedor engole a criação e não responde, a tentativa fica `processing` e o resolvedor do worker a acha pela key; um lojista fora do ar não atrasa o outro, e a reentrega manual o alcança sem esperar o backoff. No fim, os três param com `SIGTERM` e saem limpos | 3 roteiros em ~18 s, em paralelo. 5/5 rodadas com `-race -count=5`. Ledger com soma zero por moeda e 1 lançamento por cobrança paga, conferido por SQL até a API de saldo da F7. 0 assinaturas recusadas pelo lojista. 8 mutantes de wiring mortos: o worker sem resolvedor, sem inbox ou sem entrega, assinando com outra chave, a API ou o worker ignorando `SIGTERM`, a API sem o inbox do provedor ou sem as rotas de eventos |
 | `TestEntriesAreImmutable` | Triggers do Postgres rejeitam `UPDATE`, `DELETE` e `TRUNCATE` em lançamentos e transações. Correção é nova transação. | Garantido no próprio esquema |
 
-A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`.
+A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`, e o roteiro ponta a ponta com `-count=10`.
 
 ## Arquitetura
 
@@ -88,6 +89,29 @@ USD:  câmbio (USD)               -2030      (10150 / 5,0000)
       receita de taxas             +60
       receita de spread            +30      soma USD = 0
 ```
+
+De ponta a ponta, o roteiro que o `e2e/` roda contra os binários de verdade:
+
+```mermaid
+sequenceDiagram
+    participant L as Lojista
+    participant A as cmd/api
+    participant DB as Postgres
+    participant W as cmd/worker
+    participant P as pixsim
+    L->>A: POST /v1/payments (Idempotency-Key)
+    A->>DB: key, cotação, intenção da tentativa
+    A->>P: cria a cobrança (ID da tentativa como key)
+    P-->>A: BR Code
+    A-->>L: 201 pending + BR Code (a repetição devolve o mesmo 201)
+    Note over P: o pagador paga
+    P->>A: charge.paid assinado
+    A->>DB: inbox (único pelo ID externo)
+    W->>DB: numa transação: paid + ledger + outbox
+    W->>L: payment.paid assinado com HMAC
+    L-->>W: 2xx, ou retry com backoff
+```
+
 
 ## Decisões principais
 
@@ -154,6 +178,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 | Tentativas no provedor | Gravadas como `created` antes da chamada ao provedor, uma tentativa viva por cobrança garantida por índice único parcial, toda mudança pela máquina de estados sob lock de linha | Chamar primeiro e gravar depois: uma queda no meio da chamada não deixa rastro de um pagador que talvez tenha sido cobrado. Unicidade só no código: dois requests simultâneos passam |
 | Erros do provedor | Recusa é um resultado (`Rejected`); qualquer erro, e qualquer resultado que o adapter deixou sem preencher, leva a tentativa a `unknown` | Sentinela `ErrAmbiguous` vinda do adapter: um erro que ele esqueça de embrulhar seria lido como falha definitiva, o erro caro |
 | Simulador de provedor | Servidor HTTP real com cobranças em memória; toda escolha aleatória sai de um gerador semeado pela seed e pela key de idempotência; falhas roteirizadas por `/control/faults`. O cliente fala só os tipos do simulador, e uma tradução de ~60 linhas em `payments` os adapta à porta | Fake no mesmo processo: nunca produz um timeout de verdade. Um gerador único para o simulador: requests simultâneos sorteariam em ordem diferente a cada rodada. O adapter dentro de `providers` devolvendo tipos de `payments`: inverte a dependência entre módulos do escopo |
+| Teste ponta a ponta | `api`, `worker` e `pixsim` compilados com `-race` e rodados como processos, com Postgres pelo `testcontainers` e o lojista falso conferindo cada assinatura; os três param com `SIGTERM` e precisam sair limpos | `docker compose` com um Dockerfile por binário: mais fiel ao deploy, mas adianta a F10 e fica mais lento e frágil na CI. Montar tudo num processo só: duplica o wiring dos `main` e deixa de testar config, sinais e HTTP de verdade |
 | txid do PIX | Escolhido pelo simulador (25 caracteres tirados da seed) e devolvido com a cobrança; o ID da nossa tentativa viaja como `Idempotency-Key` | Compactar os 26 caracteres do ID da tentativa em 25, tirando os bits de versão e variante do UUIDv7: sem perda, mas engenhosidade sem ganho |
 | Assinatura dos eventos do simulador | `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(segredo, t.corpo)>`, comparada com `hmac.Equal` e tolerância de 5 minutos; vários `v1` aceitos, para o segredo poder ser trocado | Assinar só o corpo: uma entrega capturada pode ser reenviada para sempre. Um token fixo no cabeçalho: não prova nada sobre o corpo. mTLS: papel do provedor real (F9), não do simulador |
 | Escritas em volta da chamada ao provedor | Cobrança, cotação, tentativa `created` e ponto de retomada numa transação; `sent` gravado antes da chamada; a resposta gravada depois. Assim, `created` prova que o provedor nunca foi chamado, e só `sent` é ambíguo | Não gravar `sent`: uma queda depois da primeira transação não distinguiria "nunca chamou" de "talvez tenha chamado", e toda queda terminaria em `unknown` |
@@ -174,7 +199,7 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F3 | Cobranças, máquina de estados, API base | ✅ pronta |
 | F4 | Idempotência | ✅ pronta |
 | F5 | PIX simulado, inbox, confirmação | ✅ pronta |
-| F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | ⏳ em andamento: falta o roteiro ponta a ponta |
+| F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | ✅ pronta |
 | F7 | Estornos e liquidação | planejada |
 | F8 | Cartão, boleto, chargebacks | planejada |
 | F9 | Simulador hostil, conciliação CNAB 240, sandbox Efí | planejada |
@@ -232,14 +257,14 @@ Com o worker rodando, cada evento chega a essa URL com `Webhook-Signature: t=<un
 
 O contrato é o [api/openapi.yaml](api/openapi.yaml).
 
-Outras tarefas: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run test:stress` (a rodada noturna com `-count=100`), `mise run gen` (`sqlc`).
+Outras tarefas: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run e2e` (só o roteiro ponta a ponta), `mise run test:stress` (a rodada noturna com `-count=100`), `mise run gen` (`sqlc`).
 
 ## Estrutura do repositório
 
 ```
 cmd/
   api/        servidor HTTP
-  worker/     jobs em segundo plano (resolvedor de tentativas unknown, limpeza de idempotência) com shutdown gracioso
+  worker/     jobs em segundo plano (inbox, tentativas unknown, expiração, entrega de webhooks, limpezas) com shutdown gracioso
   migrate/    aplica as migrations do goose embutidas
   admin/      tarefas de operação: criar lojista e API key, revogar chave
   pixsim/     simulador de provedor PIX: seed, falhas sob comando, "pagar agora", eventos assinados
@@ -256,6 +281,7 @@ internal/
 api/          openapi.yaml, o contrato escrito à mão
 migrations/   migrations SQL, embutidas nos binários
 docs/         escopo, regras e decisões
+e2e/          roteiro GameStore contra os binários reais
 ```
 
 ## Stack

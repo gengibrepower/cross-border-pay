@@ -39,9 +39,17 @@ run = [
 ]
 
 [tasks."test:stress"]
-description = "Testes repetidos 100 vezes com o detector de corrida, como o job noturno"
-# 100 rounds of the integration packages take over 10 min, go test's default.
-run = "go test -race -count=100 -timeout=60m ./..."
+description = "Testes repetidos 100 vezes com o detector de corrida, e o e2e 10 vezes, como o job noturno"
+# 100 rounds of the integration packages take over 10 min, go test's default. The e2e
+# tests wiring, not races: 100 of its ~18 s rounds would add 30 min for little.
+run = [
+  "go test -race -count=100 -timeout=60m $(go list ./... | grep -v /e2e$)",
+  "go test -race -count=10 -timeout=20m ./e2e/",
+]
+
+[tasks.e2e]
+description = "Roteiro GameStore ponta a ponta: api, worker e pixsim como processos, com Postgres real"
+run = "go test -race -count=1 ./e2e/"
 
 [tasks.vuln]
 description = "Vulnerabilidades conhecidas no código e nas dependências"
