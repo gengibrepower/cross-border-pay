@@ -31,3 +31,15 @@ RETURNING id;
 -- name: InsertEntries :exec
 INSERT INTO ledger_entries (transaction_id, account_id, currency, amount)
 SELECT @transaction_id, unnest(@account_ids::uuid[]), unnest(@currencies::text[]), unnest(@amounts::bigint[]);
+
+-- name: AccountsByCode :many
+SELECT id, code, currency, balance_rule
+FROM ledger_accounts
+WHERE code = ANY(@codes::text[]);
+
+-- name: InsertAccountIfAbsent :exec
+-- A concurrent insert of the same code waits for the other transaction; once that one
+-- commits, this one does nothing.
+INSERT INTO ledger_accounts (code, currency, balance_rule)
+VALUES (@code, @currency, @balance_rule)
+ON CONFLICT (code) DO NOTHING;

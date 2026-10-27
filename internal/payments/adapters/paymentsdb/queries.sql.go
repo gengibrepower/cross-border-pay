@@ -312,7 +312,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 }
 
 const lockPaymentOfAttempt = `-- name: LockPaymentOfAttempt :one
-SELECT p.id AS payment_id, q.payer_amount, q.quote_currency
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.quote_id, q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = p.quote_id
@@ -322,17 +322,29 @@ FOR NO KEY UPDATE OF p
 
 type LockPaymentOfAttemptRow struct {
 	PaymentID     pgtype.UUID
+	MerchantID    pgtype.UUID
+	Status        string
+	QuoteID       pgtype.UUID
 	PayerAmount   int64
 	QuoteCurrency string
 }
 
-// Section 4.4: events of one payment are applied one at a time. NO KEY UPDATE is the
-// lock an update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a
-// foreign key check holds on the payment.
+// Section 4.4: events of one payment are applied one at a time. Every path that changes
+// an attempt takes this lock first, then the attempt's, then the ledger's accounts, so
+// no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
+// update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
+// key check holds on the payment.
 func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (LockPaymentOfAttemptRow, error) {
 	row := q.db.QueryRow(ctx, lockPaymentOfAttempt, id)
 	var i LockPaymentOfAttemptRow
-	err := row.Scan(&i.PaymentID, &i.PayerAmount, &i.QuoteCurrency)
+	err := row.Scan(
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Status,
+		&i.QuoteID,
+		&i.PayerAmount,
+		&i.QuoteCurrency,
+	)
 	return i, err
 }
 
@@ -381,5 +393,20 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 		arg.NextCheckAt,
 		arg.ID,
 	)
+	return err
+}
+
+const updatePaymentStatus = `-- name: UpdatePaymentStatus :exec
+UPDATE payments SET status = $1, updated_at = $2 WHERE id = $3
+`
+
+type UpdatePaymentStatusParams struct {
+	Status    string
+	UpdatedAt pgtype.Timestamptz
+	ID        pgtype.UUID
+}
+
+func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error {
+	_, err := q.db.Exec(ctx, updatePaymentStatus, arg.Status, arg.UpdatedAt, arg.ID)
 	return err
 }

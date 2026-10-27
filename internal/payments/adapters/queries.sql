@@ -61,12 +61,17 @@ UPDATE payment_attempts SET next_check_at = NULL, escalated_at = @escalated_at
 WHERE id = @id AND status IN ('sent', 'unknown');
 
 -- name: LockPaymentOfAttempt :one
--- Section 4.4: events of one payment are applied one at a time. NO KEY UPDATE is the
--- lock an update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a
--- foreign key check holds on the payment.
-SELECT p.id AS payment_id, q.payer_amount, q.quote_currency
+-- Section 4.4: events of one payment are applied one at a time. Every path that changes
+-- an attempt takes this lock first, then the attempt's, then the ledger's accounts, so
+-- no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
+-- update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
+-- key check holds on the payment.
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.quote_id, q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = p.quote_id
 WHERE a.id = @id
 FOR NO KEY UPDATE OF p;
+
+-- name: UpdatePaymentStatus :exec
+UPDATE payments SET status = @status, updated_at = @updated_at WHERE id = @id;

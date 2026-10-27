@@ -49,6 +49,55 @@ func (Ledger) CreateAccount(ctx context.Context, db DB, code string, currency mo
 	return account, nil
 }
 
+// AccountsByCode returns the accounts with these codes; a code with no account is
+// ErrUnknownAccount.
+func (Ledger) AccountsByCode(ctx context.Context, db DB, codes ...string) (map[string]domain.Account, error) {
+	rows, err := ledgerdb.New(db).AccountsByCode(ctx, codes)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: accounts by code: %w", err)
+	}
+	accounts := make(map[string]domain.Account, len(rows))
+	for _, row := range rows {
+		a, err := accountFromRow(row.ID, row.Currency, row.BalanceRule)
+		if err != nil {
+			return nil, err
+		}
+		accounts[row.Code.String] = a
+	}
+	for _, code := range codes {
+		if _, ok := accounts[code]; !ok {
+			return nil, fmt.Errorf("%w: code %q", domain.ErrUnknownAccount, code)
+		}
+	}
+	return accounts, nil
+}
+
+// EnsureAccount returns the account with this code, creating it on first use. An
+// existing account with another currency or rule is ErrInvalidAccount, never reused.
+func (l Ledger) EnsureAccount(ctx context.Context, db DB, code string, currency money.Currency, rule domain.BalanceRule) (domain.Account, error) {
+	dbRule, err := ruleToDB(rule)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	err = ledgerdb.New(db).InsertAccountIfAbsent(ctx, ledgerdb.InsertAccountIfAbsentParams{
+		Code:        pgtype.Text{String: code, Valid: true},
+		Currency:    currency.Code(),
+		BalanceRule: dbRule,
+	})
+	if err != nil {
+		return domain.Account{}, fmt.Errorf("ledger: ensure account %q: %w", code, err)
+	}
+	accounts, err := l.AccountsByCode(ctx, db, code)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	a := accounts[code]
+	if a.Currency() != currency || a.Rule() != rule {
+		return domain.Account{}, fmt.Errorf("%w: %q exists in %s with rule %d", domain.ErrInvalidAccount, code, a.Currency().Code(), a.Rule())
+	}
+	return a, nil
+}
+
 func (Ledger) Balance(ctx context.Context, db DB, id domain.AccountID) (money.Money, error) {
 	q := ledgerdb.New(db)
 	row, err := q.GetAccount(ctx, toUUID(id))
