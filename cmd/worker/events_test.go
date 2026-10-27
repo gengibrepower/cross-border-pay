@@ -42,8 +42,8 @@ func newInboxEnv(t *testing.T) *inboxEnv {
 	c := clock.NewFake(t0)
 	store := eventsadapters.NewPostgres(pool)
 	return &inboxEnv{
-		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool),
-		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c}, c, slog.New(slog.DiscardHandler)),
+		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, merchantOutbox{}),
+		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, outbox: merchantOutbox{}}, c, slog.New(slog.DiscardHandler)),
 	}
 }
 

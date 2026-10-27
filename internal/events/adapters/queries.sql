@@ -31,3 +31,7 @@ WHERE id = @id AND status = 'pending';
 
 -- name: GetEvent :one
 SELECT * FROM inbox_events WHERE id = @id;
+
+-- name: AppendOutboxEvent :exec
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
+VALUES (@id, @merchant_id, @type, @subject_id, @payload, @created_at);

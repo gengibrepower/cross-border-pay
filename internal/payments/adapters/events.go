@@ -20,7 +20,7 @@ import (
 // inbox's transaction, so the effect commits with the event's status. subject is the
 // attempt it concerns. It returns app.ErrAttemptNotFound for an attempt not stored
 // yet, app.ErrEventDivergent for one that contradicts it and app.ErrUnknownEventType.
-func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, payload []byte, now time.Time) (subject string, err error) {
+func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, outbox Outbox, payload []byte, now time.Time) (subject string, err error) {
 	var e pixsim.Event
 	if err := json.Unmarshal(payload, &e); err != nil {
 		return "", fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
@@ -50,7 +50,7 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, payload []byte, now time.
 	}
 
 	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode}
-	_, _, err = applyLocked(ctx, tx, &row, id, u, now)
+	_, _, err = applyLocked(ctx, tx, outbox, &row, id, u, now)
 	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrExternalIDMismatch) || errors.Is(err, domain.ErrBRCodeMismatch) {
 		return subject, fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
 	}

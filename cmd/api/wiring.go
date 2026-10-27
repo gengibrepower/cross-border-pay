@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
@@ -66,7 +67,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool), d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool, merchantOutbox{}), d.provider, d.clock, logger, d.providerTimeout),
 			merchantFrom,
 			logger,
 		),
@@ -117,4 +118,21 @@ func merchantFrom(ctx context.Context) (payments.MerchantID, bool) {
 func idempotencyMerchant(ctx context.Context) (idempotency.MerchantID, bool) {
 	p, ok := merchantsadapters.PrincipalFrom(ctx)
 	return idempotency.MerchantID(p.MerchantID), ok
+}
+
+// merchantOutbox is the bridge that keeps payments from importing events: it hands
+// payments' events to the events outbox, in payments' transaction.
+type merchantOutbox struct {
+	outbox eventsadapters.Outbox
+}
+
+func (o merchantOutbox) Append(ctx context.Context, tx pgx.Tx, e *payments.MerchantEvent) error {
+	err := o.outbox.Append(ctx, tx, &events.Outgoing{
+		ID: e.ID, Merchant: e.Merchant, Type: string(e.Type), Subject: e.Payment.String(),
+		Payload: e.Payload, CreatedAt: e.CreatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("merchant outbox: %w", err)
+	}
+	return nil
 }

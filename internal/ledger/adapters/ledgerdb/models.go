@@ -77,6 +77,15 @@ type Merchant struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type OutboxEvent struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Type       string
+	SubjectID  string
+	Payload    []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
 type Payment struct {
 	ID         pgtype.UUID
 	MerchantID pgtype.UUID
@@ -88,6 +97,7 @@ type Payment struct {
 	Reference  string
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
+	Version    int32
 }
 
 type PaymentAttempt struct {

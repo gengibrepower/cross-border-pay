@@ -40,6 +40,7 @@ var t0 = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 // response against api/openapi.yaml (decision 50).
 type contract struct {
 	t       *testing.T
+	doc     *openapi3.T
 	router  routers.Router
 	handler http.Handler
 	pool    *pgxpool.Pool
@@ -115,7 +116,7 @@ func newContract(t *testing.T) *contract {
 	fake := clock.NewFake(t0)
 	// The simulator delivers its events over real HTTP to the API under test, which
 	// is built after it: the hook forwards to it once it exists.
-	c := &contract{t: t, router: router, pool: pool, clock: fake}
+	c := &contract{t: t, doc: doc, router: router, pool: pool, clock: fake}
 	var api atomic.Pointer[http.Handler]
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*api.Load()).ServeHTTP(w, r) }))
 	t.Cleanup(hook.Close)
