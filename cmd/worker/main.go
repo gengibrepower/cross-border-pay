@@ -44,7 +44,8 @@ const (
 	// could not be asked about comes back once its lease ends.
 	expiryInterval = time.Second
 	// webhookInterval paces the delivery rounds; each event's backoff is in its row.
-	webhookInterval = time.Second
+	webhookInterval        = time.Second
+	webhookCleanupInterval = time.Hour
 )
 
 func main() {
@@ -132,6 +133,16 @@ func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, expirer *paymentsa
 		worker.Every("webhooks", webhookInterval, logger, func(ctx context.Context) error {
 			if _, err := deliverer.Deliver(ctx, webhooksapp.DeliverBatch); err != nil {
 				return fmt.Errorf("webhooks: %w", err)
+			}
+			return nil
+		}),
+		worker.Every("webhook-cleanup", webhookCleanupInterval, logger, func(ctx context.Context) error {
+			n, err := deliverer.Cleanup(ctx, webhooksapp.CleanupBatch)
+			if n > 0 {
+				logger.InfoContext(ctx, "delivered webhook events deleted", "count", n)
+			}
+			if err != nil {
+				return fmt.Errorf("cleanup: %w", err)
 			}
 			return nil
 		}),

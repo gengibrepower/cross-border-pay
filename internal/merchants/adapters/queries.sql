@@ -24,7 +24,8 @@ WHERE lookup = @lookup AND revoked_at IS NULL;
 SELECT id FROM merchants WHERE id = @id FOR NO KEY UPDATE;
 
 -- name: GetWebhookEndpoint :one
-SELECT merchant_id, url, secret_version, previous_secret_version, rotated_at, created_at, updated_at
+SELECT merchant_id, url, secret_version, previous_secret_version, rotated_at,
+       failing_since, disabled_at, disabled_reason, created_at, updated_at
 FROM webhook_endpoints
 WHERE merchant_id = @merchant_id;
 
@@ -36,4 +37,24 @@ SET url = excluded.url,
     secret_version = excluded.secret_version,
     previous_secret_version = excluded.previous_secret_version,
     rotated_at = excluded.rotated_at,
-    updated_at = excluded.updated_at;
+    updated_at = excluded.updated_at,
+    -- The merchant touching the endpoint is the merchant saying it is fixed.
+    failing_since = NULL,
+    disabled_at = NULL,
+    disabled_reason = NULL;
+
+-- name: RecordEndpointSuccess :exec
+UPDATE webhook_endpoints
+SET failing_since = NULL
+WHERE merchant_id = @merchant_id AND failing_since IS NOT NULL AND disabled_at IS NULL;
+
+-- name: RecordEndpointFailure :one
+-- One statement, so the row lock serializes concurrent failures: the one that crosses
+-- the line disables the endpoint and gets disabled = true; the rest find it disabled
+-- and change nothing.
+UPDATE webhook_endpoints
+SET failing_since = coalesce(failing_since, @now),
+    disabled_at = CASE WHEN coalesce(failing_since, @now) <= @disable_before THEN @now END,
+    disabled_reason = CASE WHEN coalesce(failing_since, @now) <= @disable_before THEN @reason::text END
+WHERE merchant_id = @merchant_id AND disabled_at IS NULL
+RETURNING (disabled_at IS NOT NULL)::boolean AS disabled;

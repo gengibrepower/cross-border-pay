@@ -151,6 +151,31 @@ func (q *Queries) ClaimDueEvent(ctx context.Context, now pgtype.Timestamptz) (In
 	return i, err
 }
 
+const deleteDeliveredEvents = `-- name: DeleteDeliveredEvents :execrows
+DELETE FROM outbox_events
+WHERE id IN (
+    SELECT old.id FROM outbox_events AS old
+    WHERE old.delivery_status = 'delivered' AND old.finished_at <= $1
+    LIMIT $2::bigint
+    FOR UPDATE SKIP LOCKED
+)
+`
+
+type DeleteDeliveredEventsParams struct {
+	Cutoff  pgtype.Timestamptz
+	MaxRows int64
+}
+
+// One batch of events delivered before the cutoff. SKIP LOCKED passes over a row
+// another statement holds instead of waiting for it.
+func (q *Queries) DeleteDeliveredEvents(ctx context.Context, arg DeleteDeliveredEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeliveredEvents, arg.Cutoff, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failDelivery = `-- name: FailDelivery :execrows
 UPDATE outbox_events
 SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = $1,

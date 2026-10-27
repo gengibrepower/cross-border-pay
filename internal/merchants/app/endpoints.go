@@ -23,6 +23,8 @@ type EndpointStore interface {
 	// UpdateEndpoint locks the merchant, hands its endpoint to change (nil for none) and
 	// stores what change returns, in one transaction that it may repeat whole.
 	UpdateEndpoint(ctx context.Context, merchant domain.MerchantID, change func(current *domain.Endpoint) (domain.Endpoint, error)) (domain.Endpoint, error)
+	// Endpoint returns ErrEndpointNotFound for a merchant without one.
+	Endpoint(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error)
 }
 
 // Endpoints registers where merchants receive webhooks.
@@ -38,6 +40,16 @@ func NewEndpoints(store EndpointStore, policy ssrf.Policy, signingKey []byte, cl
 		return nil, domain.ErrWeakSigningKey
 	}
 	return &Endpoints{store: store, policy: policy, key: signingKey, clock: clock}, nil
+}
+
+// Get returns the merchant's endpoint, disabled or not, or ErrEndpointNotFound. It is
+// how a merchant learns that deliveries stopped (decision 24).
+func (s *Endpoints) Get(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error) {
+	e, err := s.store.Endpoint(ctx, merchant)
+	if err != nil {
+		return domain.Endpoint{}, fmt.Errorf("merchants: webhook endpoint: %w", err)
+	}
+	return e, nil
 }
 
 // Put registers or changes the merchant's endpoint, with times in the database's

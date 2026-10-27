@@ -16,6 +16,10 @@ const (
 	GiveUpAfter = 72 * time.Hour
 )
 
+// DeliveredRetention is how long a delivered event is kept, for the merchant to look
+// back at, before the cleanup deletes it (section 4.5).
+const DeliveredRetention = 30 * 24 * time.Hour
+
 // Answer is how one attempt ended: the status the merchant answered with, or Err when
 // no answer came (refused address, timeout, connection error). StatusCode is 0 then.
 type Answer struct {

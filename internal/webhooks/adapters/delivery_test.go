@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -618,5 +619,154 @@ func TestWorkerKilledMidRoundDeliversEveryEventAfterRestart(t *testing.T) {
 	}
 	if twice != len(cut) {
 		t.Errorf("%d events received twice, want only the %d cut off", twice, len(cut))
+	}
+}
+
+func (m *merchantServer) posts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, c := range m.received {
+		n += c
+	}
+	return n
+}
+
+// Decision 24 end to end: 72 h of only failures disable the endpoint, which then gets
+// no post at all, its events waiting; a PUT by the merchant turns it back on.
+func TestADeadEndpointIsDisabledUntilTheMerchantChangesIt(t *testing.T) {
+	e := newEnv(t)
+	srv := newMerchantServer(t, e.clock)
+	srv.answer.Store(http.StatusBadGateway)
+	merchant := e.merchant()
+	srv.register(e, merchant)
+	d := e.deliverer()
+	get := func() merchants.Endpoint {
+		t.Helper()
+		ep, err := e.endpoints.Get(t.Context(), merchant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ep
+	}
+
+	e.event(merchant, 1)
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(merchants.DisableAfter - time.Second)
+	e.event(merchant, 2)
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if ep := get(); ep.Disabled() {
+		t.Fatal("disabled before 72 h of failures")
+	}
+	e.clock.Advance(time.Second)
+	e.event(merchant, 3)
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	ep := get()
+	if !ep.Disabled() || ep.DisabledReason != "only failures for 72 h; last: answered 502" {
+		t.Fatalf("endpoint = %+v, want disabled at 72 h of failures", ep)
+	}
+
+	posts := srv.posts()
+	late := e.event(merchant, 4)
+	if n, err := d.Deliver(t.Context(), app.DeliverBatch); n != 1 || err != nil {
+		t.Fatalf("Deliver() = %d, %v, want the new event claimed", n, err)
+	}
+	if srv.posts() != posts {
+		t.Fatal("posted to a disabled endpoint")
+	}
+	r := e.row(late)
+	if r.status != "pending" || r.statusCode != nil || !strings.HasPrefix(*r.lastError, "webhook endpoint disabled") {
+		t.Fatalf("row = %+v, want waiting on the disabled endpoint", r)
+	}
+
+	srv.answer.Store(0)
+	e.endpoint(merchant, fmt.Sprintf("%s/%x", srv.URL, merchant)) // the same URL: the merchant says it is fixed
+	if ep := get(); ep.Disabled() {
+		t.Fatal("still disabled after a PUT")
+	}
+	e.clock.Advance(domain.RetryCeiling(r.attempts))
+	if _, err := d.Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.row(late); r.status != "delivered" || srv.times(late) != 1 {
+		t.Errorf("row = %+v, received %d times; want delivered once turned back on", r, srv.times(late))
+	}
+}
+
+// A round where any post to the merchant succeeds ends its run of failures, even if
+// others failed in the same round.
+func TestAnyDeliveredPostEndsTheRunOfFailures(t *testing.T) {
+	e := newEnv(t)
+	merchant := e.merchant()
+	mux := http.NewServeMux()
+	var n atomic.Int64
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		if n.Add(1)%2 == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	e.endpoint(merchant, srv.URL)
+	if _, err := merchantsadapters.NewPostgres(e.pool).EndpointFailed(t.Context(), merchant, "answered 500", t0.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		e.event(merchant, i)
+	}
+	if _, err := e.deliverer().Deliver(t.Context(), app.DeliverBatch); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := e.endpoints.Get(t.Context(), merchant)
+	if err != nil || !ep.FailingSince.IsZero() {
+		t.Errorf("endpoint = %+v, %v; want the run of failures ended", ep, err)
+	}
+}
+
+func TestCleanupDeletesOnlyDeliveredEventsPastTheRetention(t *testing.T) {
+	e := newEnv(t)
+	merchant := e.merchant()
+	// After the clock advances by the 30-day retention, the cutoff is t0: old sits on it and
+	// fresh a microsecond past it.
+	old := t0
+	finish := func(id [16]byte, status string, at time.Time) {
+		t.Helper()
+		_, err := e.pool.Exec(t.Context(),
+			"UPDATE outbox_events SET delivery_status = $2, next_attempt_at = NULL, finished_at = $3 WHERE id = $1", id, status, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var deleted, kept [][16]byte
+	for i := range 5 {
+		id := e.event(merchant, i)
+		finish(id, "delivered", old)
+		deleted = append(deleted, id)
+	}
+	fresh := e.event(merchant, 10)
+	finish(fresh, "delivered", old.Add(time.Microsecond))
+	failed := e.event(merchant, 11)
+	finish(failed, "failed", old)
+	kept = append(kept, fresh, failed, e.event(merchant, 12))
+
+	// Thirty days, written out rather than read from the constant it checks.
+	e.clock.Advance(30 * 24 * time.Hour)
+	n, err := e.deliverer().Cleanup(t.Context(), 2)
+	if err != nil || n != 5 {
+		t.Fatalf("Cleanup() = %d, %v, want the 5 old delivered ones over 3 batches", n, err)
+	}
+	var left int
+	if err := e.pool.QueryRow(t.Context(), "SELECT count(*) FROM outbox_events WHERE id = ANY($1)", deleted).Scan(&left); err != nil || left != 0 {
+		t.Errorf("%d old delivered events left, %v", left, err)
+	}
+	if err := e.pool.QueryRow(t.Context(), "SELECT count(*) FROM outbox_events WHERE id = ANY($1)", kept).Scan(&left); err != nil || left != 3 {
+		t.Errorf("%d of the recent, failed and pending events kept, want 3 (%v)", left, err)
 	}
 }

@@ -77,3 +77,17 @@ func TestDeriveSecret(t *testing.T) {
 		t.Errorf("short key: error = %v, want %v", err, domain.ErrWeakSigningKey)
 	}
 }
+
+// Decision 24: any change of a disabled endpoint, the same URL included, turns it on.
+func TestAnyChangeTurnsADisabledEndpointBackOn(t *testing.T) {
+	disabled := domain.Endpoint{
+		Merchant: gameID, URL: "https://a.example", Version: 1, CreatedAt: t0, UpdatedAt: t0,
+		FailingSince: t0, DisabledAt: t0.Add(domain.DisableAfter), DisabledReason: "only failures",
+	}
+	for _, c := range []domain.Change{{URL: "https://a.example"}, {URL: "https://b.example"}, {URL: "https://a.example", RotateFrom: 1}} {
+		e, _, err := domain.Apply(&disabled, gameID, c, t0.Add(100*time.Hour))
+		if err != nil || e.Disabled() || !e.FailingSince.IsZero() || e.DisabledReason != "" {
+			t.Errorf("Apply(%+v) = %+v, %v; want it enabled with no run of failures", c, e, err)
+		}
+	}
+}

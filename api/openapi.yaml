@@ -190,6 +190,38 @@ paths:
           $ref: "#/components/responses/Problem"
 
   /v1/webhook-endpoint:
+    get:
+      operationId: getWebhookEndpoint
+      summary: The merchant's endpoint, and whether deliveries to it are stopped
+      description: |
+        Never shows the secret. `failing_since` is the first failed delivery with no
+        success since. After 72 hours of only failures the endpoint is disabled
+        (`disabled_at`, `disabled_reason`) and gets no posts: its events wait, and
+        those older than 72 hours fail. Any `PUT`, with the same URL too, turns it
+        back on.
+      responses:
+        "200":
+          description: The endpoint as stored.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: "`webhook_endpoint_not_found`: none was registered."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
     put:
       operationId: putWebhookEndpoint
       summary: Register or change where the merchant receives webhooks
@@ -203,6 +235,8 @@ paths:
         Repeating that same request, after a timeout for instance, does not rotate again:
         it shows the secret the first one created. A secret that was never received is
         recovered by rotating from the version returned.
+
+        Any `PUT` turns a disabled endpoint back on (see the `GET`).
       requestBody:
         required: true
         content:
@@ -467,6 +501,17 @@ components:
           description: |
             Signs every webhook (HMAC-SHA256). Present only on the first registration and
             on a rotation; it is not stored and cannot be read back.
+        failing_since:
+          type: string
+          format: date-time
+          description: The first failed delivery with no success since; absent after a success.
+        disabled_at:
+          type: string
+          format: date-time
+          description: Set when 72 hours of only failures stopped deliveries.
+        disabled_reason:
+          type: string
+          description: Why deliveries stopped, with the last failure.
         created_at:
           type: string
           format: date-time

@@ -164,4 +164,6 @@ type WebhookEndpoint struct {
 	DisabledAt            pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
 	UpdatedAt             pgtype.Timestamptz
+	FailingSince          pgtype.Timestamptz
+	DisabledReason        pgtype.Text
 }

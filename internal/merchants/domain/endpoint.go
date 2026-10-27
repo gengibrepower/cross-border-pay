@@ -17,8 +17,13 @@ var (
 	ErrWeakSigningKey        = errors.New("merchants: webhook signing key must have at least 32 bytes")
 )
 
-// MinSigningKeyBytes keeps the derived secrets as strong as their HMAC.
-const MinSigningKeyBytes = 32
+const (
+	// MinSigningKeyBytes keeps the derived secrets as strong as their HMAC.
+	MinSigningKeyBytes = 32
+	// DisableAfter is decision 24: an endpoint whose deliveries have only failed for
+	// this long is turned off until the merchant changes it.
+	DisableAfter = 72 * time.Hour
+)
 
 // SecretVersion numbers a merchant's webhook secrets; rotating moves to the next one.
 type SecretVersion int
@@ -31,9 +36,16 @@ type Endpoint struct {
 	Version   SecretVersion
 	Previous  SecretVersion // 0 until the first rotation
 	RotatedAt time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// FailingSince is the first failed delivery with no success since; zero when the
+	// last one succeeded.
+	FailingSince   time.Time
+	DisabledAt     time.Time
+	DisabledReason string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
+
+func (e *Endpoint) Disabled() bool { return !e.DisabledAt.IsZero() }
 
 // Change is a PUT of the endpoint: the URL, and RotateFrom when the merchant asks for
 // a new secret, naming the version it is replacing.
@@ -44,7 +56,9 @@ type Change struct {
 
 // Apply returns the endpoint after the change, from current (nil for none), and
 // whether its secret is shown in the answer: on the first registration and on a
-// rotation. Rotating is conditional on the version named, so a repeated request
+// rotation. Any change turns a disabled endpoint back on: the merchant touching it is
+// the merchant saying it is fixed, and if not, it is disabled again after DisableAfter.
+// Rotating is conditional on the version named, so a repeated request
 // (a client retrying after a timeout) finds the secret already rotated from that
 // version, does not rotate again and shows it again.
 func Apply(current *Endpoint, merchant MerchantID, c Change, now time.Time) (Endpoint, bool, error) {
@@ -56,6 +70,7 @@ func Apply(current *Endpoint, merchant MerchantID, c Change, now time.Time) (End
 	}
 	next := *current
 	next.URL, next.UpdatedAt = c.URL, now
+	next.FailingSince, next.DisabledAt, next.DisabledReason = time.Time{}, time.Time{}, ""
 	switch c.RotateFrom {
 	case 0:
 		return next, false, nil
