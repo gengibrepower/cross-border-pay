@@ -27,7 +27,7 @@ type AttemptQueue interface {
 	// ClaimDueAttempts takes up to limit attempts whose check is due at now and moves
 	// their next check to leaseUntil, so no other worker takes them meanwhile.
 	ClaimDueAttempts(ctx context.Context, now, leaseUntil time.Time, limit int) ([]DueAttempt, error)
-	ApplyAttempt(ctx context.Context, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
+	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
 	// RescheduleAttempt records one more failed lookup of an unknown attempt.
 	RescheduleAttempt(ctx context.Context, id domain.AttemptID, next time.Time) error
 	// EscalateAttempt takes the attempt out of the queue for a person to resolve.
@@ -86,16 +86,17 @@ func (r *Resolver) check(ctx context.Context, d *DueAttempt) error {
 	now = r.clock.Now()
 	switch {
 	case err == nil:
-		return r.apply(ctx, a, result.Update(), now)
+		u := result.Update()
+		return r.apply(ctx, a, &u, now)
 	case errors.Is(err, ErrNotAtProvider) && now.Sub(a.CreatedAt()) >= domain.NotFoundGrace:
 		// Our create gave up long ago, so nothing can still reach the provider: the
 		// attempt never existed there.
-		return r.apply(ctx, a, domain.AttemptUpdate{Event: domain.Reject}, now)
+		return r.apply(ctx, a, &domain.AttemptUpdate{Event: domain.Reject}, now)
 	default:
 		r.logger.WarnContext(ctx, "attempt lookup did not resolve it", "attempt", a.ID().String(), "checks", d.Checks+1, "error", err)
 		if a.Status() == domain.AttemptSent {
 			// A stale sent becomes unknown, whose first check is scheduled with it.
-			return r.apply(ctx, a, domain.AttemptUpdate{Event: domain.Ambiguous}, now)
+			return r.apply(ctx, a, &domain.AttemptUpdate{Event: domain.Ambiguous}, now)
 		}
 		if err := r.queue.RescheduleAttempt(ctx, a.ID(), now.Add(domain.CheckBackoff(d.Checks+1))); err != nil {
 			return fmt.Errorf("reschedule: %w", err)
@@ -104,7 +105,7 @@ func (r *Resolver) check(ctx context.Context, d *DueAttempt) error {
 	}
 }
 
-func (r *Resolver) apply(ctx context.Context, a *domain.PaymentAttempt, u domain.AttemptUpdate, now time.Time) error {
+func (r *Resolver) apply(ctx context.Context, a *domain.PaymentAttempt, u *domain.AttemptUpdate, now time.Time) error {
 	if _, _, err := r.queue.ApplyAttempt(ctx, a.ID(), u, now); err != nil {
 		return fmt.Errorf("apply %s: %w", u.Event, err)
 	}

@@ -43,7 +43,7 @@ type resolverEnv struct {
 func newResolverEnv(t *testing.T) *resolverEnv {
 	t.Helper()
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	pix, sim := newPixSim(t)
 	c := clock.NewFake(t0)
 	provider := &countingGets{Provider: pix}

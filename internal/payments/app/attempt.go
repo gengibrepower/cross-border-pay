@@ -34,7 +34,7 @@ func (s *Service) request(ctx context.Context, p *Priced) (domain.PaymentAttempt
 	case domain.AttemptSent:
 		// An earlier request wrote sent and died before storing the answer: the
 		// provider may have acted. Decision 17: find out later, never repeat blind.
-		return s.apply(ctx, &a, domain.AttemptUpdate{Event: domain.Ambiguous})
+		return s.apply(ctx, &a, &domain.AttemptUpdate{Event: domain.Ambiguous})
 	case domain.AttemptUnknown, domain.AttemptAccepted, domain.AttemptRejected, domain.AttemptSucceeded:
 		return a, nil
 	default:
@@ -42,11 +42,12 @@ func (s *Service) request(ctx context.Context, p *Priced) (domain.PaymentAttempt
 	}
 
 	// Writing sent before the call is what makes created mean "not called".
-	sent, err := s.apply(ctx, &a, domain.AttemptUpdate{Event: domain.Send})
+	sent, err := s.apply(ctx, &a, &domain.AttemptUpdate{Event: domain.Send})
 	if err != nil {
 		return domain.PaymentAttempt{}, err
 	}
-	return s.apply(ctx, &sent, s.call(ctx, p, &sent))
+	u := s.call(ctx, p, &sent)
+	return s.apply(ctx, &sent, &u)
 }
 
 // call asks the provider for the attempt. Any error is ambiguous (section 4.3): the
@@ -69,7 +70,7 @@ func (s *Service) call(ctx context.Context, p *Priced, a *domain.PaymentAttempt)
 	return result.Update()
 }
 
-func (s *Service) apply(ctx context.Context, a *domain.PaymentAttempt, u domain.AttemptUpdate) (domain.PaymentAttempt, error) {
+func (s *Service) apply(ctx context.Context, a *domain.PaymentAttempt, u *domain.AttemptUpdate) (domain.PaymentAttempt, error) {
 	next, _, err := s.store.ApplyAttempt(ctx, a.ID(), u, s.clock.Now())
 	if err != nil {
 		return domain.PaymentAttempt{}, fmt.Errorf("apply %s: %w", u.Event, err)

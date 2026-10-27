@@ -56,6 +56,7 @@ func result(ch *pixsim.Charge) (app.AttemptResult, error) {
 		r.Outcome = app.Accepted
 	case pixsim.Paid:
 		r.Outcome = app.Succeeded
+		r.Amount = ch.Amount
 		if ch.PaidAt != nil {
 			r.PaidAt = ch.PaidAt.UTC()
 		}

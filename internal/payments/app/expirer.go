@@ -19,14 +19,14 @@ type ExpiryQueue interface {
 	// moves their next look to leaseUntil, so no other worker takes them meanwhile.
 	ClaimDueExpiries(ctx context.Context, now, leaseUntil time.Time, limit int) ([]domain.PaymentID, error)
 	LatestAttempt(ctx context.Context, payment domain.PaymentID) (domain.PaymentAttempt, bool, error)
-	ApplyAttempt(ctx context.Context, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
+	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
 	// Expire returns false when the payment left pending meanwhile.
 	Expire(ctx context.Context, id domain.PaymentID, now time.Time) (bool, error)
 }
 
-// Expirer closes payments whose quote ran out. It expires one only after the provider
-// says it was not paid in time: a payer who paid on time is confirmed, however late
-// the news of it is.
+// Expirer closes payments whose quote ran out. It expires one only after asking the
+// provider: a payer who paid on time is confirmed, however late the news of it is, and
+// money paid late is posted as a divergence before the payment expires.
 type Expirer struct {
 	queue           ExpiryQueue
 	provider        Provider
@@ -67,11 +67,11 @@ func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 		return fmt.Errorf("latest attempt: %w", err)
 	}
 	if ok && a.Status() != domain.AttemptRejected {
-		paid, err := x.paidOnTime(ctx, &a)
-		if err != nil || paid {
+		if err := x.settle(ctx, &a); err != nil {
 			return err
 		}
 	}
+	// A no-op for a payment settle confirmed.
 	expired, err := x.queue.Expire(ctx, id, x.clock.Now())
 	if err != nil {
 		return fmt.Errorf("expire: %w", err)
@@ -82,27 +82,23 @@ func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 	return nil
 }
 
-func (x *Expirer) paidOnTime(ctx context.Context, a *domain.PaymentAttempt) (bool, error) {
+// settle applies a payment the provider reports, which either confirms the payment or
+// posts the money as a divergence.
+func (x *Expirer) settle(ctx context.Context, a *domain.PaymentAttempt) error {
 	callCtx, cancel := context.WithTimeout(ctx, x.providerTimeout)
 	result, err := x.provider.GetAttempt(callCtx, a.ID())
 	cancel()
 	switch {
 	case errors.Is(err, ErrNotAtProvider):
-		return false, nil
+		return nil
 	case err != nil:
-		return false, fmt.Errorf("lookup attempt %s: %w", a.ID(), err)
+		return fmt.Errorf("lookup attempt %s: %w", a.ID(), err)
 	case result.Outcome != Succeeded:
-		return false, nil
+		return nil
 	}
-	_, _, err = x.queue.ApplyAttempt(ctx, a.ID(), result.Update(), x.clock.Now())
-	if errors.Is(err, domain.ErrLatePayment) {
-		// Section 4.4: this money has no destination yet; it goes to review (next PR).
-		x.logger.ErrorContext(ctx, "payment arrived after its quote expired; the money needs review",
-			"payment", a.Payment().String(), "attempt", a.ID().String(), "error", err)
-		return false, nil
+	u := result.Update()
+	if _, _, err := x.queue.ApplyAttempt(ctx, a.ID(), &u, x.clock.Now()); err != nil {
+		return fmt.Errorf("apply payment of attempt %s: %w", a.ID(), err)
 	}
-	if err != nil {
-		return false, fmt.Errorf("confirm attempt %s: %w", a.ID(), err)
-	}
-	return true, nil
+	return nil
 }

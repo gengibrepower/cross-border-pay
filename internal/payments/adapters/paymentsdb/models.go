@@ -132,3 +132,19 @@ type Quote struct {
 	CreatedAt     pgtype.Timestamptz
 	ExpiresAt     pgtype.Timestamptz
 }
+
+type ReviewCase struct {
+	ID              pgtype.UUID
+	Kind            string
+	Provider        string
+	ExternalID      string
+	PaymentID       pgtype.UUID
+	AttemptID       pgtype.UUID
+	Amount          int64
+	Currency        string
+	LedgerReference string
+	Details         string
+	Status          string
+	CreatedAt       pgtype.Timestamptz
+	ResolvedAt      pgtype.Timestamptz
+}

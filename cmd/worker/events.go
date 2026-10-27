@@ -13,20 +13,22 @@ import (
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
+	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
+	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
 )
 
 // paymentEvents is the bridge that keeps events and payments apart: it hands each
 // provider's events to payments and reads payments' errors as inbox outcomes.
 type paymentEvents struct {
-	clock  eventsapp.Clock
-	outbox paymentsadapters.Outbox
+	clock eventsapp.Clock
+	sinks paymentsadapters.Sinks
 }
 
 func (h paymentEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (eventsapp.Result, error) {
 	if e.Provider != string(paymentsadapters.PixSimName) {
 		return eventsapp.Result{Outcome: events.Ignored, Reason: "no handler for provider " + e.Provider}, nil
 	}
-	subject, err := paymentsadapters.HandlePixSimEvent(ctx, tx, h.outbox, e.Payload, h.clock.Now())
+	subject, err := paymentsadapters.HandlePixSimEvent(ctx, tx, &h.sinks, e.Payload, h.clock.Now())
 	r := eventsapp.Result{Subject: subject}
 	switch {
 	case err == nil:
@@ -58,4 +60,27 @@ func (o merchantOutbox) Append(ctx context.Context, tx pgx.Tx, e *payments.Merch
 		return fmt.Errorf("merchant outbox: %w", err)
 	}
 	return nil
+}
+
+// reviewQueue is the bridge that keeps payments from importing reconciliation: it opens
+// payments' review cases in reconciliation's queue, in payments' transaction.
+type reviewQueue struct {
+	reviews reconciliationadapters.Reviews
+}
+
+func (r reviewQueue) Open(ctx context.Context, tx pgx.Tx, c *payments.ReviewCase) (bool, error) {
+	payment, attempt := [16]byte(c.Payment), [16]byte(c.Attempt)
+	opened, err := r.reviews.Open(ctx, tx, &reconciliation.Case{
+		Kind: reconciliation.CaseKind(c.Kind), Provider: string(c.Provider), ExternalID: c.ExternalID,
+		Payment: &payment, Attempt: &attempt, Amount: c.Amount, LedgerReference: c.LedgerReference,
+		Details: c.Details, CreatedAt: c.CreatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("review queue: %w", err)
+	}
+	return opened, nil
+}
+
+func paymentSinks() paymentsadapters.Sinks {
+	return paymentsadapters.Sinks{Outbox: merchantOutbox{}, Reviews: reviewQueue{}}
 }

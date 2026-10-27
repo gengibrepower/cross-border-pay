@@ -63,9 +63,9 @@ func (p *Postgres) GetAttempt(ctx context.Context, id domain.AttemptID) (domain.
 // the same status, the second sees the first one's result. changed is false for a
 // duplicate, which writes nothing. An attempt that becomes succeeded confirms its
 // payment in the same transaction.
-func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (attempt domain.PaymentAttempt, changed bool, err error) {
+func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (attempt domain.PaymentAttempt, changed bool, err error) {
 	err = postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
-		attempt, changed, err = applyAttempt(ctx, tx, p.outbox, id, u, now)
+		attempt, changed, err = applyAttempt(ctx, tx, &p.sinks, id, u, now)
 		return err
 	})
 	if err != nil {
@@ -74,12 +74,12 @@ func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u doma
 	return attempt, changed, nil
 }
 
-func applyAttempt(ctx context.Context, tx pgx.Tx, outbox Outbox, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
+func applyAttempt(ctx context.Context, tx pgx.Tx, sinks *Sinks, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
 	pay, err := lockPayment(ctx, paymentsdb.New(tx), id)
 	if err != nil {
 		return domain.PaymentAttempt{}, false, err
 	}
-	return applyLocked(ctx, tx, outbox, &pay, id, u, now)
+	return applyLocked(ctx, tx, sinks, &pay, id, u, now)
 }
 
 func lockPayment(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptID) (paymentsdb.LockPaymentOfAttemptRow, error) {
@@ -93,8 +93,10 @@ func lockPayment(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptID
 	return row, nil
 }
 
-// applyLocked runs with pay already locked by lockPayment.
-func applyLocked(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
+// applyLocked runs with pay already locked by lockPayment. Money the provider
+// confirmed that the attempt cannot take, such as a payment after a rejection, is
+// posted as a divergence and leaves the attempt as it was.
+func applyLocked(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
 	q := paymentsdb.New(tx)
 	row, err := q.LockAttempt(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -110,6 +112,10 @@ func applyLocked(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.
 	from := attempt.Status()
 	changed, err := attempt.Apply(u, now)
 	if err != nil {
+		if kind, ok := domain.DivergenceOf(err); ok && u.Event == domain.Succeed {
+			err := diverge(ctx, tx, sinks.Reviews, pay, &attempt, kind, u, err, now)
+			return attempt, false, err
+		}
 		return domain.PaymentAttempt{}, false, fmt.Errorf("apply: %w", err)
 	}
 	if !changed {
@@ -134,8 +140,8 @@ func applyLocked(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.
 	if err != nil {
 		return domain.PaymentAttempt{}, false, fmt.Errorf("update: %w", err)
 	}
-	if attempt.Status() == domain.AttemptSucceeded {
-		if err := confirm(ctx, tx, outbox, pay, u.PaidAt, now); err != nil {
+	if from != domain.AttemptSucceeded && attempt.Status() == domain.AttemptSucceeded {
+		if err := confirm(ctx, tx, sinks, pay, &attempt, u, now); err != nil {
 			return domain.PaymentAttempt{}, false, fmt.Errorf("confirm: %w", err)
 		}
 	}

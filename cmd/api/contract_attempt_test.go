@@ -204,7 +204,7 @@ func (c *contract) crashedCreate(merchantKey, idempotencyKey string) (*paymentsa
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	store := paymentsadapters.NewPostgres(c.pool, merchantOutbox{})
+	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
 	p, err := store.Create(ctx, acquired.Held, &draft, &quote, c.provider.Name())
 	if err != nil {
 		c.t.Fatal(err)
@@ -233,7 +233,7 @@ func TestResumeFromSentDoesNotCallAgain(t *testing.T) {
 	c := newContract(t)
 	key := c.merchantKey()
 	store, p := c.crashedCreate(key, "order-123")
-	if _, _, err := store.ApplyAttempt(t.Context(), p.Attempt.ID(), payments.AttemptUpdate{Event: payments.Send}, t0); err != nil {
+	if _, _, err := store.ApplyAttempt(t.Context(), p.Attempt.ID(), &payments.AttemptUpdate{Event: payments.Send}, t0); err != nil {
 		t.Fatal(err)
 	}
 

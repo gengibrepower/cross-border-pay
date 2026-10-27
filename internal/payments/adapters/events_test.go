@@ -28,7 +28,7 @@ type eventEnv struct {
 func newEventEnv(t *testing.T) *eventEnv {
 	t.Helper()
 	pool := pgtest.NewPool(t)
-	return &eventEnv{t: t, pool: pool, store: adapters.NewPostgres(pool, sqlOutbox{})}
+	return &eventEnv{t: t, pool: pool, store: adapters.NewPostgres(pool, sinks())}
 }
 
 // attempt stores a payment with an attempt moved by events, and returns the amount its
@@ -68,7 +68,7 @@ func (e *eventEnv) handle(ctx context.Context, event *pixsim.Event) (string, err
 		e.t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	subject, err := adapters.HandlePixSimEvent(ctx, tx, sqlOutbox{}, payload, t0.Add(2*time.Minute))
+	subject, err := adapters.HandlePixSimEvent(ctx, tx, &sinkSet, payload, t0.Add(2*time.Minute))
 	if cerr := tx.Commit(ctx); cerr != nil && err == nil {
 		e.t.Fatal(cerr)
 	}
@@ -128,19 +128,16 @@ func TestChargePaidForAnAttemptNotStoredYet(t *testing.T) {
 	}
 }
 
+// Events that cannot be applied, nor held as a divergence, such as money in a currency
+// the payment was not quoted in. The inbox commits a failed event's status, so this
+// also proves that what the event wrote before failing was rolled back.
 func TestDivergentEventsChangeNothing(t *testing.T) {
 	for name, tc := range map[string]struct {
 		from  []domain.AttemptEvent
 		event func(id domain.AttemptID, amount money.Money) pixsim.Event
 	}{
-		"other amount": {[]domain.AttemptEvent{domain.Send, domain.Accept}, func(id domain.AttemptID, amount money.Money) pixsim.Event {
-			return paid(id.String(), money.New(amount.Amount()+1, money.BRL))
-		}},
 		"other currency": {[]domain.AttemptEvent{domain.Send, domain.Accept}, func(id domain.AttemptID, amount money.Money) pixsim.Event {
 			return paid(id.String(), money.New(amount.Amount(), money.USD))
-		}},
-		"rejected attempt": {[]domain.AttemptEvent{domain.Send, domain.Reject}, func(id domain.AttemptID, amount money.Money) pixsim.Event {
-			return paid(id.String(), amount)
 		}},
 		"never sent": {nil, func(id domain.AttemptID, amount money.Money) pixsim.Event {
 			return paid(id.String(), amount)
@@ -164,20 +161,6 @@ func TestDivergentEventsChangeNothing(t *testing.T) {
 		if after := e.status(id); after.Status() != before.Status() || after.ExternalID() != before.ExternalID() {
 			t.Errorf("%s: attempt went from %s to %s", name, before.Status(), after.Status())
 		}
-	}
-}
-
-// The provider naming the attempt with another charge ID is a contradiction, not news.
-func TestChargePaidWithAnotherChargeIDDiverges(t *testing.T) {
-	e := newEventEnv(t)
-	id, amount := e.attempt(domain.Send)
-	if _, _, err := e.store.ApplyAttempt(t.Context(), id, domain.AttemptUpdate{Event: domain.Accept, ExternalID: "chg_other"}, t0); err != nil {
-		t.Fatal(err)
-	}
-	event := paid(id.String(), amount)
-	_, err := e.handle(t.Context(), &event)
-	if a := e.status(id); !errors.Is(err, app.ErrEventDivergent) || a.Status() != domain.AttemptAccepted {
-		t.Errorf("error = %v, status %s; want divergent and still accepted", err, a.Status())
 	}
 }
 

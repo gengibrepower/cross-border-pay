@@ -102,6 +102,9 @@ func TransitionAttempt(from AttemptStatus, e AttemptEvent) (to AttemptStatus, ch
 	if next, ok := attemptTransitions[attemptEdge{from, e}]; ok {
 		return next, true, nil
 	}
+	if from == AttemptRejected && e == Succeed {
+		return from, false, fmt.Errorf("%w: %w", ErrInvalidTransition, ErrPaidAfterRejection)
+	}
 	if attemptReflected[attemptEdge{from, e}] {
 		return from, false, nil
 	}

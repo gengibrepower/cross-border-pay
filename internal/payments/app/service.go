@@ -69,7 +69,7 @@ type Store interface {
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (Priced, error)
 	// List returns at most q.Limit payments of the merchant, newest first.
 	List(ctx context.Context, merchant domain.MerchantID, q ListQuery) ([]Priced, error)
-	ApplyAttempt(ctx context.Context, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
+	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
 }
 
 type Service struct {

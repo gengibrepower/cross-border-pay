@@ -37,6 +37,8 @@ var expectedAttempt = map[domain.AttemptStatus]map[domain.AttemptEvent]attemptWa
 	},
 	domain.AttemptRejected: {
 		domain.Reject: {duplicate, domain.AttemptRejected},
+		// Money for a rejected attempt is a divergence (section 4.4), not a move.
+		domain.Succeed: {late, domain.AttemptRejected},
 	},
 	domain.AttemptSucceeded: {
 		domain.Accept:  {duplicate, domain.AttemptSucceeded},
@@ -65,6 +67,9 @@ func TestTransitionAttemptIsExhaustive(t *testing.T) {
 			case invalid, late:
 				if !errors.Is(err, domain.ErrInvalidTransition) || changed || to != from {
 					t.Errorf("%s on %s = (%s, %v, %v), want ErrInvalidTransition", e, from, to, changed, err)
+				}
+				if errors.Is(err, domain.ErrPaidAfterRejection) != (w.outcome == late) {
+					t.Errorf("%s on %s: error = %v, paid after rejection only for money on a rejected attempt", e, from, err)
 				}
 			}
 		}

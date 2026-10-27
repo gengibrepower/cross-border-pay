@@ -26,13 +26,26 @@ type Outbox interface {
 	Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent) error
 }
 
-type Postgres struct {
-	pool   *pgxpool.Pool
-	outbox Outbox
+// Reviews opens review cases in the caller's transaction (section 4.4), for the
+// reconciliation module, plugged in like Outbox. opened is false for a charge that
+// already has one.
+type Reviews interface {
+	Open(ctx context.Context, tx pgx.Tx, c *domain.ReviewCase) (opened bool, err error)
 }
 
-func NewPostgres(pool *pgxpool.Pool, outbox Outbox) *Postgres {
-	return &Postgres{pool: pool, outbox: outbox}
+// Sinks are the other modules' writers payments uses inside its own transactions.
+type Sinks struct {
+	Outbox  Outbox
+	Reviews Reviews
+}
+
+type Postgres struct {
+	pool  *pgxpool.Pool
+	sinks Sinks
+}
+
+func NewPostgres(pool *pgxpool.Pool, sinks Sinks) *Postgres {
+	return &Postgres{pool: pool, sinks: sinks}
 }
 
 func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote, provider domain.ProviderName) (app.Priced, error) {

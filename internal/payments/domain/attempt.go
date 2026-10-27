@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
 var (
@@ -75,9 +77,11 @@ type AttemptUpdate struct {
 	Event      AttemptEvent
 	ExternalID string
 	BRCode     string
-	// PaidAt is when the provider says the payer paid, set with Succeed. It decides
-	// whether the payment was on time, not when the news reached us.
+	// PaidAt and Amount are when and how much the provider says the payer paid, set
+	// with Succeed. PaidAt decides whether the payment was on time, not when the news
+	// reached us.
 	PaidAt time.Time
+	Amount money.Money
 }
 
 // Apply moves the attempt by the update's event and records what the provider named
@@ -85,7 +89,7 @@ type AttemptUpdate struct {
 // the provider cannot rename an attempt or change the code a payer may have scanned.
 // changed is false when there is nothing new to store, so a duplicate that first
 // reveals the external ID still counts as a change.
-func (a *PaymentAttempt) Apply(u AttemptUpdate, now time.Time) (changed bool, err error) {
+func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, err error) {
 	to, moved, err := TransitionAttempt(a.status, u.Event)
 	if err != nil {
 		return false, err

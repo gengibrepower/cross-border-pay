@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -67,13 +68,15 @@ func TestPaymentPaidMatchesTheContract(t *testing.T) {
 
 	var attempt payments.AttemptID
 	var charge, brCode string
-	err := c.pool.QueryRow(t.Context(), "SELECT id, external_id, br_code FROM payment_attempts").Scan(&attempt, &charge, &brCode)
+	var amount int64
+	err := c.pool.QueryRow(t.Context(), `SELECT a.id, a.external_id, a.br_code, q.payer_amount
+		FROM payment_attempts a JOIN payments p ON p.id = a.payment_id JOIN quotes q ON q.id = p.quote_id`).Scan(&attempt, &charge, &brCode, &amount)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := paymentsadapters.NewPostgres(c.pool, merchantOutbox{})
-	u := payments.AttemptUpdate{Event: payments.Succeed, ExternalID: charge, BRCode: brCode, PaidAt: c.clock.Now()}
-	if _, _, err := store.ApplyAttempt(t.Context(), attempt, u, c.clock.Now()); err != nil {
+	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
+	u := payments.AttemptUpdate{Event: payments.Succeed, ExternalID: charge, BRCode: brCode, PaidAt: c.clock.Now(), Amount: money.New(amount, money.BRL)}
+	if _, _, err := store.ApplyAttempt(t.Context(), attempt, &u, c.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.checkEvent("payment.paid", key, id, "paid")
@@ -85,7 +88,7 @@ func TestPaymentExpiredMatchesTheContract(t *testing.T) {
 	key := c.merchantKey()
 	id, _ := c.createPayment(key)
 
-	expirer := paymentsapp.NewExpirer(paymentsadapters.NewPostgres(c.pool, merchantOutbox{}), c.provider, c.clock,
+	expirer := paymentsapp.NewExpirer(paymentsadapters.NewPostgres(c.pool, paymentSinks()), c.provider, c.clock,
 		slog.New(slog.DiscardHandler), providerTimeout)
 	c.clock.Advance(payments.PixQuoteValidity - time.Microsecond)
 	if n, err := expirer.Expire(t.Context(), paymentsapp.ExpiryBatch); err != nil || n != 0 {

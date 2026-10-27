@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -18,9 +17,11 @@ import (
 
 // HandlePixSimEvent applies a simulator event, already verified, inside tx: the
 // inbox's transaction, so the effect commits with the event's status. subject is the
-// attempt it concerns. It returns app.ErrAttemptNotFound for an attempt not stored
-// yet, app.ErrEventDivergent for one that contradicts it and app.ErrUnknownEventType.
-func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, outbox Outbox, payload []byte, now time.Time) (subject string, err error) {
+// attempt it concerns. Money that confirms nothing, late or for another amount, is
+// posted as a divergence and the event is settled. It returns app.ErrAttemptNotFound
+// for an attempt not stored yet, app.ErrEventDivergent for an event that cannot be
+// applied and app.ErrUnknownEventType.
+func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []byte, now time.Time) (subject string, err error) {
 	var e pixsim.Event
 	if err := json.Unmarshal(payload, &e); err != nil {
 		return "", fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
@@ -41,25 +42,36 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, outbox Outbox, payload []
 	if err != nil {
 		return subject, fmt.Errorf("payments: %s: %w", id, err)
 	}
-	currency, err := money.ParseCurrency(row.QuoteCurrency)
-	if err != nil {
-		return subject, fmt.Errorf("payments: stored quote of %s: %w", id, err)
-	}
-	if quoted := money.New(row.PayerAmount, currency); e.Charge.Amount != quoted {
-		return subject, fmt.Errorf("%w: paid %s, quoted %s", app.ErrEventDivergent, e.Charge.Amount, quoted)
-	}
 
-	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode}
+	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode, Amount: e.Charge.Amount}
 	if e.Charge.PaidAt != nil {
 		u.PaidAt = e.Charge.PaidAt.UTC()
 	}
-	_, _, err = applyLocked(ctx, tx, outbox, &row, id, u, now)
-	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrLatePayment) ||
-		errors.Is(err, domain.ErrExternalIDMismatch) || errors.Is(err, domain.ErrBRCodeMismatch) {
+	if err := applySaved(ctx, tx, sinks, &row, id, &u, now); errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrBRCodeMismatch) ||
+		errors.Is(err, errUnpostable) {
 		return subject, fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
-	}
-	if err != nil {
+	} else if err != nil {
 		return subject, fmt.Errorf("payments: apply event to %s: %w", id, err)
 	}
 	return subject, nil
+}
+
+// applySaved runs applyLocked in a savepoint. The inbox commits tx with a failed event's
+// status, so whatever an event wrote before it turned out divergent must go first; the
+// payment's lock, taken before the savepoint, is kept.
+func applySaved(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) error {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("savepoint: %w", err)
+	}
+	if _, _, err := applyLocked(ctx, sp, sinks, pay, id, u, now); err != nil {
+		if rerr := sp.Rollback(ctx); rerr != nil {
+			return errors.Join(err, fmt.Errorf("rollback to savepoint: %w", rerr))
+		}
+		return err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return fmt.Errorf("release savepoint: %w", err)
+	}
+	return nil
 }
