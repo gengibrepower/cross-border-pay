@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"errors"
 	"maps"
 	"testing"
 	"time"
@@ -108,4 +109,32 @@ func TestConfirmationOfAnyQuoteBalances(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The quote's last instant is the one before ExpiresAt: at ExpiresAt it has expired,
+// as fx's Expired says.
+func TestCheckOnTime(t *testing.T) {
+	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := fx.NewQuote(money.New(2000, money.USD), rate, fx.DefaultPricing, t0, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		paidAt time.Time
+		late   bool
+	}{
+		{"at creation", t0, false},
+		{"last microsecond", t0.Add(time.Minute - time.Microsecond), false},
+		{"at expiry", t0.Add(time.Minute), true},
+		{"after expiry", t0.Add(time.Hour), true},
+		{"provider did not say", time.Time{}, true},
+	} {
+		if err := domain.CheckOnTime(&q, tc.paidAt); errors.Is(err, domain.ErrLatePayment) != tc.late {
+			t.Errorf("%s: error = %v, want late %v", tc.name, err, tc.late)
+		}
+	}
 }

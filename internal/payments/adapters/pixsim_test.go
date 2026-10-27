@@ -23,9 +23,15 @@ var _ app.Provider = (*adapters.PixSim)(nil)
 
 func newPixSim(t *testing.T) (*adapters.PixSim, *pixsim.Client) {
 	t.Helper()
+	return newPixSimWith(t, clock.NewFake(t0))
+}
+
+// newPixSimWith runs the simulator on c, so a test controls when the payer pays.
+func newPixSimWith(t *testing.T, c *clock.Fake) (*adapters.PixSim, *pixsim.Client) {
+	t.Helper()
 	sim, err := server.New(&server.Config{
 		Seed: 1, PixKey: "123e4567-e12b-12d1-a456-426655440000", MerchantName: "CROSS BORDER PAY", MerchantCity: "SAO PAULO",
-	}, clock.NewFake(t0), slog.New(slog.DiscardHandler))
+	}, c, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

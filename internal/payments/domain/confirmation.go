@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"time"
 
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
@@ -18,6 +19,21 @@ type ConfirmationAccounts struct {
 	FeeRevenue          ledger.AccountID
 	SpreadRevenue       ledger.AccountID
 	Rounding            ledger.AccountID
+}
+
+// CheckOnTime refuses a payment the provider says was made once the quote had expired,
+// or without saying when: that is late money (decision 8), not a confirmation. The
+// provider's time decides, not when the news reached the gateway, so a payer who paid
+// on time is not punished for a slow event.
+func CheckOnTime(q *fx.Quote, paidAt time.Time) error {
+	if paidAt.IsZero() {
+		return fmt.Errorf("%w: the provider did not say when it was paid", ErrLatePayment)
+	}
+	if q.Expired(paidAt) {
+		return fmt.Errorf("%w: paid at %s, quote expired at %s", ErrLatePayment,
+			paidAt.UTC().Format(time.RFC3339Nano), q.ExpiresAt().UTC().Format(time.RFC3339Nano))
+	}
+	return nil
 }
 
 // ConfirmationReference is unique in the ledger, so a payment that somehow got past its

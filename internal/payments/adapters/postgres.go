@@ -53,6 +53,8 @@ func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain
 			Currency:   d.Amount().Currency().Code(),
 			Reference:  d.Reference(),
 			CreatedAt:  pgtype.Timestamptz{Time: q.CreatedAt(), Valid: true},
+			// The expiry job's first look is when the quote expires.
+			ExpiryCheckAt: pgtype.Timestamptz{Time: q.ExpiresAt(), Valid: true},
 		})
 		if err != nil {
 			return fmt.Errorf("insert payment: %w", err)

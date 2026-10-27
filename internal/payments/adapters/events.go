@@ -50,8 +50,12 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, outbox Outbox, payload []
 	}
 
 	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode}
+	if e.Charge.PaidAt != nil {
+		u.PaidAt = e.Charge.PaidAt.UTC()
+	}
 	_, _, err = applyLocked(ctx, tx, outbox, &row, id, u, now)
-	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrExternalIDMismatch) || errors.Is(err, domain.ErrBRCodeMismatch) {
+	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrLatePayment) ||
+		errors.Is(err, domain.ErrExternalIDMismatch) || errors.Is(err, domain.ErrBRCodeMismatch) {
 		return subject, fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
 	}
 	if err != nil {

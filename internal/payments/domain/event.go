@@ -14,7 +14,10 @@ func (id EventID) String() string { return "evt_" + idEncoding.EncodeToString(id
 
 type EventType string
 
-const PaymentPaid EventType = "payment.paid"
+const (
+	PaymentPaid    EventType = "payment.paid"
+	PaymentExpired EventType = "payment.expired"
+)
 
 // PaymentSnapshot is what an event tells the merchant about a payment right after a
 // transition.

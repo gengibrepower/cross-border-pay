@@ -34,7 +34,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// The worker starts its jobs, the cleanup, the attempt resolver and the inbox, against
+// The worker starts its jobs, the cleanup, the attempt resolver, the expiry and the inbox, against
 // a real database and stops cleanly on cancel, as on SIGTERM.
 func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 	url := pgtest.NewDatabase(t)
@@ -51,7 +51,7 @@ func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), `"job":"idempotency-cleanup"`) || !strings.Contains(out.String(), `"job":"attempt-resolver"`) ||
-		!strings.Contains(out.String(), `"job":"inbox"`) {
+		!strings.Contains(out.String(), `"job":"inbox"`) || !strings.Contains(out.String(), `"job":"payment-expiry"`) {
 		if time.Now().After(deadline) {
 			t.Fatalf("jobs not started after 5 s; log:\n%s", out.String())
 		}

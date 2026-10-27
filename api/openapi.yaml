@@ -303,7 +303,7 @@ components:
           pattern: "^evt_[0-9a-z]{26}$"
         type:
           type: string
-          enum: [payment.paid]
+          enum: [payment.paid, payment.expired]
         created_at:
           type: string
           format: date-time

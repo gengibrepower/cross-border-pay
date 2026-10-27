@@ -1,6 +1,6 @@
 -- name: InsertPayment :one
-INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at)
-VALUES (@merchant_id, @quote_id, @status, @method, @amount, @currency, @reference, @created_at, @created_at)
+INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, expiry_check_at)
+VALUES (@merchant_id, @quote_id, @status, @method, @amount, @currency, @reference, @created_at, @created_at, @expiry_check_at)
 RETURNING id;
 
 -- name: GetPayment :one
@@ -75,8 +75,31 @@ WHERE a.id = @id
 FOR NO KEY UPDATE OF p;
 
 -- name: UpdatePaymentStatus :one
-UPDATE payments SET status = @status, version = version + 1, updated_at = @updated_at WHERE id = @id
+-- Every status after pending is final for expiry, so the payment leaves its queue.
+UPDATE payments SET status = @status, version = version + 1, updated_at = @updated_at, expiry_check_at = NULL
+WHERE id = @id
 RETURNING version;
+
+-- name: ClaimDueExpiries :many
+-- The expiry job's claim, like ClaimDueAttempts: SKIP LOCKED during this short
+-- transaction, then the pushed expiry_check_at as a lease while the provider is asked.
+-- NO KEY UPDATE, as everywhere a payment is locked to change it.
+UPDATE payments SET expiry_check_at = @lease_until
+WHERE id IN (
+    SELECT due.id FROM payments AS due
+    WHERE due.expiry_check_at <= @now
+    ORDER BY due.expiry_check_at
+    LIMIT @max_rows::bigint
+    FOR NO KEY UPDATE SKIP LOCKED
+)
+RETURNING id;
+
+-- name: LockPayment :one
+SELECT p.id, p.merchant_id, p.status, p.amount, p.currency, q.expires_at
+FROM payments AS p
+JOIN quotes AS q ON q.id = p.quote_id
+WHERE p.id = @id
+FOR NO KEY UPDATE OF p;
 
 -- name: NewEventID :one
 -- Every ID is a UUIDv7 the database issues; an event's is needed before its row

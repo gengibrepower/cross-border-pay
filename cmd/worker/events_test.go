@@ -69,8 +69,8 @@ func (e *inboxEnv) attempt() (payments.AttemptID, money.Money) {
 		e.t.Fatal(err)
 	}
 	var payment payments.PaymentID
-	err = e.pool.QueryRow(ctx, `INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at)
-		VALUES ($1, $2, 'pending', 'pix', 2000, 'USD', 'order-1', $3, $3) RETURNING id`, merchant, quote, t0).Scan(&payment)
+	err = e.pool.QueryRow(ctx, `INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, expiry_check_at)
+		VALUES ($1, $2, 'pending', 'pix', 2000, 'USD', 'order-1', $3, $3, (SELECT expires_at FROM quotes WHERE id = $2)) RETURNING id`, merchant, quote, t0).Scan(&payment)
 	if err != nil {
 		e.t.Fatal(err)
 	}

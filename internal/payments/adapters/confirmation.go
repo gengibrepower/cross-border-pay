@@ -19,8 +19,9 @@ import (
 
 // confirm moves the locked payment to paid, posts its ledger transaction and appends
 // payment.paid to the outbox, all in the attempt's transaction (section 4.1, step 6). A
-// payment already paid is a no-op.
-func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, now time.Time) error {
+// payment already paid is a no-op; one paid late is domain.ErrLatePayment and writes
+// nothing.
+func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, paidAt, now time.Time) error {
 	status, err := domain.ParseStatus(pay.Status)
 	if err != nil {
 		return fmt.Errorf("stored payment: %w", err)
@@ -32,25 +33,18 @@ func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.Lock
 	if !changed {
 		return nil
 	}
-	q := paymentsdb.New(tx)
-	version, err := q.UpdatePaymentStatus(ctx, paymentsdb.UpdatePaymentStatusParams{
-		ID:        pay.PaymentID,
-		Status:    string(to),
-		UpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
-	})
+	quote, err := loadQuote(ctx, tx, pay.QuoteID.Bytes)
 	if err != nil {
-		return fmt.Errorf("update payment: %w", err)
+		return err
+	}
+	if err := domain.CheckOnTime(&quote, paidAt); err != nil {
+		return fmt.Errorf("payment: %w", err)
+	}
+	version, err := setStatus(ctx, tx, pay.PaymentID, to, now)
+	if err != nil {
+		return err
 	}
 
-	quoteID := fx.QuoteID(pay.QuoteID.Bytes)
-	quotes, err := fxadapters.LoadQuotes(ctx, tx, []fx.QuoteID{quoteID})
-	if err != nil {
-		return fmt.Errorf("quote: %w", err)
-	}
-	quote, ok := quotes[quoteID]
-	if !ok {
-		return fmt.Errorf("quote %x not found", quoteID)
-	}
 	accounts, err := confirmationAccounts(ctx, tx, pay.MerchantID.Bytes, &quote)
 	if err != nil {
 		return err
@@ -62,11 +56,46 @@ func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.Lock
 	if _, err := (ledgeradapters.Ledger{}).Post(ctx, tx, t); err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
-	return notify(ctx, tx, outbox, pay, to, int(version), now)
+	return notify(ctx, tx, outbox, domain.PaymentPaid, &storedPayment{
+		id: pay.PaymentID, merchant: pay.MerchantID, amount: pay.Amount, currency: pay.Currency,
+	}, to, version, now)
 }
 
-func notify(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, status domain.Status, version int, now time.Time) error {
-	currency, err := money.ParseCurrency(pay.Currency)
+func loadQuote(ctx context.Context, tx pgx.Tx, id fx.QuoteID) (fx.Quote, error) {
+	quotes, err := fxadapters.LoadQuotes(ctx, tx, []fx.QuoteID{id})
+	if err != nil {
+		return fx.Quote{}, fmt.Errorf("quote: %w", err)
+	}
+	quote, ok := quotes[id]
+	if !ok {
+		return fx.Quote{}, fmt.Errorf("quote %x not found", id)
+	}
+	return quote, nil
+}
+
+// setStatus also bumps the version the payment's events carry, and takes the payment
+// out of the expiry queue: only a pending payment can expire.
+func setStatus(ctx context.Context, tx pgx.Tx, id pgtype.UUID, to domain.Status, now time.Time) (int, error) {
+	version, err := paymentsdb.New(tx).UpdatePaymentStatus(ctx, paymentsdb.UpdatePaymentStatusParams{
+		ID:        id,
+		Status:    string(to),
+		UpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("update payment: %w", err)
+	}
+	return int(version), nil
+}
+
+// storedPayment is what an event needs from a payment's row.
+type storedPayment struct {
+	id, merchant pgtype.UUID
+	amount       int64
+	currency     string
+}
+
+func notify(ctx context.Context, tx pgx.Tx, outbox Outbox, t domain.EventType, p *storedPayment, status domain.Status, version int, now time.Time) error {
+	currency, err := money.ParseCurrency(p.currency)
 	if err != nil {
 		return fmt.Errorf("stored payment: %w", err)
 	}
@@ -74,12 +103,12 @@ func notify(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockP
 	if err != nil {
 		return fmt.Errorf("event ID: %w", err)
 	}
-	e, err := domain.NewPaymentEvent(id.Bytes, domain.PaymentPaid, &domain.PaymentSnapshot{
-		ID:       pay.PaymentID.Bytes,
-		Merchant: pay.MerchantID.Bytes,
+	e, err := domain.NewPaymentEvent(id.Bytes, t, &domain.PaymentSnapshot{
+		ID:       p.id.Bytes,
+		Merchant: p.merchant.Bytes,
 		Version:  version,
 		Status:   status,
-		Amount:   money.New(pay.Amount, currency),
+		Amount:   money.New(p.amount, currency),
 	}, now)
 	if err != nil {
 		return fmt.Errorf("event: %w", err)

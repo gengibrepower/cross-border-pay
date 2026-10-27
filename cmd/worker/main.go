@@ -35,6 +35,9 @@ const (
 	attemptResolverInterval = time.Second
 	// inboxInterval paces the inbox; a pending event's own backoff is in its row.
 	inboxInterval = time.Second
+	// expiryInterval is how often expired quotes are looked for; a payment the provider
+	// could not be asked about comes back once its lease ends.
+	expiryInterval = time.Second
 )
 
 func main() {
@@ -67,19 +70,20 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: PIXSIM_URL: %w", err)
 	}
-	resolver := paymentsapp.NewResolver(paymentsadapters.NewPostgres(pool, merchantOutbox{}), paymentsadapters.NewPixSim(pixsimClient),
-		clock.System{}, logger, cfg.ProviderTimeout)
+	store, provider := paymentsadapters.NewPostgres(pool, merchantOutbox{}), paymentsadapters.NewPixSim(pixsimClient)
+	resolver := paymentsapp.NewResolver(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
+	expirer := paymentsapp.NewExpirer(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
 	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, outbox: merchantOutbox{}}, clock.System{}, logger)
 
 	logger.Info("worker started")
-	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, inbox, logger)...); err != nil {
+	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, expirer, inbox, logger)...); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")
 	return nil
 }
 
-func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, inbox *eventsapp.Processor, logger *slog.Logger) []worker.Job {
+func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, expirer *paymentsapp.Expirer, inbox *eventsapp.Processor, logger *slog.Logger) []worker.Job {
 	keys := idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock.System{}, rand.Reader)
 	return []worker.Job{
 		worker.Every("idempotency-cleanup", idempotencyCleanupInterval, logger, func(ctx context.Context) error {
@@ -95,6 +99,12 @@ func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, inbox *eventsapp.P
 		worker.Every("attempt-resolver", attemptResolverInterval, logger, func(ctx context.Context) error {
 			if _, err := resolver.Resolve(ctx, paymentsapp.ResolveBatch); err != nil {
 				return fmt.Errorf("resolve: %w", err)
+			}
+			return nil
+		}),
+		worker.Every("payment-expiry", expiryInterval, logger, func(ctx context.Context) error {
+			if _, err := expirer.Expire(ctx, paymentsapp.ExpiryBatch); err != nil {
+				return fmt.Errorf("expiry: %w", err)
 			}
 			return nil
 		}),

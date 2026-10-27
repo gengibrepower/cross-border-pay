@@ -75,6 +75,9 @@ type AttemptUpdate struct {
 	Event      AttemptEvent
 	ExternalID string
 	BRCode     string
+	// PaidAt is when the provider says the payer paid, set with Succeed. It decides
+	// whether the payment was on time, not when the news reached us.
+	PaidAt time.Time
 }
 
 // Apply moves the attempt by the update's event and records what the provider named

@@ -59,10 +59,21 @@ type AttemptResult struct {
 	// Pix is set when an accepted PIX attempt returns its BR Code. Boleto and card get
 	// fields of their own in F8.
 	Pix *PixInstructions
+	// PaidAt is when the payer paid, for Succeeded.
+	PaidAt time.Time
 }
 
 type PixInstructions struct {
 	BRCode string
+}
+
+// Update is the result as a change to the attempt.
+func (r *AttemptResult) Update() domain.AttemptUpdate {
+	u := domain.AttemptUpdate{Event: r.Event(), ExternalID: r.ExternalID, PaidAt: r.PaidAt}
+	if r.Pix != nil {
+		u.BRCode = r.Pix.BRCode
+	}
+	return u
 }
 
 // Event is what the result does to the attempt. An outcome the adapter left unset is
