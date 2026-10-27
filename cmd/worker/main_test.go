@@ -34,13 +34,16 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// The worker starts its jobs, the cleanup, the attempt resolver, the expiry and the inbox, against
-// a real database and stops cleanly on cancel, as on SIGTERM.
+// The worker starts its jobs, the cleanup, the attempt resolver, the expiry, the inbox
+// and the webhooks, against a real database and stops cleanly on cancel, as on SIGTERM.
 func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 	url := pgtest.NewDatabase(t)
 	getenv := func(key string) string {
-		if key == "DATABASE_URL" {
+		switch key {
+		case "DATABASE_URL":
 			return url
+		case "WEBHOOK_SIGNING_KEY":
+			return "test-webhook-signing-key-0123456789"
 		}
 		return ""
 	}
@@ -51,7 +54,8 @@ func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), `"job":"idempotency-cleanup"`) || !strings.Contains(out.String(), `"job":"attempt-resolver"`) ||
-		!strings.Contains(out.String(), `"job":"inbox"`) || !strings.Contains(out.String(), `"job":"payment-expiry"`) {
+		!strings.Contains(out.String(), `"job":"inbox"`) || !strings.Contains(out.String(), `"job":"payment-expiry"`) ||
+		!strings.Contains(out.String(), `"job":"webhooks"`) {
 		if time.Now().After(deadline) {
 			t.Fatalf("jobs not started after 5 s; log:\n%s", out.String())
 		}
@@ -76,6 +80,20 @@ func TestRunRequiresDatabase(t *testing.T) {
 	err := run(t.Context(), func(string) string { return "" }, io.Discard)
 	if !errors.Is(err, config.ErrMissingDatabaseURL) {
 		t.Fatalf("run() error = %v, want %v", err, config.ErrMissingDatabaseURL)
+	}
+}
+
+// The worker signs webhooks, so it refuses to start without the key their secrets
+// are derived from.
+func TestRunRequiresSigningKey(t *testing.T) {
+	getenv := func(key string) string {
+		if key == "DATABASE_URL" {
+			return "postgres://localhost/cbp"
+		}
+		return ""
+	}
+	if err := run(t.Context(), getenv, io.Discard); !errors.Is(err, config.ErrWeakSigningKey) {
+		t.Fatalf("run() error = %v, want %v", err, config.ErrWeakSigningKey)
 	}
 }
 

@@ -10,7 +10,10 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 )
 
-var ErrMerchantNotFound = errors.New("merchants: merchant not found")
+var (
+	ErrMerchantNotFound = errors.New("merchants: merchant not found")
+	ErrEndpointNotFound = errors.New("merchants: no webhook endpoint")
+)
 
 type Clock interface {
 	Now() time.Time

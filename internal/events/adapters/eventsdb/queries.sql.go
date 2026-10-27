@@ -12,8 +12,8 @@ import (
 )
 
 const appendOutboxEvent = `-- name: AppendOutboxEvent :exec
-INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at)
+VALUES ($1, $2, $3, $4, $5, $6, $6)
 `
 
 type AppendOutboxEventParams struct {
@@ -35,6 +35,89 @@ func (q *Queries) AppendOutboxEvent(ctx context.Context, arg AppendOutboxEventPa
 		arg.CreatedAt,
 	)
 	return err
+}
+
+const claimDueDeliveries = `-- name: ClaimDueDeliveries :many
+WITH merchants_due AS (
+    SELECT p.merchant_id, min(p.next_attempt_at) AS oldest
+    FROM outbox_events p
+    WHERE p.delivery_status = 'pending' AND p.next_attempt_at <= $2
+    GROUP BY p.merchant_id
+    ORDER BY oldest
+    LIMIT $3
+), claimed AS (
+    SELECT e.id
+    FROM merchants_due m
+    CROSS JOIN LATERAL (
+        SELECT d.id FROM outbox_events d
+        WHERE d.merchant_id = m.merchant_id AND d.delivery_status = 'pending' AND d.next_attempt_at <= $2
+        ORDER BY d.next_attempt_at
+        LIMIT $4
+        FOR UPDATE SKIP LOCKED
+    ) e
+    LIMIT $5
+)
+UPDATE outbox_events o
+SET attempts = o.attempts + 1, next_attempt_at = $1
+FROM claimed
+WHERE o.id = claimed.id
+RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts
+`
+
+type ClaimDueDeliveriesParams struct {
+	LeaseUntil   pgtype.Timestamptz
+	Now          pgtype.Timestamptz
+	MaxMerchants int32
+	PerMerchant  int32
+	MaxEvents    int32
+}
+
+type ClaimDueDeliveriesRow struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Type       string
+	SubjectID  string
+	Payload    []byte
+	CreatedAt  pgtype.Timestamptz
+	Attempts   int32
+}
+
+// Up to per_merchant events of each merchant with something due, oldest merchant
+// first, so one merchant's backlog cannot take the whole batch. The claim commits by
+// itself: the lease, not a row lock, is what keeps other workers away while the event
+// is posted. SKIP LOCKED only covers two claims running at the same instant.
+func (q *Queries) ClaimDueDeliveries(ctx context.Context, arg ClaimDueDeliveriesParams) ([]ClaimDueDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, claimDueDeliveries,
+		arg.LeaseUntil,
+		arg.Now,
+		arg.MaxMerchants,
+		arg.PerMerchant,
+		arg.MaxEvents,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimDueDeliveriesRow
+	for rows.Next() {
+		var i ClaimDueDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MerchantID,
+			&i.Type,
+			&i.SubjectID,
+			&i.Payload,
+			&i.CreatedAt,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const claimDueEvent = `-- name: ClaimDueEvent :one
@@ -66,6 +149,35 @@ func (q *Queries) ClaimDueEvent(ctx context.Context, now pgtype.Timestamptz) (In
 		&i.ProcessedAt,
 	)
 	return i, err
+}
+
+const failDelivery = `-- name: FailDelivery :execrows
+UPDATE outbox_events
+SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = $1,
+    last_status_code = $2, last_error = $3
+WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5
+`
+
+type FailDeliveryParams struct {
+	Now        pgtype.Timestamptz
+	StatusCode pgtype.Int4
+	LastError  pgtype.Text
+	ID         pgtype.UUID
+	Attempts   int32
+}
+
+func (q *Queries) FailDelivery(ctx context.Context, arg FailDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failDelivery,
+		arg.Now,
+		arg.StatusCode,
+		arg.LastError,
+		arg.ID,
+		arg.Attempts,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const finishEvent = `-- name: FinishEvent :execrows
@@ -151,6 +263,56 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (pgtyp
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const markDelivered = `-- name: MarkDelivered :execrows
+UPDATE outbox_events
+SET delivery_status = 'delivered', next_attempt_at = NULL, finished_at = $1,
+    last_status_code = $2, last_error = NULL
+WHERE id = $3 AND delivery_status = 'pending'
+`
+
+type MarkDeliveredParams struct {
+	Now        pgtype.Timestamptz
+	StatusCode pgtype.Int4
+	ID         pgtype.UUID
+}
+
+// Not fenced by attempts: a 2xx is a fact even from a claim whose lease ran out.
+func (q *Queries) MarkDelivered(ctx context.Context, arg MarkDeliveredParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDelivered, arg.Now, arg.StatusCode, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rescheduleDelivery = `-- name: RescheduleDelivery :execrows
+UPDATE outbox_events
+SET next_attempt_at = $1, last_status_code = $2, last_error = $3
+WHERE id = $4 AND delivery_status = 'pending' AND attempts = $5
+`
+
+type RescheduleDeliveryParams struct {
+	NextAttemptAt pgtype.Timestamptz
+	StatusCode    pgtype.Int4
+	LastError     pgtype.Text
+	ID            pgtype.UUID
+	Attempts      int32
+}
+
+func (q *Queries) RescheduleDelivery(ctx context.Context, arg RescheduleDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleDelivery,
+		arg.NextAttemptAt,
+		arg.StatusCode,
+		arg.LastError,
+		arg.ID,
+		arg.Attempts,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const retryEvent = `-- name: RetryEvent :execrows

@@ -345,10 +345,16 @@ components:
 
     PaymentEvent:
       description: |
-        What the gateway posts to the merchant's webhook (delivery arrives in F6) when a
-        payment changes. Every delivery of one event sends the same bytes, so the
-        merchant drops duplicates by `id`; `payment_version` grows with every
-        transition, so an event older than the last one seen can be ignored.
+        What the gateway posts to the merchant's webhook when a payment changes, at
+        least once. Every delivery of one event sends the same bytes, so the merchant
+        drops duplicates by `id`; `payment_version` grows with every transition, so an
+        event older than the last one seen can be ignored. Only a 2xx answer counts as
+        delivered; redirects are not followed.
+
+        Each post carries `Webhook-Signature: t=<unix>,v1=<hex>`, the HMAC-SHA256 of
+        `t`, a dot and the body, keyed by the endpoint's secret. Refuse a `t` more than
+        5 minutes from now. For 24 hours after a rotation there is a second `v1`, from
+        the previous secret; any `v1` that matches is enough.
       type: object
       additionalProperties: false
       required: [id, type, created_at, payment_id, payment_version, data]

@@ -78,12 +78,18 @@ type Merchant struct {
 }
 
 type OutboxEvent struct {
-	ID         pgtype.UUID
-	MerchantID pgtype.UUID
-	Type       string
-	SubjectID  string
-	Payload    []byte
-	CreatedAt  pgtype.Timestamptz
+	ID             pgtype.UUID
+	MerchantID     pgtype.UUID
+	Type           string
+	SubjectID      string
+	Payload        []byte
+	CreatedAt      pgtype.Timestamptz
+	DeliveryStatus string
+	Attempts       int32
+	NextAttemptAt  pgtype.Timestamptz
+	LastStatusCode pgtype.Int4
+	LastError      pgtype.Text
+	FinishedAt     pgtype.Timestamptz
 }
 
 type Payment struct {

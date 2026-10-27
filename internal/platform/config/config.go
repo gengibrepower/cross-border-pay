@@ -41,6 +41,8 @@ type Config struct {
 	// WebhookAllowPrivate lets webhooks reach private networks over http, for
 	// development and the GameStore walkthrough. Never in a real deployment.
 	WebhookAllowPrivate bool
+	// WebhookTimeout bounds each post to a merchant: connecting, TLS and the answer.
+	WebhookTimeout time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -51,6 +53,7 @@ func Load(getenv func(string) string) (Config, error) {
 		USDBRLRate:      "5.0000",
 		PixSimURL:       "http://localhost:8090",
 		ProviderTimeout: 5 * time.Second,
+		WebhookTimeout:  5 * time.Second,
 	}
 	var errs []error
 
@@ -109,6 +112,18 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("PROVIDER_TIMEOUT: must be positive, got %s", d))
 		default:
 			cfg.ProviderTimeout = d
+		}
+	}
+
+	if v := getenv("WEBHOOK_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("WEBHOOK_TIMEOUT: %w", err))
+		case d <= 0:
+			errs = append(errs, fmt.Errorf("WEBHOOK_TIMEOUT: must be positive, got %s", d))
+		default:
+			cfg.WebhookTimeout = d
 		}
 	}
 

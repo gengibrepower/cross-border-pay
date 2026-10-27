@@ -21,7 +21,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			vars: nil,
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 		{
 			name: "all set",
@@ -36,6 +36,7 @@ func TestLoad(t *testing.T) {
 				"PIXSIM_WEBHOOK_SECRET": "s3cret",
 				"WEBHOOK_SIGNING_KEY":   "0123456789abcdef0123456789abcdef",
 				"WEBHOOK_ALLOW_PRIVATE": "true",
+				"WEBHOOK_TIMEOUT":       "3s",
 			},
 			want: Config{
 				HTTPAddr:            "127.0.0.1:9000",
@@ -48,12 +49,13 @@ func TestLoad(t *testing.T) {
 				PixSimWebhookSecret: "s3cret",
 				WebhookSigningKey:   "0123456789abcdef0123456789abcdef",
 				WebhookAllowPrivate: true,
+				WebhookTimeout:      3 * time.Second,
 			},
 		},
 		{
 			name: "level is case insensitive",
 			vars: map[string]string{"LOG_LEVEL": "WARN"},
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 	}
 	for _, tt := range tests {
@@ -82,6 +84,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{name: "negative timeout", vars: map[string]string{"SHUTDOWN_TIMEOUT": "-1s"}, wantVars: []string{"SHUTDOWN_TIMEOUT"}},
 		{name: "unparsable provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "soon"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
 		{name: "unparsable private webhooks", vars: map[string]string{"WEBHOOK_ALLOW_PRIVATE": "sometimes"}, wantVars: []string{"WEBHOOK_ALLOW_PRIVATE"}},
+		{name: "unparsable webhook timeout", vars: map[string]string{"WEBHOOK_TIMEOUT": "fast"}, wantVars: []string{"WEBHOOK_TIMEOUT"}},
+		{name: "zero webhook timeout", vars: map[string]string{"WEBHOOK_TIMEOUT": "0s"}, wantVars: []string{"WEBHOOK_TIMEOUT"}},
 		{name: "zero provider timeout", vars: map[string]string{"PROVIDER_TIMEOUT": "0s"}, wantVars: []string{"PROVIDER_TIMEOUT"}},
 		{
 			name: "every error reported at once",

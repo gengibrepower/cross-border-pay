@@ -287,8 +287,8 @@ func TestReadsShowTheLatestAttempt(t *testing.T) {
 type sqlOutbox struct{}
 
 func (sqlOutbox) Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent) error {
-	_, err := tx.Exec(ctx, `INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`, e.ID, e.Merchant, string(e.Type), e.Payment.String(), e.Payload, e.CreatedAt)
+	_, err := tx.Exec(ctx, `INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $6)`, e.ID, e.Merchant, string(e.Type), e.Payment.String(), e.Payload, e.CreatedAt)
 	return err
 }
 
