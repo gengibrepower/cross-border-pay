@@ -33,6 +33,22 @@ type IdempotencyKey struct {
 	CreatedAt       pgtype.Timestamptz
 }
 
+type InboxEvent struct {
+	ID            pgtype.UUID
+	Provider      string
+	ExternalID    string
+	Type          string
+	Payload       []byte
+	Signature     string
+	Status        string
+	Attempts      int32
+	NextAttemptAt pgtype.Timestamptz
+	LastError     pgtype.Text
+	SubjectID     pgtype.Text
+	ReceivedAt    pgtype.Timestamptz
+	ProcessedAt   pgtype.Timestamptz
+}
+
 type LedgerAccount struct {
 	ID          pgtype.UUID
 	Code        pgtype.Text

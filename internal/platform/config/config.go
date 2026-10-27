@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-var ErrMissingDatabaseURL = errors.New("DATABASE_URL is required")
+var (
+	ErrMissingDatabaseURL   = errors.New("DATABASE_URL is required")
+	ErrMissingWebhookSecret = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
+)
 
 type Config struct {
 	HTTPAddr        string
@@ -24,6 +27,8 @@ type Config struct {
 	// ProviderTimeout bounds each call to a provider, below the server's write timeout
 	// so that the answer can still be stored and sent.
 	ProviderTimeout time.Duration
+	// PixSimWebhookSecret verifies the signature of the simulator's events.
+	PixSimWebhookSecret string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -72,6 +77,8 @@ func Load(getenv func(string) string) (Config, error) {
 		cfg.PixSimURL = v
 	}
 
+	cfg.PixSimWebhookSecret = getenv("PIXSIM_WEBHOOK_SECRET")
+
 	if v := getenv("PROVIDER_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		switch {
@@ -88,6 +95,13 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c *Config) RequireWebhookSecret() error {
+	if c.PixSimWebhookSecret == "" {
+		return ErrMissingWebhookSecret
+	}
+	return nil
 }
 
 func (c *Config) RequireDatabase() error {

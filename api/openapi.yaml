@@ -133,6 +133,62 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/providers/{provider}/events:
+    post:
+      operationId: receiveProviderEvent
+      summary: Receive an event from a payment provider (webhook)
+      description: |
+        Called by the provider, not by merchants: the provider's signature is the
+        authentication. The event is only stored here and applied by the worker
+        (decision 19). A redelivered event is answered 200 too, so the provider stops
+        sending it; only a failure to store asks for a redelivery.
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            example: pixsim
+        - name: Pixsim-Signature
+          in: header
+          required: false
+          description: The simulator's signature, `t=<unix>,v1=<hex HMAC-SHA256 of t.body>`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: The event exactly as the provider signed it.
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Stored, or already stored by an earlier delivery.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [received]
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
 components:
   securitySchemes:
     apiKey:

@@ -26,22 +26,24 @@ func TestLoad(t *testing.T) {
 		{
 			name: "all set",
 			vars: map[string]string{
-				"HTTP_ADDR":        "127.0.0.1:9000",
-				"LOG_LEVEL":        "debug",
-				"SHUTDOWN_TIMEOUT": "30s",
-				"DATABASE_URL":     "postgres://localhost/cbp",
-				"FX_USD_BRL_RATE":  "5.4321",
-				"PIXSIM_URL":       "http://pixsim:8090",
-				"PROVIDER_TIMEOUT": "2s",
+				"HTTP_ADDR":             "127.0.0.1:9000",
+				"LOG_LEVEL":             "debug",
+				"SHUTDOWN_TIMEOUT":      "30s",
+				"DATABASE_URL":          "postgres://localhost/cbp",
+				"FX_USD_BRL_RATE":       "5.4321",
+				"PIXSIM_URL":            "http://pixsim:8090",
+				"PROVIDER_TIMEOUT":      "2s",
+				"PIXSIM_WEBHOOK_SECRET": "s3cret",
 			},
 			want: Config{
-				HTTPAddr:        "127.0.0.1:9000",
-				LogLevel:        slog.LevelDebug,
-				ShutdownTimeout: 30 * time.Second,
-				DatabaseURL:     "postgres://localhost/cbp",
-				USDBRLRate:      "5.4321",
-				PixSimURL:       "http://pixsim:8090",
-				ProviderTimeout: 2 * time.Second,
+				HTTPAddr:            "127.0.0.1:9000",
+				LogLevel:            slog.LevelDebug,
+				ShutdownTimeout:     30 * time.Second,
+				DatabaseURL:         "postgres://localhost/cbp",
+				USDBRLRate:          "5.4321",
+				PixSimURL:           "http://pixsim:8090",
+				ProviderTimeout:     2 * time.Second,
+				PixSimWebhookSecret: "s3cret",
 			},
 		},
 		{
@@ -98,6 +100,15 @@ func TestLoadRejectsInvalid(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRequireWebhookSecret(t *testing.T) {
+	if err := (&Config{}).RequireWebhookSecret(); !errors.Is(err, ErrMissingWebhookSecret) {
+		t.Errorf("RequireWebhookSecret() without secret = %v, want %v", err, ErrMissingWebhookSecret)
+	}
+	if err := (&Config{PixSimWebhookSecret: "s3cret"}).RequireWebhookSecret(); err != nil {
+		t.Errorf("RequireWebhookSecret() with secret = %v", err)
 	}
 }
 
