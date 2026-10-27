@@ -12,3 +12,11 @@ type Outgoing struct {
 	Payload   []byte
 	CreatedAt time.Time
 }
+
+// Delivery is one claimed attempt at sending an outgoing event. Attempt counts the
+// claims so far, this one included, and fences what is recorded about it: a claim
+// whose lease ran out and was taken over can no longer reschedule or fail the event.
+type Delivery struct {
+	Event   Outgoing
+	Attempt int
+}

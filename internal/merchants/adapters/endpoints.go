@@ -58,6 +58,19 @@ func (p *Postgres) UpdateEndpoint(ctx context.Context, merchant domain.MerchantI
 	return saved, nil
 }
 
+// Endpoint reads the merchant's endpoint outside any transaction: the delivery worker
+// only needs where to post and which secrets sign, as of now.
+func (p *Postgres) Endpoint(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error) {
+	row, err := merchantsdb.New(p.pool).GetWebhookEndpoint(ctx, pgtype.UUID{Bytes: merchant, Valid: true})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Endpoint{}, app.ErrEndpointNotFound
+	}
+	if err != nil {
+		return domain.Endpoint{}, fmt.Errorf("merchants: get endpoint: %w", err)
+	}
+	return restoreEndpoint(&row), nil
+}
+
 func restoreEndpoint(row *merchantsdb.GetWebhookEndpointRow) domain.Endpoint {
 	return domain.Endpoint{
 		Merchant:  row.MerchantID.Bytes,

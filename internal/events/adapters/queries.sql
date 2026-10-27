@@ -33,5 +33,53 @@ WHERE id = @id AND status = 'pending';
 SELECT * FROM inbox_events WHERE id = @id;
 
 -- name: AppendOutboxEvent :exec
-INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
-VALUES (@id, @merchant_id, @type, @subject_id, @payload, @created_at);
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at)
+VALUES (@id, @merchant_id, @type, @subject_id, @payload, @created_at, @created_at);
+
+-- name: ClaimDueDeliveries :many
+-- Up to per_merchant events of each merchant with something due, oldest merchant
+-- first, so one merchant's backlog cannot take the whole batch. The claim commits by
+-- itself: the lease, not a row lock, is what keeps other workers away while the event
+-- is posted. SKIP LOCKED only covers two claims running at the same instant.
+WITH merchants_due AS (
+    SELECT p.merchant_id, min(p.next_attempt_at) AS oldest
+    FROM outbox_events p
+    WHERE p.delivery_status = 'pending' AND p.next_attempt_at <= @now
+    GROUP BY p.merchant_id
+    ORDER BY oldest
+    LIMIT @max_merchants
+), claimed AS (
+    SELECT e.id
+    FROM merchants_due m
+    CROSS JOIN LATERAL (
+        SELECT d.id FROM outbox_events d
+        WHERE d.merchant_id = m.merchant_id AND d.delivery_status = 'pending' AND d.next_attempt_at <= @now
+        ORDER BY d.next_attempt_at
+        LIMIT @per_merchant
+        FOR UPDATE SKIP LOCKED
+    ) e
+    LIMIT @max_events
+)
+UPDATE outbox_events o
+SET attempts = o.attempts + 1, next_attempt_at = @lease_until
+FROM claimed
+WHERE o.id = claimed.id
+RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts;
+
+-- name: MarkDelivered :execrows
+-- Not fenced by attempts: a 2xx is a fact even from a claim whose lease ran out.
+UPDATE outbox_events
+SET delivery_status = 'delivered', next_attempt_at = NULL, finished_at = @now,
+    last_status_code = @status_code, last_error = NULL
+WHERE id = @id AND delivery_status = 'pending';
+
+-- name: RescheduleDelivery :execrows
+UPDATE outbox_events
+SET next_attempt_at = @next_attempt_at, last_status_code = sqlc.narg(status_code), last_error = @last_error
+WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts;
+
+-- name: FailDelivery :execrows
+UPDATE outbox_events
+SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = @now,
+    last_status_code = sqlc.narg(status_code), last_error = @last_error
+WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts;
