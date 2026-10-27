@@ -61,10 +61,11 @@ func (p *Postgres) GetAttempt(ctx context.Context, id domain.AttemptID) (domain.
 // ApplyAttempt locks the attempt, moves it by the event through the domain's table and
 // stores the result. The row lock serializes concurrent events: of two that race from
 // the same status, the second sees the first one's result. changed is false for a
-// duplicate, which writes nothing.
+// duplicate, which writes nothing. An attempt that becomes succeeded confirms its
+// payment in the same transaction.
 func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (attempt domain.PaymentAttempt, changed bool, err error) {
 	err = postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
-		attempt, changed, err = applyAttempt(ctx, paymentsdb.New(tx), id, u, now)
+		attempt, changed, err = applyAttempt(ctx, tx, id, u, now)
 		return err
 	})
 	if err != nil {
@@ -73,7 +74,28 @@ func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u doma
 	return attempt, changed, nil
 }
 
-func applyAttempt(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
+func applyAttempt(ctx context.Context, tx pgx.Tx, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
+	pay, err := lockPayment(ctx, paymentsdb.New(tx), id)
+	if err != nil {
+		return domain.PaymentAttempt{}, false, err
+	}
+	return applyLocked(ctx, tx, &pay, id, u, now)
+}
+
+func lockPayment(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptID) (paymentsdb.LockPaymentOfAttemptRow, error) {
+	row, err := q.LockPaymentOfAttempt(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentsdb.LockPaymentOfAttemptRow{}, app.ErrAttemptNotFound
+	}
+	if err != nil {
+		return paymentsdb.LockPaymentOfAttemptRow{}, fmt.Errorf("lock payment: %w", err)
+	}
+	return row, nil
+}
+
+// applyLocked runs with pay already locked by lockPayment.
+func applyLocked(ctx context.Context, tx pgx.Tx, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
+	q := paymentsdb.New(tx)
 	row, err := q.LockAttempt(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.PaymentAttempt{}, false, app.ErrAttemptNotFound
@@ -111,6 +133,11 @@ func applyAttempt(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptI
 	})
 	if err != nil {
 		return domain.PaymentAttempt{}, false, fmt.Errorf("update: %w", err)
+	}
+	if attempt.Status() == domain.AttemptSucceeded {
+		if err := confirm(ctx, tx, pay, now); err != nil {
+			return domain.PaymentAttempt{}, false, fmt.Errorf("confirm: %w", err)
+		}
 	}
 	return attempt, true, nil
 }

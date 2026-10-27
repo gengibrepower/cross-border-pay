@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const accountsByCode = `-- name: AccountsByCode :many
+SELECT id, code, currency, balance_rule
+FROM ledger_accounts
+WHERE code = ANY($1::text[])
+`
+
+type AccountsByCodeRow struct {
+	ID          pgtype.UUID
+	Code        pgtype.Text
+	Currency    string
+	BalanceRule string
+}
+
+func (q *Queries) AccountsByCode(ctx context.Context, codes []string) ([]AccountsByCodeRow, error) {
+	rows, err := q.db.Query(ctx, accountsByCode, codes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AccountsByCodeRow
+	for rows.Next() {
+		var i AccountsByCodeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Currency,
+			&i.BalanceRule,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const balances = `-- name: Balances :many
 SELECT account_id, sum(amount)::bigint AS balance
 FROM ledger_entries
@@ -79,6 +117,25 @@ func (q *Queries) GetAccount(ctx context.Context, id pgtype.UUID) (GetAccountRow
 	var i GetAccountRow
 	err := row.Scan(&i.ID, &i.Currency, &i.BalanceRule)
 	return i, err
+}
+
+const insertAccountIfAbsent = `-- name: InsertAccountIfAbsent :exec
+INSERT INTO ledger_accounts (code, currency, balance_rule)
+VALUES ($1, $2, $3)
+ON CONFLICT (code) DO NOTHING
+`
+
+type InsertAccountIfAbsentParams struct {
+	Code        pgtype.Text
+	Currency    string
+	BalanceRule string
+}
+
+// A concurrent insert of the same code waits for the other transaction; once that one
+// commits, this one does nothing.
+func (q *Queries) InsertAccountIfAbsent(ctx context.Context, arg InsertAccountIfAbsentParams) error {
+	_, err := q.db.Exec(ctx, insertAccountIfAbsent, arg.Code, arg.Currency, arg.BalanceRule)
+	return err
 }
 
 const insertEntries = `-- name: InsertEntries :exec

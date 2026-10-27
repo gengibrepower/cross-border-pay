@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
@@ -38,13 +37,9 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, payload []byte, now time.
 		return subject, fmt.Errorf("%w: charge.paid with status %q", app.ErrEventDivergent, e.Charge.Status)
 	}
 
-	q := paymentsdb.New(tx)
-	row, err := q.LockPaymentOfAttempt(ctx, pgtype.UUID{Bytes: id, Valid: true})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return subject, fmt.Errorf("%w: %s", app.ErrAttemptNotFound, id)
-	}
+	row, err := lockPayment(ctx, paymentsdb.New(tx), id)
 	if err != nil {
-		return subject, fmt.Errorf("payments: lock payment of %s: %w", id, err)
+		return subject, fmt.Errorf("payments: %s: %w", id, err)
 	}
 	currency, err := money.ParseCurrency(row.QuoteCurrency)
 	if err != nil {
@@ -55,7 +50,7 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, payload []byte, now time.
 	}
 
 	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode}
-	_, _, err = applyAttempt(ctx, q, id, u, now)
+	_, _, err = applyLocked(ctx, tx, &row, id, u, now)
 	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrExternalIDMismatch) || errors.Is(err, domain.ErrBRCodeMismatch) {
 		return subject, fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
 	}

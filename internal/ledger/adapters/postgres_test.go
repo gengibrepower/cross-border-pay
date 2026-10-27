@@ -288,3 +288,81 @@ func TestOppositeTransfersDoNotDeadlock(t *testing.T) {
 		t.Errorf("a = %v, want 0.00 USD", got)
 	}
 }
+
+// The migration's chart of accounts (section 3.3) is there, each in its currency.
+func TestChartOfAccounts(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	want := map[string]money.Currency{
+		"provider_receivables:BRL": money.BRL, "fx:BRL": money.BRL, "fx:USD": money.USD,
+		"fee_revenue:USD": money.USD, "spread_revenue:USD": money.USD, "fx_result:USD": money.USD,
+		"rounding:BRL": money.BRL, "rounding:USD": money.USD, "divergence:BRL": money.BRL,
+		"settlements_paid:USD": money.USD,
+	}
+	codes := make([]string, 0, len(want))
+	for code := range want {
+		codes = append(codes, code)
+	}
+	accounts, err := ledger.AccountsByCode(t.Context(), pool, codes...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for code, c := range want {
+		if accounts[code].Currency() != c {
+			t.Errorf("%s in %s, want %s", code, accounts[code].Currency().Code(), c.Code())
+		}
+	}
+}
+
+func TestAccountsByCodeNamesTheMissingOne(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	if _, err := ledger.AccountsByCode(t.Context(), pool, "fx:USD", "nope"); !errors.Is(err, domain.ErrUnknownAccount) {
+		t.Errorf("error = %v, want %v", err, domain.ErrUnknownAccount)
+	}
+}
+
+// Many first confirmations of one merchant race to create its account; one wins and
+// all of them get it.
+func TestConcurrentEnsureAccountCreatesOne(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	const callers = 50
+	ids := make([]domain.AccountID, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() {
+			a, err := ledger.EnsureAccount(t.Context(), pool, "merchant_payable:m1", money.USD, domain.MayGoNegative)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			ids[i] = a.ID()
+		})
+	}
+	wg.Wait()
+	for i, id := range ids {
+		if id != ids[0] {
+			t.Fatalf("caller %d got %s, caller 0 got %s", i, id, ids[0])
+		}
+	}
+	var n int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM ledger_accounts WHERE code = 'merchant_payable:m1'").Scan(&n); err != nil || n != 1 {
+		t.Errorf("%d accounts (%v), want 1", n, err)
+	}
+}
+
+func TestEnsureAccountRefusesAnotherCurrencyOrRule(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	if _, err := ledger.EnsureAccount(t.Context(), pool, "x", money.USD, domain.MayGoNegative); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		currency money.Currency
+		rule     domain.BalanceRule
+	}{
+		"currency": {money.BRL, domain.MayGoNegative},
+		"rule":     {money.USD, domain.MustStayNonNegative},
+	} {
+		if _, err := ledger.EnsureAccount(t.Context(), pool, "x", tc.currency, tc.rule); !errors.Is(err, domain.ErrInvalidAccount) {
+			t.Errorf("another %s: error = %v, want %v", name, err, domain.ErrInvalidAccount)
+		}
+	}
+}

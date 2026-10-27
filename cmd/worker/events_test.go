@@ -155,7 +155,8 @@ func (e *inboxEnv) process() {
 }
 
 // The whole return path behind the API: the simulator's own charge.paid, stored in the
-// inbox, applied by the worker's processor to the attempt it names.
+// inbox, applied by the worker's processor to the attempt it names, which confirms the
+// payment into the ledger.
 func TestWorkerAppliesASimulatorPayment(t *testing.T) {
 	e := newInboxEnv(t)
 	id, amount := e.attempt()
@@ -169,6 +170,14 @@ func TestWorkerAppliesASimulatorPayment(t *testing.T) {
 	a, err := e.payments.GetAttempt(t.Context(), id)
 	if status, subject := e.event(); err != nil || a.Status() != payments.AttemptSucceeded || status != "processed" || subject != id.String() {
 		t.Errorf("attempt %s (%v), event %s for %q; want succeeded and processed for %s", a.Status(), err, status, subject, id)
+	}
+	var payment string
+	var owed int64
+	err = e.pool.QueryRow(t.Context(), `SELECT p.status, (SELECT sum(en.amount) FROM ledger_entries AS en
+		JOIN ledger_accounts AS l ON l.id = en.account_id WHERE l.code LIKE 'merchant_payable:%')
+		FROM payments AS p WHERE p.id = $1`, a.Payment()).Scan(&payment, &owed)
+	if err != nil || payment != "paid" || owed != 1940 {
+		t.Errorf("payment %s, merchant owed %d (%v); want paid and 1940", payment, owed, err)
 	}
 }
 
