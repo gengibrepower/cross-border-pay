@@ -71,7 +71,7 @@ func (p *Postgres) Expire(ctx context.Context, id domain.PaymentID, now time.Tim
 			return err
 		}
 		expired = true
-		return notify(ctx, tx, p.outbox, domain.PaymentExpired, &storedPayment{
+		return notify(ctx, tx, p.sinks.Outbox, domain.PaymentExpired, &storedPayment{
 			id: row.ID, merchant: row.MerchantID, amount: row.Amount, currency: row.Currency,
 		}, to, version, now)
 	})

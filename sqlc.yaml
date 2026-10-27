@@ -48,3 +48,11 @@ sql:
         package: eventsdb
         out: internal/events/adapters/eventsdb
         sql_package: pgx/v5
+  - engine: postgresql
+    schema: migrations
+    queries: internal/reconciliation/adapters/queries.sql
+    gen:
+      go:
+        package: reconciliationdb
+        out: internal/reconciliation/adapters/reconciliationdb
+        sql_package: pgx/v5

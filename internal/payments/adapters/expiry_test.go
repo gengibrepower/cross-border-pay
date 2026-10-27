@@ -3,7 +3,6 @@ package adapters_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -43,7 +42,7 @@ func newExpiryEnv(t *testing.T) *expiryEnv {
 	pool := pgtest.NewPool(t)
 	c := clock.NewFake(t0)
 	pix, sim := newPixSimWith(t, c)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	provider := &countingGets{Provider: pix}
 	return &expiryEnv{
 		t: t, pool: pool, store: store, sim: sim, clock: c, provider: provider,
@@ -61,7 +60,7 @@ func (e *expiryEnv) payment() (domain.PaymentID, domain.AttemptID, pixsim.Charge
 		e.t.Fatal(err)
 	}
 	for _, u := range []domain.AttemptUpdate{{Event: domain.Send}, {Event: domain.Accept, ExternalID: ch.ID, BRCode: ch.BRCode}} {
-		if _, _, err := e.store.ApplyAttempt(e.t.Context(), a.ID(), u, t0); err != nil {
+		if _, _, err := e.store.ApplyAttempt(e.t.Context(), a.ID(), &u, t0); err != nil {
 			e.t.Fatal(err)
 		}
 	}
@@ -170,42 +169,68 @@ func (e *expiryEnv) handle(event *pixsim.Event) (string, error) {
 	}
 	var subject string
 	err = postgres.WithTx(e.t.Context(), e.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
-		subject, err = adapters.HandlePixSimEvent(ctx, tx, sqlOutbox{}, payload, e.clock.Now())
+		subject, err = adapters.HandlePixSimEvent(ctx, tx, &sinkSet, payload, e.clock.Now())
 		return err
 	})
 	return subject, err //nolint:wrapcheck // the test reads the handler's error as it is.
 }
 
+func (e *expiryEnv) mustHandle(event *pixsim.Event) {
+	e.t.Helper()
+	if _, err := e.handle(event); err != nil {
+		e.t.Errorf("handle %s: %v", event.Charge.ID, err)
+	}
+}
+
 // F5's done criterion: an expired quote does not take a payment as if on time, whether
-// the job or the provider's event gets there first.
-func TestPaidLateIsNotConfirmed(t *testing.T) {
-	t.Run("job first", func(t *testing.T) {
-		e := newExpiryEnv(t)
-		id, attempt, ch := e.payment()
-		e.at(expiresAt.Add(time.Second))
-		e.pay(&ch)
-		e.expire()
-		got := e.state(id)
-		if got.status != "expired" || !slices.Equal(got.events, []string{"payment.expired"}) || got.posted != 0 {
-			t.Errorf("payment %+v; want expired with nothing posted", got)
-		}
-		if a, err := e.store.GetAttempt(t.Context(), attempt); err != nil || a.Status() != domain.AttemptAccepted {
-			t.Errorf("attempt %s (%v); late money waits for review, the attempt is left as it was", a.Status(), err)
-		}
-	})
-	t.Run("event first", func(t *testing.T) {
-		e := newExpiryEnv(t)
-		id, _, ch := e.payment()
-		e.at(expiresAt.Add(time.Second))
-		paid := e.pay(&ch)
-		event := pixsim.Event{ID: "evt_1", Type: pixsim.ChargePaid, CreatedAt: *paid.PaidAt, Charge: paid}
-		if _, err := e.handle(&event); !errors.Is(err, app.ErrEventDivergent) || !errors.Is(err, domain.ErrLatePayment) {
-			t.Errorf("error = %v, want a late payment read as divergent", err)
-		}
-		if got := e.state(id); got.status != "pending" || got.posted != 0 || len(got.events) != 0 {
-			t.Errorf("payment %+v; want it untouched until the job expires it", got)
-		}
-	})
+// the job or the provider's event gets there first. The money is real all the same: it
+// is held on the divergence account for review (section 4.4), once, however many paths
+// report it.
+func TestPaidLateIsHeldForReview(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(e *expiryEnv, event *pixsim.Event)
+	}{
+		{"job first", func(e *expiryEnv, event *pixsim.Event) {
+			e.expire()
+			e.mustHandle(event)
+		}},
+		{"event first", func(e *expiryEnv, event *pixsim.Event) {
+			e.mustHandle(event)
+			e.expire()
+		}},
+		{"both at once", func(e *expiryEnv, event *pixsim.Event) {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				if _, err := e.expirer.Expire(e.t.Context(), app.ExpiryBatch); err != nil {
+					e.t.Errorf("Expire() error = %v", err)
+				}
+			})
+			wg.Go(func() { e.mustHandle(event) })
+			wg.Wait()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newExpiryEnv(t)
+			id, attempt, ch := e.payment()
+			e.at(expiresAt.Add(time.Second))
+			paid := e.pay(&ch)
+			event := pixsim.Event{ID: "evt_1", Type: pixsim.ChargePaid, CreatedAt: *paid.PaidAt, Charge: paid}
+			tc.run(e, &event)
+
+			got := e.state(id)
+			if got.status != "expired" || !slices.Equal(got.events, []string{"payment.expired"}) || got.posted != 0 {
+				t.Errorf("payment %+v; want expired, without payment.paid or its posting", got)
+			}
+			if a, err := e.store.GetAttempt(t.Context(), attempt); err != nil || a.Status() != domain.AttemptSucceeded {
+				t.Errorf("attempt %s (%v); want succeeded: the provider has the money", a.Status(), err)
+			}
+			want := heldState{kinds: []string{"late_payment"}, held: 10150}
+			if h := heldFor(t, e.pool); !h.equal(want) {
+				t.Errorf("held %+v, want %+v", h, want)
+			}
+		})
+	}
 }
 
 // Decision 17's rule for expiry: no answer from the provider, no decision. The payment
@@ -290,8 +315,8 @@ func TestExpireRechecksUnderTheLock(t *testing.T) {
 	}
 
 	paid, attempt, ch := e.payment()
-	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: ch.ID, BRCode: ch.BRCode, PaidAt: t0.Add(time.Minute)}
-	if _, _, err := e.store.ApplyAttempt(t.Context(), attempt, u, t0.Add(time.Minute)); err != nil {
+	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: ch.ID, BRCode: ch.BRCode, PaidAt: t0.Add(time.Minute), Amount: ch.Amount}
+	if _, _, err := e.store.ApplyAttempt(t.Context(), attempt, &u, t0.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if expired, err := e.store.Expire(t.Context(), paid, expiresAt); err != nil || expired {

@@ -28,6 +28,8 @@ import (
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
+	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
+	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
 )
 
 // api holds the /v1 routes, built from every module. This is the only place that
@@ -67,7 +69,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool, merchantOutbox{}), d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool, paymentSinks()), d.provider, d.clock, logger, d.providerTimeout),
 			merchantFrom,
 			logger,
 		),
@@ -135,4 +137,27 @@ func (o merchantOutbox) Append(ctx context.Context, tx pgx.Tx, e *payments.Merch
 		return fmt.Errorf("merchant outbox: %w", err)
 	}
 	return nil
+}
+
+// reviewQueue is the bridge that keeps payments from importing reconciliation: it opens
+// payments' review cases in reconciliation's queue, in payments' transaction.
+type reviewQueue struct {
+	reviews reconciliationadapters.Reviews
+}
+
+func (r reviewQueue) Open(ctx context.Context, tx pgx.Tx, c *payments.ReviewCase) (bool, error) {
+	payment, attempt := [16]byte(c.Payment), [16]byte(c.Attempt)
+	opened, err := r.reviews.Open(ctx, tx, &reconciliation.Case{
+		Kind: reconciliation.CaseKind(c.Kind), Provider: string(c.Provider), ExternalID: c.ExternalID,
+		Payment: &payment, Attempt: &attempt, Amount: c.Amount, LedgerReference: c.LedgerReference,
+		Details: c.Details, CreatedAt: c.CreatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("review queue: %w", err)
+	}
+	return opened, nil
+}
+
+func paymentSinks() paymentsadapters.Sinks {
+	return paymentsadapters.Sinks{Outbox: merchantOutbox{}, Reviews: reviewQueue{}}
 }

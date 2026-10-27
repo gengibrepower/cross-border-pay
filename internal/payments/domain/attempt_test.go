@@ -20,7 +20,7 @@ func attemptIn(status domain.AttemptStatus, externalID string) domain.PaymentAtt
 
 func TestApplyMovesAndLearnsTheExternalID(t *testing.T) {
 	a := attemptIn(domain.AttemptSent, "")
-	changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, later)
+	changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, later)
 	if err != nil || !changed {
 		t.Fatalf("Apply(accept) = %v, %v; want a change", changed, err)
 	}
@@ -31,7 +31,7 @@ func TestApplyMovesAndLearnsTheExternalID(t *testing.T) {
 
 func TestApplyMovesWithTheSameExternalID(t *testing.T) {
 	a := attemptIn(domain.AttemptAccepted, "ext-1")
-	changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-1"}, later)
+	changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-1"}, later)
 	if err != nil || !changed || a.Status() != domain.AttemptSucceeded {
 		t.Errorf("Apply(succeed, ext-1) = %v, %v, %s; want a move to succeeded", changed, err, a.Status())
 	}
@@ -40,7 +40,7 @@ func TestApplyMovesWithTheSameExternalID(t *testing.T) {
 func TestApplyDuplicateChangesNothing(t *testing.T) {
 	a := attemptIn(domain.AttemptAccepted, "ext-1")
 	for _, ext := range []string{"", "ext-1"} {
-		changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Accept, ExternalID: ext}, later)
+		changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Accept, ExternalID: ext}, later)
 		if err != nil || changed {
 			t.Errorf("Apply(accept, %q) = %v, %v; want a no-op", ext, changed, err)
 		}
@@ -54,7 +54,7 @@ func TestApplyDuplicateChangesNothing(t *testing.T) {
 // duplicate for the status but the first to name the attempt.
 func TestApplyDuplicateThatRevealsTheExternalIDIsAChange(t *testing.T) {
 	a := attemptIn(domain.AttemptSucceeded, "")
-	changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, later)
+	changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, later)
 	if err != nil || !changed {
 		t.Fatalf("Apply(accept) = %v, %v; want a change", changed, err)
 	}
@@ -65,7 +65,7 @@ func TestApplyDuplicateThatRevealsTheExternalIDIsAChange(t *testing.T) {
 
 func TestApplyRejectsAnotherExternalID(t *testing.T) {
 	a := attemptIn(domain.AttemptAccepted, "ext-1")
-	if _, err := a.Apply(domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-2"}, later); !errors.Is(err, domain.ErrExternalIDMismatch) {
+	if _, err := a.Apply(&domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-2"}, later); !errors.Is(err, domain.ErrExternalIDMismatch) {
 		t.Fatalf("Apply(succeed, ext-2) error = %v, want %v", err, domain.ErrExternalIDMismatch)
 	}
 	if a.Status() != domain.AttemptAccepted || a.ExternalID() != "ext-1" {
@@ -75,7 +75,7 @@ func TestApplyRejectsAnotherExternalID(t *testing.T) {
 
 func TestApplyInvalidTransitionKeepsTheAttempt(t *testing.T) {
 	a := attemptIn(domain.AttemptRejected, "")
-	if _, err := a.Apply(domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-1"}, later); !errors.Is(err, domain.ErrInvalidTransition) {
+	if _, err := a.Apply(&domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "ext-1"}, later); !errors.Is(err, domain.ErrInvalidTransition) {
 		t.Fatalf("Apply(succeed) on rejected error = %v, want %v", err, domain.ErrInvalidTransition)
 	}
 	if a.Status() != domain.AttemptRejected || a.ExternalID() != "" {
@@ -100,14 +100,14 @@ func TestAttemptIDRoundTrip(t *testing.T) {
 
 func TestApplyLearnsTheBRCodeOnce(t *testing.T) {
 	a := attemptIn(domain.AttemptSent, "")
-	changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1", BRCode: "code-1"}, later)
+	changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1", BRCode: "code-1"}, later)
 	if err != nil || !changed || a.BRCode() != "code-1" {
 		t.Fatalf("Apply(accept with code) = %v, %v, %q; want code-1 stored", changed, err, a.BRCode())
 	}
-	if changed, err := a.Apply(domain.AttemptUpdate{Event: domain.Accept, BRCode: "code-1"}, later); err != nil || changed {
+	if changed, err := a.Apply(&domain.AttemptUpdate{Event: domain.Accept, BRCode: "code-1"}, later); err != nil || changed {
 		t.Errorf("same code again = %v, %v; want a no-op", changed, err)
 	}
-	if _, err := a.Apply(domain.AttemptUpdate{Event: domain.Succeed, BRCode: "code-2"}, later); !errors.Is(err, domain.ErrBRCodeMismatch) {
+	if _, err := a.Apply(&domain.AttemptUpdate{Event: domain.Succeed, BRCode: "code-2"}, later); !errors.Is(err, domain.ErrBRCodeMismatch) {
 		t.Errorf("another code error = %v, want %v", err, domain.ErrBRCodeMismatch)
 	}
 	if a.Status() != domain.AttemptAccepted || a.BRCode() != "code-1" {

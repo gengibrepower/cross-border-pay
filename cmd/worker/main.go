@@ -70,10 +70,10 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: PIXSIM_URL: %w", err)
 	}
-	store, provider := paymentsadapters.NewPostgres(pool, merchantOutbox{}), paymentsadapters.NewPixSim(pixsimClient)
+	store, provider := paymentsadapters.NewPostgres(pool, paymentSinks()), paymentsadapters.NewPixSim(pixsimClient)
 	resolver := paymentsapp.NewResolver(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
 	expirer := paymentsapp.NewExpirer(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
-	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, outbox: merchantOutbox{}}, clock.System{}, logger)
+	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks()}, clock.System{}, logger)
 
 	logger.Info("worker started")
 	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, expirer, inbox, logger)...); err != nil {

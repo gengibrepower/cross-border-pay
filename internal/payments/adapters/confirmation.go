@@ -17,27 +17,24 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// confirm moves the locked payment to paid, posts its ledger transaction and appends
-// payment.paid to the outbox, all in the attempt's transaction (section 4.1, step 6). A
-// payment already paid is a no-op; one paid late is domain.ErrLatePayment and writes
-// nothing.
-func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, paidAt, now time.Time) error {
+// confirm runs when the attempt has just succeeded. It moves the locked payment to paid,
+// posts its ledger transaction and appends payment.paid to the outbox, all in the
+// attempt's transaction (section 4.1, step 6). Money that cannot confirm the payment,
+// late, for another amount or for a payment already paid, is posted as a divergence.
+func confirm(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, attempt *domain.PaymentAttempt, u *domain.AttemptUpdate, now time.Time) error {
 	status, err := domain.ParseStatus(pay.Status)
 	if err != nil {
 		return fmt.Errorf("stored payment: %w", err)
-	}
-	to, changed, err := domain.Transition(status, domain.Confirm)
-	if err != nil {
-		return fmt.Errorf("payment: %w", err)
-	}
-	if !changed {
-		return nil
 	}
 	quote, err := loadQuote(ctx, tx, pay.QuoteID.Bytes)
 	if err != nil {
 		return err
 	}
-	if err := domain.CheckOnTime(&quote, paidAt); err != nil {
+	to, err := domain.ConfirmPayment(status, &quote, u.Amount, u.PaidAt)
+	if kind, ok := domain.DivergenceOf(err); ok {
+		return diverge(ctx, tx, sinks.Reviews, pay, attempt, kind, u, err, now)
+	}
+	if err != nil {
 		return fmt.Errorf("payment: %w", err)
 	}
 	version, err := setStatus(ctx, tx, pay.PaymentID, to, now)
@@ -56,7 +53,7 @@ func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.Lock
 	if _, err := (ledgeradapters.Ledger{}).Post(ctx, tx, t); err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
-	return notify(ctx, tx, outbox, domain.PaymentPaid, &storedPayment{
+	return notify(ctx, tx, sinks.Outbox, domain.PaymentPaid, &storedPayment{
 		id: pay.PaymentID, merchant: pay.MerchantID, amount: pay.Amount, currency: pay.Currency,
 	}, to, version, now)
 }

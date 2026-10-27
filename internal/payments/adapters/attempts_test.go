@@ -26,13 +26,9 @@ var t0 = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 const provider domain.ProviderName = "pixsim"
 
-func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
+// testQuote is the quote of every payment newPayment stores: US$ 20.00 at 5.0000.
+func testQuote(t *testing.T) fx.Quote {
 	t.Helper()
-	ctx := t.Context()
-	var merchant [16]byte
-	if err := pool.QueryRow(ctx, "INSERT INTO merchants (name) VALUES ('m') RETURNING id").Scan(&merchant); err != nil {
-		t.Fatal(err)
-	}
 	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +37,24 @@ func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return q
+}
+
+// quoted is what testQuote asks the payer for.
+func quoted(t *testing.T) money.Money {
+	t.Helper()
+	q := testQuote(t)
+	return q.PayerAmount()
+}
+
+func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
+	t.Helper()
+	ctx := t.Context()
+	var merchant [16]byte
+	if err := pool.QueryRow(ctx, "INSERT INTO merchants (name) VALUES ('m') RETURNING id").Scan(&merchant); err != nil {
+		t.Fatal(err)
+	}
+	q := testQuote(t)
 	quote, err := fxadapters.SaveQuote(ctx, pool, &q)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +80,7 @@ func create(t *testing.T, store *adapters.Postgres, payment domain.PaymentID) do
 func apply(t *testing.T, store *adapters.Postgres, id domain.AttemptID, events ...domain.AttemptEvent) {
 	t.Helper()
 	for _, e := range events {
-		if _, _, err := store.ApplyAttempt(t.Context(), id, domain.AttemptUpdate{Event: e, PaidAt: t0}, t0); err != nil {
+		if _, _, err := store.ApplyAttempt(t.Context(), id, &domain.AttemptUpdate{Event: e, PaidAt: t0, Amount: quoted(t)}, t0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,7 +88,7 @@ func apply(t *testing.T, store *adapters.Postgres, id domain.AttemptID, events .
 
 func TestCreateAttemptStoresItCreated(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	payment := newPayment(t, pool)
 
 	created := create(t, store, payment)
@@ -89,23 +103,23 @@ func TestCreateAttemptStoresItCreated(t *testing.T) {
 }
 
 func TestUnknownAttempt(t *testing.T) {
-	store := adapters.NewPostgres(pgtest.NewPool(t), sqlOutbox{})
+	store := adapters.NewPostgres(pgtest.NewPool(t), sinks())
 	if _, err := store.GetAttempt(t.Context(), domain.AttemptID{1}); !errors.Is(err, app.ErrAttemptNotFound) {
 		t.Errorf("GetAttempt() error = %v, want %v", err, app.ErrAttemptNotFound)
 	}
-	if _, _, err := store.ApplyAttempt(t.Context(), domain.AttemptID{1}, domain.AttemptUpdate{Event: domain.Send}, t0); !errors.Is(err, app.ErrAttemptNotFound) {
+	if _, _, err := store.ApplyAttempt(t.Context(), domain.AttemptID{1}, &domain.AttemptUpdate{Event: domain.Send}, t0); !errors.Is(err, app.ErrAttemptNotFound) {
 		t.Errorf("ApplyAttempt() error = %v, want %v", err, app.ErrAttemptNotFound)
 	}
 }
 
 func TestApplyAttemptStoresTheTransition(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	a := create(t, store, newPayment(t, pool))
 	apply(t, store, a.ID(), domain.Send)
 
 	at := t0.Add(time.Minute)
-	moved, changed, err := store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at)
+	moved, changed, err := store.ApplyAttempt(t.Context(), a.ID(), &domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at)
 	if err != nil || !changed {
 		t.Fatalf("ApplyAttempt(accept) = %v, %v; want a change", changed, err)
 	}
@@ -114,11 +128,11 @@ func TestApplyAttemptStoresTheTransition(t *testing.T) {
 		t.Fatalf("stored attempt = %+v, %v; want accepted ext-1 at %v", got, err, at)
 	}
 
-	_, changed, err = store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at.Add(time.Minute))
+	_, changed, err = store.ApplyAttempt(t.Context(), a.ID(), &domain.AttemptUpdate{Event: domain.Accept, ExternalID: "ext-1"}, at.Add(time.Minute))
 	if err != nil || changed {
 		t.Errorf("duplicate accept = %v, %v; want a no-op", changed, err)
 	}
-	_, _, err = store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: domain.Reject}, at.Add(time.Minute))
+	_, _, err = store.ApplyAttempt(t.Context(), a.ID(), &domain.AttemptUpdate{Event: domain.Reject}, at.Add(time.Minute))
 	if !errors.Is(err, domain.ErrInvalidTransition) {
 		t.Errorf("reject on accepted error = %v, want %v", err, domain.ErrInvalidTransition)
 	}
@@ -129,7 +143,7 @@ func TestApplyAttemptStoresTheTransition(t *testing.T) {
 
 func TestOneLiveAttemptPerPayment(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	payment := newPayment(t, pool)
 
 	first := create(t, store, payment)
@@ -148,7 +162,7 @@ func TestOneLiveAttemptPerPayment(t *testing.T) {
 
 func TestConcurrentCreatesLeaveOneAttempt(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	payment := newPayment(t, pool)
 
 	const workers = 20
@@ -183,7 +197,7 @@ func TestConcurrentCreatesLeaveOneAttempt(t *testing.T) {
 // change.
 func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 
 	const rounds, workers = 25, 8
 	for range rounds {
@@ -205,7 +219,7 @@ func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 			}
 			done.Go(func() {
 				start.Wait()
-				_, changed, err := store.ApplyAttempt(t.Context(), a.ID(), domain.AttemptUpdate{Event: e}, t0)
+				_, changed, err := store.ApplyAttempt(t.Context(), a.ID(), &domain.AttemptUpdate{Event: e}, t0)
 				results[i] = result{e, changed, err}
 			})
 		}
@@ -246,7 +260,7 @@ func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 // attempt, GET and List return the new one.
 func TestReadsShowTheLatestAttempt(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool, sqlOutbox{})
+	store := adapters.NewPostgres(pool, sinks())
 	payment := newPayment(t, pool)
 	var merchant domain.MerchantID
 	if err := pool.QueryRow(t.Context(), "SELECT merchant_id FROM payments WHERE id = $1", payment).Scan(&merchant); err != nil {
@@ -277,3 +291,18 @@ func (sqlOutbox) Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent)
 		VALUES ($1, $2, $3, $4, $5, $6)`, e.ID, e.Merchant, string(e.Type), e.Payment.String(), e.Payload, e.CreatedAt)
 	return err
 }
+
+// sqlReviews is the same kind of stand-in for the reconciliation module's queue.
+type sqlReviews struct{}
+
+func (sqlReviews) Open(ctx context.Context, tx pgx.Tx, c *domain.ReviewCase) (bool, error) {
+	tag, err := tx.Exec(ctx, `INSERT INTO review_cases (kind, provider, external_id, payment_id, attempt_id, amount,
+		currency, ledger_reference, details, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (provider, external_id) DO NOTHING`, string(c.Kind), string(c.Provider), c.ExternalID,
+		c.Payment, c.Attempt, c.Amount.Amount(), c.Amount.Currency().Code(), c.LedgerReference, c.Details, c.CreatedAt)
+	return tag.RowsAffected() == 1, err
+}
+
+func sinks() adapters.Sinks { return adapters.Sinks{Outbox: sqlOutbox{}, Reviews: sqlReviews{}} }
+
+var sinkSet = sinks()

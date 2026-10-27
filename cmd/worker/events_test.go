@@ -42,8 +42,8 @@ func newInboxEnv(t *testing.T) *inboxEnv {
 	c := clock.NewFake(t0)
 	store := eventsadapters.NewPostgres(pool)
 	return &inboxEnv{
-		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, merchantOutbox{}),
-		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, outbox: merchantOutbox{}}, c, slog.New(slog.DiscardHandler)),
+		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, paymentSinks()),
+		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, sinks: paymentSinks()}, c, slog.New(slog.DiscardHandler)),
 	}
 }
 
@@ -81,7 +81,7 @@ func (e *inboxEnv) attempt() (payments.AttemptID, money.Money) {
 	return a.ID(), q.PayerAmount()
 }
 
-func (e *inboxEnv) apply(id payments.AttemptID, u payments.AttemptUpdate) {
+func (e *inboxEnv) apply(id payments.AttemptID, u *payments.AttemptUpdate) {
 	e.t.Helper()
 	if _, _, err := e.payments.ApplyAttempt(e.t.Context(), id, u, t0); err != nil {
 		e.t.Fatal(err)
@@ -91,6 +91,13 @@ func (e *inboxEnv) apply(id payments.AttemptID, u payments.AttemptUpdate) {
 // paidBySimulator creates the charge at a real simulator, pays it and returns the
 // charge.paid body the simulator delivered.
 func (e *inboxEnv) paidBySimulator(id payments.AttemptID, amount money.Money) (charge pixsim.Charge, payload []byte) {
+	e.t.Helper()
+	return e.paidBySimulatorAfter(id, amount, 0)
+}
+
+// paidBySimulatorAfter is paidBySimulator with the payer paying wait after the charge
+// was created.
+func (e *inboxEnv) paidBySimulatorAfter(id payments.AttemptID, amount money.Money, wait time.Duration) (charge pixsim.Charge, payload []byte) {
 	e.t.Helper()
 	delivered := make(chan []byte, 1)
 	hook := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -117,6 +124,7 @@ func (e *inboxEnv) paidBySimulator(id payments.AttemptID, amount money.Money) (c
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	e.clock.Advance(wait)
 	if _, err := client.Pay(e.t.Context(), charge.ID); err != nil {
 		e.t.Fatal(err)
 	}
@@ -161,8 +169,8 @@ func TestWorkerAppliesASimulatorPayment(t *testing.T) {
 	e := newInboxEnv(t)
 	id, amount := e.attempt()
 	charge, payload := e.paidBySimulator(id, amount)
-	e.apply(id, payments.AttemptUpdate{Event: payments.Send})
-	e.apply(id, payments.AttemptUpdate{Event: payments.Accept, ExternalID: charge.ID, BRCode: charge.BRCode})
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Send})
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Accept, ExternalID: charge.ID, BRCode: charge.BRCode})
 
 	e.receive("pixsim", payload)
 	e.process()
@@ -189,7 +197,8 @@ func TestWorkerReadsPaymentsErrorsAsOutcomes(t *testing.T) {
 		status   string
 	}{
 		{"attempt not stored yet", "pixsim", func(e *pixsim.Event) { e.Charge.IdempotencyKey = payments.AttemptID{1}.String() }, "pending"},
-		{"another amount", "pixsim", func(e *pixsim.Event) { e.Charge.Amount = money.New(1, money.BRL) }, "failed"},
+		{"another amount, held for review", "pixsim", func(e *pixsim.Event) { e.Charge.Amount = money.New(1, money.BRL) }, "processed"},
+		{"another currency", "pixsim", func(e *pixsim.Event) { e.Charge.Amount = money.New(1, money.USD) }, "failed"},
 		{"unhandled type", "pixsim", func(e *pixsim.Event) { e.Type = "charge.refunded" }, "ignored"},
 		{"no handler for the provider", "acme", func(*pixsim.Event) {}, "ignored"},
 	} {
@@ -197,7 +206,7 @@ func TestWorkerReadsPaymentsErrorsAsOutcomes(t *testing.T) {
 			e := newInboxEnv(t)
 			id, amount := e.attempt()
 			_, payload := e.paidBySimulator(id, amount)
-			e.apply(id, payments.AttemptUpdate{Event: payments.Send})
+			e.apply(id, &payments.AttemptUpdate{Event: payments.Send})
 			var event pixsim.Event
 			if err := json.Unmarshal(payload, &event); err != nil {
 				t.Fatal(err)
@@ -213,5 +222,39 @@ func TestWorkerReadsPaymentsErrorsAsOutcomes(t *testing.T) {
 				t.Errorf("event %s, want %s", status, tc.status)
 			}
 		})
+	}
+}
+
+// Section 4.4 behind the worker, with the simulator's own event: a payer who pays a
+// second after the quote expired. The worker settles the event by holding the money
+// on the divergence account with a review case, and the payment then expires.
+func TestWorkerHoldsALatePaymentForReview(t *testing.T) {
+	e := newInboxEnv(t)
+	id, amount := e.attempt()
+	charge, payload := e.paidBySimulatorAfter(id, amount, payments.PixQuoteValidity+time.Second)
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Send})
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Accept, ExternalID: charge.ID, BRCode: charge.BRCode})
+
+	e.receive("pixsim", payload)
+	e.process()
+	a, err := e.payments.GetAttempt(t.Context(), id)
+	if status, _ := e.event(); err != nil || a.Status() != payments.AttemptSucceeded || status != "processed" {
+		t.Fatalf("attempt %s (%v), event %s; want succeeded and processed", a.Status(), err, status)
+	}
+	if expired, err := e.payments.Expire(t.Context(), a.Payment(), e.clock.Now()); err != nil || !expired {
+		t.Fatalf("Expire() = %v, %v; want the payment expired", expired, err)
+	}
+
+	var status, kind, reference string
+	var held int64
+	err = e.pool.QueryRow(t.Context(), `SELECT p.status, c.kind, c.ledger_reference,
+		(SELECT -sum(en.amount) FROM ledger_entries AS en JOIN ledger_accounts AS l ON l.id = en.account_id
+			WHERE l.code = 'divergence:BRL')
+		FROM payments AS p JOIN review_cases AS c ON c.payment_id = p.id WHERE p.id = $1`, a.Payment()).
+		Scan(&status, &kind, &reference, &held)
+	if err != nil || status != "expired" || kind != "late_payment" || held != amount.Amount() ||
+		reference != payments.DivergenceReference(paymentsadapters.PixSimName, charge.ID) {
+		t.Errorf("payment %s, case %s for %s, %d held (%v); want expired, late_payment and %d held",
+			status, kind, reference, held, err, amount.Amount())
 	}
 }
