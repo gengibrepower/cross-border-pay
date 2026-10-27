@@ -66,7 +66,8 @@ func (q *Queries) FindActiveAPIKey(ctx context.Context, lookup string) (FindActi
 }
 
 const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
-SELECT merchant_id, url, secret_version, previous_secret_version, rotated_at, created_at, updated_at
+SELECT merchant_id, url, secret_version, previous_secret_version, rotated_at,
+       failing_since, disabled_at, disabled_reason, created_at, updated_at
 FROM webhook_endpoints
 WHERE merchant_id = $1
 `
@@ -77,6 +78,9 @@ type GetWebhookEndpointRow struct {
 	SecretVersion         int32
 	PreviousSecretVersion pgtype.Int4
 	RotatedAt             pgtype.Timestamptz
+	FailingSince          pgtype.Timestamptz
+	DisabledAt            pgtype.Timestamptz
+	DisabledReason        pgtype.Text
 	CreatedAt             pgtype.Timestamptz
 	UpdatedAt             pgtype.Timestamptz
 }
@@ -90,6 +94,9 @@ func (q *Queries) GetWebhookEndpoint(ctx context.Context, merchantID pgtype.UUID
 		&i.SecretVersion,
 		&i.PreviousSecretVersion,
 		&i.RotatedAt,
+		&i.FailingSince,
+		&i.DisabledAt,
+		&i.DisabledReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -108,6 +115,48 @@ func (q *Queries) LockMerchant(ctx context.Context, id pgtype.UUID) (pgtype.UUID
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const recordEndpointFailure = `-- name: RecordEndpointFailure :one
+UPDATE webhook_endpoints
+SET failing_since = coalesce(failing_since, $1),
+    disabled_at = CASE WHEN coalesce(failing_since, $1) <= $2 THEN $1 END,
+    disabled_reason = CASE WHEN coalesce(failing_since, $1) <= $2 THEN $3::text END
+WHERE merchant_id = $4 AND disabled_at IS NULL
+RETURNING (disabled_at IS NOT NULL)::boolean AS disabled
+`
+
+type RecordEndpointFailureParams struct {
+	Now           pgtype.Timestamptz
+	DisableBefore pgtype.Timestamptz
+	Reason        string
+	MerchantID    pgtype.UUID
+}
+
+// One statement, so the row lock serializes concurrent failures: the one that crosses
+// the line disables the endpoint and gets disabled = true; the rest find it disabled
+// and change nothing.
+func (q *Queries) RecordEndpointFailure(ctx context.Context, arg RecordEndpointFailureParams) (bool, error) {
+	row := q.db.QueryRow(ctx, recordEndpointFailure,
+		arg.Now,
+		arg.DisableBefore,
+		arg.Reason,
+		arg.MerchantID,
+	)
+	var disabled bool
+	err := row.Scan(&disabled)
+	return disabled, err
+}
+
+const recordEndpointSuccess = `-- name: RecordEndpointSuccess :exec
+UPDATE webhook_endpoints
+SET failing_since = NULL
+WHERE merchant_id = $1 AND failing_since IS NOT NULL AND disabled_at IS NULL
+`
+
+func (q *Queries) RecordEndpointSuccess(ctx context.Context, merchantID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, recordEndpointSuccess, merchantID)
+	return err
 }
 
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
@@ -132,7 +181,11 @@ SET url = excluded.url,
     secret_version = excluded.secret_version,
     previous_secret_version = excluded.previous_secret_version,
     rotated_at = excluded.rotated_at,
-    updated_at = excluded.updated_at
+    updated_at = excluded.updated_at,
+    -- The merchant touching the endpoint is the merchant saying it is fixed.
+    failing_since = NULL,
+    disabled_at = NULL,
+    disabled_reason = NULL
 `
 
 type SaveWebhookEndpointParams struct {

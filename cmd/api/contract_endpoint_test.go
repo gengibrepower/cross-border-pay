@@ -9,7 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
 )
 
@@ -195,5 +197,58 @@ func TestWebhookSecretIsNotLogged(t *testing.T) {
 	}
 	if logs.Len() == 0 || strings.Contains(logs.String(), e.Secret) || strings.Contains(logs.String(), "whsec_") {
 		t.Errorf("logs hold the secret, or nothing was logged:\n%s", logs.String())
+	}
+}
+
+// Decision 24 as the merchant sees it: GET shows the run of failures and, once the
+// endpoint is disabled, when and why; a PUT with the same URL turns it back on.
+func TestWebhookEndpointShowsWhenDeliveriesStopped(t *testing.T) {
+	c := newContract(t)
+	key := c.merchantKey()
+	get := func(status int) map[string]any {
+		t.Helper()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:8080/v1/webhook-endpoint", http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := c.do(req, true)
+		if rec.Code != status {
+			t.Fatalf("GET: status %d, want %d: %s", rec.Code, status, rec.Body)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if p := get(http.StatusNotFound); p["code"] != "webhook_endpoint_not_found" {
+		t.Errorf("GET before any PUT = %v", p)
+	}
+
+	c.putEndpoint(key, `{"url":"https://gamestore.example/hooks"}`, http.StatusOK)
+	merchant := c.merchantOf("https://gamestore.example/hooks")
+	body := get(http.StatusOK)
+	if body["url"] != "https://gamestore.example/hooks" || body["secret"] != nil || body["disabled_at"] != nil || body["failing_since"] != nil {
+		t.Fatalf("GET = %v, want the endpoint, enabled and without its secret", body)
+	}
+
+	store := merchantsadapters.NewPostgres(c.pool)
+	for _, at := range []time.Duration{0, merchants.DisableAfter} {
+		if _, err := store.EndpointFailed(t.Context(), merchant, "answered 500", t0.Add(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body = get(http.StatusOK)
+	if body["disabled_at"] != t0.Add(merchants.DisableAfter).Format(time.RFC3339) || body["failing_since"] != t0.Format(time.RFC3339) ||
+		body["disabled_reason"] != "only failures for 72 h; last: answered 500" {
+		t.Fatalf("GET after 72 h of failures = %v", body)
+	}
+
+	c.putEndpoint(key, `{"url":"https://gamestore.example/hooks"}`, http.StatusOK)
+	body = get(http.StatusOK)
+	// Read back from the database, where pgx hands timestamptz in the local zone.
+	if created, _ := body["created_at"].(string); !strings.HasSuffix(created, "Z") {
+		t.Errorf("created_at %v, want UTC", body["created_at"])
+	}
+	if body["disabled_at"] != nil || body["failing_since"] != nil || body["disabled_reason"] != nil {
+		t.Errorf("GET after a PUT = %v, want enabled", body)
 	}
 }

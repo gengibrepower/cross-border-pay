@@ -83,3 +83,14 @@ UPDATE outbox_events
 SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = @now,
     last_status_code = sqlc.narg(status_code), last_error = @last_error
 WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts;
+
+-- name: DeleteDeliveredEvents :execrows
+-- One batch of events delivered before the cutoff. SKIP LOCKED passes over a row
+-- another statement holds instead of waiting for it.
+DELETE FROM outbox_events
+WHERE id IN (
+    SELECT old.id FROM outbox_events AS old
+    WHERE old.delivery_status = 'delivered' AND old.finished_at <= @cutoff
+    LIMIT @max_rows::bigint
+    FOR UPDATE SKIP LOCKED
+);

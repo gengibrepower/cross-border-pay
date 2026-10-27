@@ -90,6 +90,16 @@ func (d *Deliveries) Fail(ctx context.Context, dl *domain.Delivery, statusCode i
 	return n == 1, nil
 }
 
+func (d *Deliveries) DeleteDelivered(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	n, err := eventsdb.New(d.pool).DeleteDeliveredEvents(ctx, eventsdb.DeleteDeliveredEventsParams{
+		Cutoff: timestamptz(cutoff), MaxRows: int64(limit),
+	})
+	if err != nil {
+		return n, fmt.Errorf("events: delete delivered: %w", err)
+	}
+	return n, nil
+}
+
 func statusInt4(code int) pgtype.Int4 {
 	return pgtype.Int4{Int32: int32(code), Valid: code != 0} //nolint:gosec // G115: an HTTP status code.
 }

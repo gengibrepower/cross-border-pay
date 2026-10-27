@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -13,6 +15,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
+
+const maxReasonLength = 500
 
 func (p *Postgres) UpdateEndpoint(ctx context.Context, merchant domain.MerchantID, change func(*domain.Endpoint) (domain.Endpoint, error)) (domain.Endpoint, error) {
 	var saved domain.Endpoint
@@ -71,14 +75,66 @@ func (p *Postgres) Endpoint(ctx context.Context, merchant domain.MerchantID) (do
 	return restoreEndpoint(&row), nil
 }
 
+// EndpointSucceeded ends the merchant's run of failures, if there was one.
+func (p *Postgres) EndpointSucceeded(ctx context.Context, merchant domain.MerchantID) error {
+	if err := merchantsdb.New(p.pool).RecordEndpointSuccess(ctx, pgtype.UUID{Bytes: merchant, Valid: true}); err != nil {
+		return fmt.Errorf("merchants: record endpoint success: %w", err)
+	}
+	return nil
+}
+
+// EndpointFailed records a failed delivery at now and reports whether this one
+// disabled the endpoint: only one of many concurrent failures does. A disabled or
+// missing endpoint is left as it is.
+func (p *Postgres) EndpointFailed(ctx context.Context, merchant domain.MerchantID, reason string, now time.Time) (bool, error) {
+	disabled, err := merchantsdb.New(p.pool).RecordEndpointFailure(ctx, merchantsdb.RecordEndpointFailureParams{
+		MerchantID:    pgtype.UUID{Bytes: merchant, Valid: true},
+		Now:           pgtype.Timestamptz{Time: now, Valid: true},
+		DisableBefore: pgtype.Timestamptz{Time: now.Add(-domain.DisableAfter), Valid: true},
+		Reason:        disabledReason(reason),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("merchants: record endpoint failure: %w", err)
+	}
+	return disabled, nil
+}
+
+// utc keeps the API in UTC (section 4.9): pgx reads timestamptz in the local zone. A
+// NULL stays the zero time.
+func utc(t pgtype.Timestamptz) time.Time {
+	if !t.Valid {
+		return time.Time{}
+	}
+	return t.Time.UTC()
+}
+
+// disabledReason fits the column, cut at a rune boundary.
+func disabledReason(last string) string {
+	s := fmt.Sprintf("only failures for %.0f h; last: %s", domain.DisableAfter.Hours(), last)
+	if len(s) <= maxReasonLength {
+		return s
+	}
+	cut := maxReasonLength
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 func restoreEndpoint(row *merchantsdb.GetWebhookEndpointRow) domain.Endpoint {
 	return domain.Endpoint{
-		Merchant:  row.MerchantID.Bytes,
-		URL:       row.Url,
-		Version:   domain.SecretVersion(row.SecretVersion),
-		Previous:  domain.SecretVersion(row.PreviousSecretVersion.Int32),
-		RotatedAt: row.RotatedAt.Time,
-		CreatedAt: row.CreatedAt.Time,
-		UpdatedAt: row.UpdatedAt.Time,
+		Merchant:       row.MerchantID.Bytes,
+		URL:            row.Url,
+		Version:        domain.SecretVersion(row.SecretVersion),
+		Previous:       domain.SecretVersion(row.PreviousSecretVersion.Int32),
+		RotatedAt:      utc(row.RotatedAt),
+		FailingSince:   utc(row.FailingSince),
+		DisabledAt:     utc(row.DisabledAt),
+		DisabledReason: row.DisabledReason.String,
+		CreatedAt:      utc(row.CreatedAt),
+		UpdatedAt:      utc(row.UpdatedAt),
 	}
 }

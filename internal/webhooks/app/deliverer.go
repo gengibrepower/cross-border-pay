@@ -28,9 +28,15 @@ const (
 	LeaseMargin = time.Minute
 	// recordTimeout bounds recording a 2xx after the worker was told to stop.
 	recordTimeout = 5 * time.Second
+	// CleanupBatch keeps each delete of the cleanup short; it loops until a batch
+	// comes back short.
+	CleanupBatch = 1000
 )
 
-var errNoEndpoint = errors.New("merchant has no webhook endpoint")
+var (
+	errNoEndpoint       = errors.New("merchant has no webhook endpoint")
+	errEndpointDisabled = errors.New("webhook endpoint disabled after only failures; PUT it again to turn it back on")
+)
 
 type Clock interface {
 	Now() time.Time
@@ -43,11 +49,17 @@ type Queue interface {
 	Delivered(ctx context.Context, d *events.Delivery, statusCode int, now time.Time) (bool, error)
 	Reschedule(ctx context.Context, d *events.Delivery, statusCode int, reason string, at time.Time) (bool, error)
 	Fail(ctx context.Context, d *events.Delivery, statusCode int, reason string, now time.Time) (bool, error)
+	// DeleteDelivered deletes up to limit events delivered at or before cutoff.
+	DeleteDelivered(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
 type Endpoints interface {
 	// Endpoint returns merchantsapp.ErrEndpointNotFound for a merchant without one.
 	Endpoint(ctx context.Context, merchant merchants.MerchantID) (merchants.Endpoint, error)
+	// EndpointSucceeded and EndpointFailed feed decision 24's breaker. EndpointFailed
+	// reports whether this failure disabled the endpoint.
+	EndpointSucceeded(ctx context.Context, merchant merchants.MerchantID) error
+	EndpointFailed(ctx context.Context, merchant merchants.MerchantID, reason string, now time.Time) (bool, error)
 }
 
 type Sender interface {
@@ -89,7 +101,8 @@ func NewDeliverer(queue Queue, endpoints Endpoints, sender Sender, signingKey []
 // Deliver runs one round over up to limit due events and returns how many it claimed.
 // The posts run in parallel and the round waits for all of them, each bounded by the
 // timeout. When ctx ends mid-round, interrupted posts are not recorded: their lease
-// runs out and they are due again, so every event is delivered at least once.
+// runs out and they are due again, so every event is delivered at least once. An
+// endpoint that is disabled gets no post: its events wait with the usual backoff.
 func (d *Deliverer) Deliver(ctx context.Context, limit int) (int, error) {
 	now := d.clock.Now()
 	batch, err := d.queue.Claim(ctx, now, now.Add(d.timeout+LeaseMargin), PerMerchant, limit)
@@ -97,15 +110,20 @@ func (d *Deliverer) Deliver(ctx context.Context, limit int) (int, error) {
 		return 0, fmt.Errorf("webhooks: %w", err)
 	}
 	answers := make([]domain.Answer, len(batch))
+	posted := make([]bool, len(batch))
 	endpoints := make(map[merchants.MerchantID]*merchants.Endpoint)
 	var wg sync.WaitGroup
 	for i := range batch {
 		e, err := d.endpoint(ctx, endpoints, batch[i].Event.Merchant)
-		if err != nil {
+		switch {
+		case err != nil:
 			answers[i] = domain.Answer{Err: err}
-			continue
+		case e.Disabled():
+			answers[i] = domain.Answer{Err: errEndpointDisabled}
+		default:
+			posted[i] = true
+			wg.Go(func() { answers[i] = d.post(ctx, &batch[i], e) })
 		}
-		wg.Go(func() { answers[i] = d.post(ctx, &batch[i], e) })
 	}
 	wg.Wait()
 
@@ -113,7 +131,74 @@ func (d *Deliverer) Deliver(ctx context.Context, limit int) (int, error) {
 	for i := range batch {
 		errs = append(errs, d.record(ctx, &batch[i], answers[i]))
 	}
+	errs = append(errs, d.trip(ctx, batch, answers, posted)...)
 	return len(batch), errors.Join(errs...)
+}
+
+// trip feeds the round's posts to each merchant's breaker, once per merchant: a
+// single 2xx means the endpoint works, even if other posts failed.
+func (d *Deliverer) trip(ctx context.Context, batch []events.Delivery, answers []domain.Answer, posted []bool) []error {
+	succeeded := make(map[merchants.MerchantID]bool)
+	failure := make(map[merchants.MerchantID]string)
+	var order []merchants.MerchantID
+	for i := range batch {
+		if !posted[i] {
+			continue
+		}
+		m := merchants.MerchantID(batch[i].Event.Merchant)
+		if _, seen := succeeded[m]; !seen {
+			order = append(order, m)
+		}
+		succeeded[m] = succeeded[m] || answers[i].Succeeded()
+		if !answers[i].Succeeded() {
+			failure[m] = answers[i].Reason()
+		}
+	}
+	var errs []error
+	for _, m := range order {
+		switch {
+		case succeeded[m]:
+			// Recorded even when stopping, like the 2xx itself: a run of failures left
+			// open could disable an endpoint that works.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+			err := d.endpoints.EndpointSucceeded(rctx, m)
+			cancel()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("webhooks: %w", err))
+			}
+		case ctx.Err() != nil:
+			// Failures cut short by shutdown say nothing about the endpoint.
+		default:
+			disabled, err := d.endpoints.EndpointFailed(ctx, m, failure[m], d.clock.Now())
+			if err != nil {
+				errs = append(errs, fmt.Errorf("webhooks: %w", err))
+			}
+			if disabled {
+				// The notice of decision 24: the merchant sees it in GET
+				// /v1/webhook-endpoint, an operator here.
+				d.logger.ErrorContext(ctx, "webhook endpoint disabled after only failures",
+					"merchant", fmt.Sprintf("%x", m), "after", merchants.DisableAfter, "last_reason", failure[m])
+			}
+		}
+	}
+	return errs
+}
+
+// Cleanup deletes delivered events older than domain.DeliveredRetention, batch at a
+// time. Failed and pending events are kept: they still need a delivery.
+func (d *Deliverer) Cleanup(ctx context.Context, batch int) (int64, error) {
+	cutoff := d.clock.Now().Add(-domain.DeliveredRetention)
+	var total int64
+	for {
+		n, err := d.queue.DeleteDelivered(ctx, cutoff, batch)
+		total += n
+		if err != nil {
+			return total, fmt.Errorf("webhooks: cleanup: %w", err)
+		}
+		if n < int64(batch) {
+			return total, nil
+		}
+	}
 }
 
 func (d *Deliverer) endpoint(ctx context.Context, cache map[merchants.MerchantID]*merchants.Endpoint, merchant [16]byte) (*merchants.Endpoint, error) {
