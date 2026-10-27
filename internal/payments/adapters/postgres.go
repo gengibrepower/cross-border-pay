@@ -20,12 +20,19 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
 
-type Postgres struct {
-	pool *pgxpool.Pool
+// Outbox stores events for merchants in the caller's transaction (section 4.5). It is
+// the events module's, plugged in by cmd so that payments does not import it.
+type Outbox interface {
+	Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent) error
 }
 
-func NewPostgres(pool *pgxpool.Pool) *Postgres {
-	return &Postgres{pool: pool}
+type Postgres struct {
+	pool   *pgxpool.Pool
+	outbox Outbox
+}
+
+func NewPostgres(pool *pgxpool.Pool, outbox Outbox) *Postgres {
+	return &Postgres{pool: pool, outbox: outbox}
 }
 
 func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote, provider domain.ProviderName) (app.Priced, error) {

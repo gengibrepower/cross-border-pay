@@ -106,7 +106,7 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 }
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at FROM payments WHERE merchant_id = $1 AND id = $2
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version FROM payments WHERE merchant_id = $1 AND id = $2
 `
 
 type GetPaymentParams struct {
@@ -128,6 +128,7 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.Reference,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -235,7 +236,7 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 }
 
 const listPayments = `-- name: ListPayments :many
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at FROM payments
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version FROM payments
 WHERE merchant_id = $1
   AND ($2::uuid IS NULL OR id < $2)
   AND ($3::text IS NULL OR status = $3)
@@ -277,6 +278,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 			&i.Reference,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -312,7 +314,8 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 }
 
 const lockPaymentOfAttempt = `-- name: LockPaymentOfAttempt :one
-SELECT p.id AS payment_id, p.merchant_id, p.status, p.quote_id, q.payer_amount, q.quote_currency
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id,
+    q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = p.quote_id
@@ -324,6 +327,9 @@ type LockPaymentOfAttemptRow struct {
 	PaymentID     pgtype.UUID
 	MerchantID    pgtype.UUID
 	Status        string
+	Version       int32
+	Amount        int64
+	Currency      string
 	QuoteID       pgtype.UUID
 	PayerAmount   int64
 	QuoteCurrency string
@@ -341,11 +347,27 @@ func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (Loc
 		&i.PaymentID,
 		&i.MerchantID,
 		&i.Status,
+		&i.Version,
+		&i.Amount,
+		&i.Currency,
 		&i.QuoteID,
 		&i.PayerAmount,
 		&i.QuoteCurrency,
 	)
 	return i, err
+}
+
+const newEventID = `-- name: NewEventID :one
+SELECT uuidv7()::uuid AS id
+`
+
+// Every ID is a UUIDv7 the database issues; an event's is needed before its row
+// exists, because the payload carries it.
+func (q *Queries) NewEventID(ctx context.Context) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, newEventID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const rescheduleAttempt = `-- name: RescheduleAttempt :execrows
@@ -396,8 +418,9 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 	return err
 }
 
-const updatePaymentStatus = `-- name: UpdatePaymentStatus :exec
-UPDATE payments SET status = $1, updated_at = $2 WHERE id = $3
+const updatePaymentStatus = `-- name: UpdatePaymentStatus :one
+UPDATE payments SET status = $1, version = version + 1, updated_at = $2 WHERE id = $3
+RETURNING version
 `
 
 type UpdatePaymentStatusParams struct {
@@ -406,7 +429,9 @@ type UpdatePaymentStatusParams struct {
 	ID        pgtype.UUID
 }
 
-func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error {
-	_, err := q.db.Exec(ctx, updatePaymentStatus, arg.Status, arg.UpdatedAt, arg.ID)
-	return err
+func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) (int32, error) {
+	row := q.db.QueryRow(ctx, updatePaymentStatus, arg.Status, arg.UpdatedAt, arg.ID)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
 }

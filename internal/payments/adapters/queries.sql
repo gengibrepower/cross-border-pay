@@ -66,12 +66,19 @@ WHERE id = @id AND status IN ('sent', 'unknown');
 -- no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
 -- update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
 -- key check holds on the payment.
-SELECT p.id AS payment_id, p.merchant_id, p.status, p.quote_id, q.payer_amount, q.quote_currency
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id,
+    q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = p.quote_id
 WHERE a.id = @id
 FOR NO KEY UPDATE OF p;
 
--- name: UpdatePaymentStatus :exec
-UPDATE payments SET status = @status, updated_at = @updated_at WHERE id = @id;
+-- name: UpdatePaymentStatus :one
+UPDATE payments SET status = @status, version = version + 1, updated_at = @updated_at WHERE id = @id
+RETURNING version;
+
+-- name: NewEventID :one
+-- Every ID is a UUIDv7 the database issues; an event's is needed before its row
+-- exists, because the payload carries it.
+SELECT uuidv7()::uuid AS id;

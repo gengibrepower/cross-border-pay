@@ -1,12 +1,14 @@
 package adapters_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
@@ -72,7 +74,7 @@ func apply(t *testing.T, store *adapters.Postgres, id domain.AttemptID, events .
 
 func TestCreateAttemptStoresItCreated(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 	payment := newPayment(t, pool)
 
 	created := create(t, store, payment)
@@ -87,7 +89,7 @@ func TestCreateAttemptStoresItCreated(t *testing.T) {
 }
 
 func TestUnknownAttempt(t *testing.T) {
-	store := adapters.NewPostgres(pgtest.NewPool(t))
+	store := adapters.NewPostgres(pgtest.NewPool(t), sqlOutbox{})
 	if _, err := store.GetAttempt(t.Context(), domain.AttemptID{1}); !errors.Is(err, app.ErrAttemptNotFound) {
 		t.Errorf("GetAttempt() error = %v, want %v", err, app.ErrAttemptNotFound)
 	}
@@ -98,7 +100,7 @@ func TestUnknownAttempt(t *testing.T) {
 
 func TestApplyAttemptStoresTheTransition(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 	a := create(t, store, newPayment(t, pool))
 	apply(t, store, a.ID(), domain.Send)
 
@@ -127,7 +129,7 @@ func TestApplyAttemptStoresTheTransition(t *testing.T) {
 
 func TestOneLiveAttemptPerPayment(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 	payment := newPayment(t, pool)
 
 	first := create(t, store, payment)
@@ -146,7 +148,7 @@ func TestOneLiveAttemptPerPayment(t *testing.T) {
 
 func TestConcurrentCreatesLeaveOneAttempt(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 	payment := newPayment(t, pool)
 
 	const workers = 20
@@ -181,7 +183,7 @@ func TestConcurrentCreatesLeaveOneAttempt(t *testing.T) {
 // change.
 func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 
 	const rounds, workers = 25, 8
 	for range rounds {
@@ -244,7 +246,7 @@ func TestConcurrentEventsHaveOneWinner(t *testing.T) {
 // attempt, GET and List return the new one.
 func TestReadsShowTheLatestAttempt(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	store := adapters.NewPostgres(pool)
+	store := adapters.NewPostgres(pool, sqlOutbox{})
 	payment := newPayment(t, pool)
 	var merchant domain.MerchantID
 	if err := pool.QueryRow(t.Context(), "SELECT merchant_id FROM payments WHERE id = $1", payment).Scan(&merchant); err != nil {
@@ -264,4 +266,14 @@ func TestReadsShowTheLatestAttempt(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].Attempt == nil || listed[0].Attempt.ID() != second.ID() {
 		t.Errorf("List() = %+v, %v; want the payment with its second attempt", listed, err)
 	}
+}
+
+// sqlOutbox stands in for the events module's outbox, which payments does not import:
+// the same row, written in payments' transaction.
+type sqlOutbox struct{}
+
+func (sqlOutbox) Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent) error {
+	_, err := tx.Exec(ctx, `INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`, e.ID, e.Merchant, string(e.Type), e.Payment.String(), e.Payload, e.CreatedAt)
+	return err
 }

@@ -12,13 +12,15 @@ import (
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	ledgeradapters "github.com/gengibrepower/cross-border-pay/internal/ledger/adapters"
 	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// confirm moves the locked payment to paid and posts its ledger transaction, in the
-// attempt's transaction (section 4.1, step 6). A payment already paid is a no-op.
-func confirm(ctx context.Context, tx pgx.Tx, pay *paymentsdb.LockPaymentOfAttemptRow, now time.Time) error {
+// confirm moves the locked payment to paid, posts its ledger transaction and appends
+// payment.paid to the outbox, all in the attempt's transaction (section 4.1, step 6). A
+// payment already paid is a no-op.
+func confirm(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, now time.Time) error {
 	status, err := domain.ParseStatus(pay.Status)
 	if err != nil {
 		return fmt.Errorf("stored payment: %w", err)
@@ -30,7 +32,8 @@ func confirm(ctx context.Context, tx pgx.Tx, pay *paymentsdb.LockPaymentOfAttemp
 	if !changed {
 		return nil
 	}
-	err = paymentsdb.New(tx).UpdatePaymentStatus(ctx, paymentsdb.UpdatePaymentStatusParams{
+	q := paymentsdb.New(tx)
+	version, err := q.UpdatePaymentStatus(ctx, paymentsdb.UpdatePaymentStatusParams{
 		ID:        pay.PaymentID,
 		Status:    string(to),
 		UpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
@@ -58,6 +61,31 @@ func confirm(ctx context.Context, tx pgx.Tx, pay *paymentsdb.LockPaymentOfAttemp
 	}
 	if _, err := (ledgeradapters.Ledger{}).Post(ctx, tx, t); err != nil {
 		return fmt.Errorf("post: %w", err)
+	}
+	return notify(ctx, tx, outbox, pay, to, int(version), now)
+}
+
+func notify(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfAttemptRow, status domain.Status, version int, now time.Time) error {
+	currency, err := money.ParseCurrency(pay.Currency)
+	if err != nil {
+		return fmt.Errorf("stored payment: %w", err)
+	}
+	id, err := paymentsdb.New(tx).NewEventID(ctx)
+	if err != nil {
+		return fmt.Errorf("event ID: %w", err)
+	}
+	e, err := domain.NewPaymentEvent(id.Bytes, domain.PaymentPaid, &domain.PaymentSnapshot{
+		ID:       pay.PaymentID.Bytes,
+		Merchant: pay.MerchantID.Bytes,
+		Version:  version,
+		Status:   status,
+		Amount:   money.New(pay.Amount, currency),
+	}, now)
+	if err != nil {
+		return fmt.Errorf("event: %w", err)
+	}
+	if err := outbox.Append(ctx, tx, &e); err != nil {
+		return fmt.Errorf("outbox: %w", err)
 	}
 	return nil
 }

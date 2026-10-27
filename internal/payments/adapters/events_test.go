@@ -28,7 +28,7 @@ type eventEnv struct {
 func newEventEnv(t *testing.T) *eventEnv {
 	t.Helper()
 	pool := pgtest.NewPool(t)
-	return &eventEnv{t: t, pool: pool, store: adapters.NewPostgres(pool)}
+	return &eventEnv{t: t, pool: pool, store: adapters.NewPostgres(pool, sqlOutbox{})}
 }
 
 // attempt stores a payment with an attempt moved by events, and returns the amount its
@@ -68,7 +68,7 @@ func (e *eventEnv) handle(ctx context.Context, event *pixsim.Event) (string, err
 		e.t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	subject, err := adapters.HandlePixSimEvent(ctx, tx, payload, t0.Add(2*time.Minute))
+	subject, err := adapters.HandlePixSimEvent(ctx, tx, sqlOutbox{}, payload, t0.Add(2*time.Minute))
 	if cerr := tx.Commit(ctx); cerr != nil && err == nil {
 		e.t.Fatal(cerr)
 	}

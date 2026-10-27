@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
+	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
@@ -109,6 +111,9 @@ func TestBothPathsConfirmThePayment(t *testing.T) {
 		if got := e.balances(); !maps.Equal(got, gameStoreBalances) {
 			t.Errorf("%s: balances %v, want %v", name, got, gameStoreBalances)
 		}
+		if events, version := e.outbox(id), e.version(id); len(events) != 1 || version != 2 {
+			t.Errorf("%s: %d outbox events and version %d, want 1 and 2", name, len(events), version)
+		}
 	}
 }
 
@@ -137,6 +142,9 @@ func TestThousandConcurrentConfirmationsPostOnce(t *testing.T) {
 
 	if n := e.confirmations(id); n != 1 {
 		t.Errorf("%d confirmation transactions, want 1", n)
+	}
+	if n := len(e.outbox(id)); n != 1 {
+		t.Errorf("%d payment.paid events, want 1", n)
 	}
 	if s := e.paymentStatus(id); s != string(domain.Paid) {
 		t.Errorf("payment %s, want paid", s)
@@ -245,6 +253,9 @@ func TestAlreadyPaidIsNotPostedAgain(t *testing.T) {
 	if n := e.confirmations(id); n != 0 {
 		t.Errorf("%d confirmation transactions for a payment already paid, want 0", n)
 	}
+	if n := len(e.outbox(id)); n != 0 {
+		t.Errorf("%d events for a payment already paid, want 0", n)
+	}
 }
 
 // Each merchant is owed on its own account.
@@ -272,5 +283,58 @@ func TestEachMerchantHasItsOwnPayable(t *testing.T) {
 	}
 	if len(owed) != 2 || owed[0] != 1940 || owed[1] != 1940 {
 		t.Errorf("payables %v, want two of 1940", owed)
+	}
+}
+
+func (e *eventEnv) outbox(id domain.AttemptID) []string {
+	e.t.Helper()
+	rows, err := e.pool.Query(e.t.Context(), "SELECT type FROM outbox_events WHERE subject_id = $1", e.paymentID(id).String())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	var types []string
+	for rows.Next() {
+		var typ string
+		if err := rows.Scan(&typ); err != nil {
+			e.t.Fatal(err)
+		}
+		types = append(types, typ)
+	}
+	if err := rows.Err(); err != nil {
+		e.t.Fatal(err)
+	}
+	return types
+}
+
+func (e *eventEnv) version(id domain.AttemptID) int {
+	e.t.Helper()
+	var v int
+	if err := e.pool.QueryRow(e.t.Context(), "SELECT version FROM payments WHERE id = $1", e.paymentID(id)).Scan(&v); err != nil {
+		e.t.Fatal(err)
+	}
+	return v
+}
+
+type failingOutbox struct{}
+
+func (failingOutbox) Append(context.Context, pgx.Tx, *domain.MerchantEvent) error {
+	return errors.New("outbox down")
+}
+
+// Section 4.5: the event commits with the fact or not at all. An outbox that cannot
+// take it undoes the attempt, the payment and the ledger.
+func TestOutboxFailureUndoesTheConfirmation(t *testing.T) {
+	e := newEventEnv(t)
+	id, _ := e.attempt(domain.Send, domain.Accept)
+	broken := adapters.NewPostgres(e.pool, failingOutbox{})
+	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "chg_1", BRCode: paidCode}
+	if _, _, err := broken.ApplyAttempt(t.Context(), id, u, t0.Add(2*time.Minute)); err == nil {
+		t.Fatal("confirmed without an outbox")
+	}
+	a := e.status(id)
+	if a.Status() != domain.AttemptAccepted || e.paymentStatus(id) != string(domain.Pending) || e.version(id) != 1 || len(e.balances()) != 0 {
+		t.Errorf("attempt %s, payment %s v%d, balances %v; want accepted, pending v1 and nothing posted",
+			a.Status(), e.paymentStatus(id), e.version(id), e.balances())
 	}
 }

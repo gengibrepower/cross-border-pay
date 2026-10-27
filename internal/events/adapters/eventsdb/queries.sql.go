@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const appendOutboxEvent = `-- name: AppendOutboxEvent :exec
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type AppendOutboxEventParams struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Type       string
+	SubjectID  string
+	Payload    []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) AppendOutboxEvent(ctx context.Context, arg AppendOutboxEventParams) error {
+	_, err := q.db.Exec(ctx, appendOutboxEvent,
+		arg.ID,
+		arg.MerchantID,
+		arg.Type,
+		arg.SubjectID,
+		arg.Payload,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const claimDueEvent = `-- name: ClaimDueEvent :one
 SELECT id, provider, external_id, type, payload, signature, status, attempts, next_attempt_at, last_error, subject_id, received_at, processed_at FROM inbox_events
 WHERE status = 'pending' AND next_attempt_at <= $1

@@ -204,7 +204,7 @@ func (c *contract) crashedCreate(merchantKey, idempotencyKey string) (*paymentsa
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	store := paymentsadapters.NewPostgres(c.pool)
+	store := paymentsadapters.NewPostgres(c.pool, merchantOutbox{})
 	p, err := store.Create(ctx, acquired.Held, &draft, &quote, c.provider.Name())
 	if err != nil {
 		c.t.Fatal(err)

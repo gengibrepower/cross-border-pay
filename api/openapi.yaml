@@ -288,6 +288,40 @@ components:
       type: string
       enum: [pending, paid, partially_refunded, refunded, charged_back, expired, canceled]
 
+    PaymentEvent:
+      description: |
+        What the gateway posts to the merchant's webhook (delivery arrives in F6) when a
+        payment changes. Every delivery of one event sends the same bytes, so the
+        merchant drops duplicates by `id`; `payment_version` grows with every
+        transition, so an event older than the last one seen can be ignored.
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at, payment_id, payment_version, data]
+      properties:
+        id:
+          type: string
+          pattern: "^evt_[0-9a-z]{26}$"
+        type:
+          type: string
+          enum: [payment.paid]
+        created_at:
+          type: string
+          format: date-time
+        payment_id:
+          $ref: "#/components/schemas/PaymentId"
+        payment_version:
+          type: integer
+          minimum: 1
+        data:
+          type: object
+          additionalProperties: false
+          required: [status, amount]
+          properties:
+            status:
+              $ref: "#/components/schemas/PaymentStatus"
+            amount:
+              $ref: "#/components/schemas/Money"
+
     PaymentList:
       type: object
       additionalProperties: false
