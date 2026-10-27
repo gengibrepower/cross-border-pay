@@ -189,6 +189,97 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/events:
+    get:
+      operationId: listEvents
+      summary: The merchant's webhook events, newest first, with where each delivery stands
+      description: |
+        `event` is the body every delivery posts, byte for byte. Delivered events are
+        kept for 30 days; pending and failed ones until they are delivered.
+      parameters:
+        - name: delivery_status
+          in: query
+          schema: { type: string, enum: [pending, delivered, failed] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of events.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventList"
+        "400":
+          description: "`invalid_limit`, `invalid_delivery_status` or `invalid_cursor`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
+  /v1/events/{id}/redeliver:
+    post:
+      operationId: redeliverEvent
+      summary: Deliver an event again, now, with a new 72-hour retry window
+      description: |
+        From any status: a failed event is retried, a delivered one sent again, a
+        pending one sent without waiting for its backoff. The retries restart from 30
+        seconds and give up 72 hours after this request. Repeating it only queues the
+        event again, so it needs no `Idempotency-Key`. A post already in flight may
+        still arrive too; drop the duplicate by `id`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202":
+          description: The event, queued.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxEvent"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: "`event_not_found`: no event of this merchant has this id."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: |
+            `webhook_endpoint_not_found` or `webhook_endpoint_disabled`: there is
+            nowhere to deliver to; register or fix the endpoint with a `PUT` first.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
   /v1/webhook-endpoint:
     get:
       operationId: getWebhookEndpoint
@@ -416,6 +507,57 @@ components:
               $ref: "#/components/schemas/PaymentStatus"
             amount:
               $ref: "#/components/schemas/Money"
+
+    EventList:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/OutboxEvent"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass it as `cursor` for the next page; null on the last page.
+
+    OutboxEvent:
+      type: object
+      additionalProperties: false
+      required: [event, delivery]
+      properties:
+        event:
+          $ref: "#/components/schemas/PaymentEvent"
+        delivery:
+          type: object
+          additionalProperties: false
+          required: [status, attempts, next_attempt_at, last_status_code, last_error, finished_at]
+          properties:
+            status:
+              type: string
+              enum: [pending, delivered, failed]
+            attempts:
+              type: integer
+              minimum: 0
+              description: Posts tried so far, across every retry window.
+            next_attempt_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: When a pending event is tried next; null once delivered or failed.
+            last_status_code:
+              type: integer
+              nullable: true
+              description: What the endpoint answered last; null when no answer came.
+            last_error:
+              type: string
+              nullable: true
+            finished_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: When it was delivered or given up.
 
     PaymentList:
       type: object

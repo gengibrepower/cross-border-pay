@@ -33,8 +33,8 @@ WHERE id = @id AND status = 'pending';
 SELECT * FROM inbox_events WHERE id = @id;
 
 -- name: AppendOutboxEvent :exec
-INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at)
-VALUES (@id, @merchant_id, @type, @subject_id, @payload, @created_at, @created_at);
+INSERT INTO outbox_events (id, merchant_id, type, subject_id, payload, created_at, next_attempt_at, window_started_at)
+VALUES (@id, @merchant_id, @type, @subject_id, @payload, @created_at, @created_at, @created_at);
 
 -- name: ClaimDueDeliveries :many
 -- Up to per_merchant events of each merchant with something due, oldest merchant
@@ -64,7 +64,8 @@ UPDATE outbox_events o
 SET attempts = o.attempts + 1, next_attempt_at = @lease_until
 FROM claimed
 WHERE o.id = claimed.id
-RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts;
+RETURNING o.id, o.merchant_id, o.type, o.subject_id, o.payload, o.created_at, o.attempts,
+    o.window_started_at, o.window_first_attempt;
 
 -- name: MarkDelivered :execrows
 -- Not fenced by attempts: a 2xx is a fact even from a claim whose lease ran out.
@@ -74,15 +75,17 @@ SET delivery_status = 'delivered', next_attempt_at = NULL, finished_at = @now,
 WHERE id = @id AND delivery_status = 'pending';
 
 -- name: RescheduleDelivery :execrows
+-- A claim from before a redelivery is also fenced off by the window: its answer must
+-- not push back the "due now" the merchant asked for.
 UPDATE outbox_events
 SET next_attempt_at = @next_attempt_at, last_status_code = sqlc.narg(status_code), last_error = @last_error
-WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts;
+WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts AND window_first_attempt <= @attempts;
 
 -- name: FailDelivery :execrows
 UPDATE outbox_events
 SET delivery_status = 'failed', next_attempt_at = NULL, finished_at = @now,
     last_status_code = sqlc.narg(status_code), last_error = @last_error
-WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts;
+WHERE id = @id AND delivery_status = 'pending' AND attempts = @attempts AND window_first_attempt <= @attempts;
 
 -- name: DeleteDeliveredEvents :execrows
 -- One batch of events delivered before the cutoff. SKIP LOCKED passes over a row
@@ -94,3 +97,25 @@ WHERE id IN (
     LIMIT @max_rows::bigint
     FOR UPDATE SKIP LOCKED
 );
+
+-- name: ListOutboxEvents :many
+-- Keyset pagination on outbox_events_merchant_id: newest first (the IDs are UUIDv7),
+-- each page starts below the last ID of the previous one.
+SELECT id, merchant_id, type, subject_id, payload, created_at, delivery_status, attempts,
+       next_attempt_at, last_status_code, last_error, finished_at
+FROM outbox_events
+WHERE merchant_id = @merchant_id
+  AND (sqlc.narg(before)::uuid IS NULL OR id < sqlc.narg(before))
+  AND (sqlc.narg(delivery_status)::text IS NULL OR delivery_status = sqlc.narg(delivery_status))
+ORDER BY id DESC
+LIMIT @max_rows::bigint;
+
+-- name: RedeliverOutboxEvent :one
+-- From any status: due now, in a new window. A post in flight may still land, which
+-- at-least-once allows; whatever else it records is fenced off.
+UPDATE outbox_events
+SET delivery_status = 'pending', next_attempt_at = @now, finished_at = NULL,
+    window_started_at = @now, window_first_attempt = attempts + 1
+WHERE id = @id AND merchant_id = @merchant_id
+RETURNING id, merchant_id, type, subject_id, payload, created_at, delivery_status, attempts,
+          next_attempt_at, last_status_code, last_error, finished_at;

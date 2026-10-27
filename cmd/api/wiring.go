@@ -31,6 +31,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
+	webhooksadapters "github.com/gengibrepower/cross-border-pay/internal/webhooks/adapters"
+	webhooksapp "github.com/gengibrepower/cross-border-pay/internal/webhooks/app"
 )
 
 // api holds the /v1 routes, built from every module. This is the only place that
@@ -39,6 +41,7 @@ type api struct {
 	payments   *paymentsadapters.Handler
 	events     *eventsadapters.Handler
 	endpoints  *merchantsadapters.EndpointHandler
+	outbox     *webhooksadapters.EventsHandler
 	auth       func(http.Handler) http.Handler
 	idempotent func(http.Handler) http.Handler
 }
@@ -62,6 +65,7 @@ type moduleClock interface {
 	idempotencyapp.Clock
 	eventsapp.Clock
 	merchantsapp.Clock
+	webhooksapp.Clock
 }
 
 func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
@@ -90,7 +94,10 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 			logger,
 		),
 		endpoints: merchantsadapters.NewEndpointHandler(endpoints, logger),
-		auth:      merchantsadapters.RequireAPIKey(merchants, logger),
+		outbox: webhooksadapters.NewEventsHandler(
+			webhooksapp.NewEvents(eventsadapters.NewDeliveries(pool), merchantsStore, d.clock), logger,
+		),
+		auth: merchantsadapters.RequireAPIKey(merchants, logger),
 		idempotent: idempotencyadapters.Require(
 			idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), d.clock, rand.Reader),
 			idempotencyMerchant,
@@ -103,6 +110,7 @@ func (a *api) register(mux *http.ServeMux) {
 	a.payments.Register(mux, a.auth, a.idempotent)
 	a.events.Register(mux)
 	a.endpoints.Register(mux, a.auth)
+	a.outbox.Register(mux, a.auth)
 }
 
 // pixsimVerifier is the bridge that keeps events from importing the simulator: it
