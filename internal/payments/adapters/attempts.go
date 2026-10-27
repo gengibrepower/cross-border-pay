@@ -135,7 +135,7 @@ func applyLocked(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.
 		return domain.PaymentAttempt{}, false, fmt.Errorf("update: %w", err)
 	}
 	if attempt.Status() == domain.AttemptSucceeded {
-		if err := confirm(ctx, tx, outbox, pay, now); err != nil {
+		if err := confirm(ctx, tx, outbox, pay, u.PaidAt, now); err != nil {
 			return domain.PaymentAttempt{}, false, fmt.Errorf("confirm: %w", err)
 		}
 	}

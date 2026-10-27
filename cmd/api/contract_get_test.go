@@ -161,7 +161,7 @@ func TestListPaymentsFiltersByStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.pool.Exec(t.Context(), "UPDATE payments SET status = 'paid' WHERE id = $1", pgtype.UUID{Bytes: id, Valid: true}); err != nil {
+	if _, err := c.pool.Exec(t.Context(), "UPDATE payments SET status = 'paid', expiry_check_at = NULL WHERE id = $1", pgtype.UUID{Bytes: id, Valid: true}); err != nil {
 		t.Fatal(err)
 	}
 

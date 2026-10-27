@@ -87,7 +87,7 @@ func (e *eventEnv) resolve(ctx context.Context, id domain.AttemptID) error {
 }
 
 func (e *eventEnv) resolveCharge(ctx context.Context, id domain.AttemptID, charge string) error {
-	_, _, err := e.store.ApplyAttempt(ctx, id, domain.AttemptUpdate{Event: domain.Succeed, ExternalID: charge, BRCode: paidCode}, t0.Add(2*time.Minute))
+	_, _, err := e.store.ApplyAttempt(ctx, id, domain.AttemptUpdate{Event: domain.Succeed, ExternalID: charge, BRCode: paidCode, PaidAt: t0.Add(time.Minute)}, t0.Add(2*time.Minute))
 	return err
 }
 
@@ -244,7 +244,7 @@ func (e *eventEnv) waitForALockWait() {
 func TestAlreadyPaidIsNotPostedAgain(t *testing.T) {
 	e := newEventEnv(t)
 	id, _ := e.attempt(domain.Send, domain.Accept)
-	if _, err := e.pool.Exec(t.Context(), "UPDATE payments SET status = 'paid'"); err != nil {
+	if _, err := e.pool.Exec(t.Context(), "UPDATE payments SET status = 'paid', expiry_check_at = NULL"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.resolve(t.Context(), id); err != nil {
@@ -328,7 +328,7 @@ func TestOutboxFailureUndoesTheConfirmation(t *testing.T) {
 	e := newEventEnv(t)
 	id, _ := e.attempt(domain.Send, domain.Accept)
 	broken := adapters.NewPostgres(e.pool, failingOutbox{})
-	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "chg_1", BRCode: paidCode}
+	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: "chg_1", BRCode: paidCode, PaidAt: t0.Add(time.Minute)}
 	if _, _, err := broken.ApplyAttempt(t.Context(), id, u, t0.Add(2*time.Minute)); err == nil {
 		t.Fatal("confirmed without an outbox")
 	}

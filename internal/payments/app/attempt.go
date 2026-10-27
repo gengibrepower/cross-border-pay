@@ -66,11 +66,7 @@ func (s *Service) call(ctx context.Context, p *Priced, a *domain.PaymentAttempt)
 			"attempt", a.ID().String(), "provider", string(a.Provider()), "error", err)
 		return domain.AttemptUpdate{Event: domain.Ambiguous}
 	}
-	u := domain.AttemptUpdate{Event: result.Event(), ExternalID: result.ExternalID}
-	if result.Pix != nil {
-		u.BRCode = result.Pix.BRCode
-	}
-	return u
+	return result.Update()
 }
 
 func (s *Service) apply(ctx context.Context, a *domain.PaymentAttempt, u domain.AttemptUpdate) (domain.PaymentAttempt, error) {

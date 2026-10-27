@@ -64,6 +64,47 @@ func (q *Queries) ClaimDueAttempts(ctx context.Context, arg ClaimDueAttemptsPara
 	return items, nil
 }
 
+const claimDueExpiries = `-- name: ClaimDueExpiries :many
+UPDATE payments SET expiry_check_at = $1
+WHERE id IN (
+    SELECT due.id FROM payments AS due
+    WHERE due.expiry_check_at <= $2
+    ORDER BY due.expiry_check_at
+    LIMIT $3::bigint
+    FOR NO KEY UPDATE SKIP LOCKED
+)
+RETURNING id
+`
+
+type ClaimDueExpiriesParams struct {
+	LeaseUntil pgtype.Timestamptz
+	Now        pgtype.Timestamptz
+	MaxRows    int64
+}
+
+// The expiry job's claim, like ClaimDueAttempts: SKIP LOCKED during this short
+// transaction, then the pushed expiry_check_at as a lease while the provider is asked.
+// NO KEY UPDATE, as everywhere a payment is locked to change it.
+func (q *Queries) ClaimDueExpiries(ctx context.Context, arg ClaimDueExpiriesParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, claimDueExpiries, arg.LeaseUntil, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const escalateAttempt = `-- name: EscalateAttempt :execrows
 UPDATE payment_attempts SET next_check_at = NULL, escalated_at = $1
 WHERE id = $2 AND status IN ('sent', 'unknown')
@@ -106,7 +147,7 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 }
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version FROM payments WHERE merchant_id = $1 AND id = $2
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at FROM payments WHERE merchant_id = $1 AND id = $2
 `
 
 type GetPaymentParams struct {
@@ -129,6 +170,7 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Version,
+		&i.ExpiryCheckAt,
 	)
 	return i, err
 }
@@ -165,20 +207,21 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 }
 
 const insertPayment = `-- name: InsertPayment :one
-INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, expiry_check_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
 RETURNING id
 `
 
 type InsertPaymentParams struct {
-	MerchantID pgtype.UUID
-	QuoteID    pgtype.UUID
-	Status     string
-	Method     string
-	Amount     int64
-	Currency   string
-	Reference  string
-	CreatedAt  pgtype.Timestamptz
+	MerchantID    pgtype.UUID
+	QuoteID       pgtype.UUID
+	Status        string
+	Method        string
+	Amount        int64
+	Currency      string
+	Reference     string
+	CreatedAt     pgtype.Timestamptz
+	ExpiryCheckAt pgtype.Timestamptz
 }
 
 func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (pgtype.UUID, error) {
@@ -191,6 +234,7 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (p
 		arg.Currency,
 		arg.Reference,
 		arg.CreatedAt,
+		arg.ExpiryCheckAt,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
@@ -236,7 +280,7 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 }
 
 const listPayments = `-- name: ListPayments :many
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version FROM payments
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at FROM payments
 WHERE merchant_id = $1
   AND ($2::uuid IS NULL OR id < $2)
   AND ($3::text IS NULL OR status = $3)
@@ -279,6 +323,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Version,
+			&i.ExpiryCheckAt,
 		); err != nil {
 			return nil, err
 		}
@@ -309,6 +354,37 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 		&i.Checks,
 		&i.NextCheckAt,
 		&i.EscalatedAt,
+	)
+	return i, err
+}
+
+const lockPayment = `-- name: LockPayment :one
+SELECT p.id, p.merchant_id, p.status, p.amount, p.currency, q.expires_at
+FROM payments AS p
+JOIN quotes AS q ON q.id = p.quote_id
+WHERE p.id = $1
+FOR NO KEY UPDATE OF p
+`
+
+type LockPaymentRow struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Status     string
+	Amount     int64
+	Currency   string
+	ExpiresAt  pgtype.Timestamptz
+}
+
+func (q *Queries) LockPayment(ctx context.Context, id pgtype.UUID) (LockPaymentRow, error) {
+	row := q.db.QueryRow(ctx, lockPayment, id)
+	var i LockPaymentRow
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.Status,
+		&i.Amount,
+		&i.Currency,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -419,7 +495,8 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 }
 
 const updatePaymentStatus = `-- name: UpdatePaymentStatus :one
-UPDATE payments SET status = $1, version = version + 1, updated_at = $2 WHERE id = $3
+UPDATE payments SET status = $1, version = version + 1, updated_at = $2, expiry_check_at = NULL
+WHERE id = $3
 RETURNING version
 `
 
@@ -429,6 +506,7 @@ type UpdatePaymentStatusParams struct {
 	ID        pgtype.UUID
 }
 
+// Every status after pending is final for expiry, so the payment leaves its queue.
 func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) (int32, error) {
 	row := q.db.QueryRow(ctx, updatePaymentStatus, arg.Status, arg.UpdatedAt, arg.ID)
 	var version int32

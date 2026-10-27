@@ -46,8 +46,8 @@ func newPayment(t *testing.T, pool *pgxpool.Pool) domain.PaymentID {
 		t.Fatal(err)
 	}
 	var id [16]byte
-	err = pool.QueryRow(ctx, `INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at)
-		VALUES ($1, $2, 'pending', 'pix', 2000, 'USD', 'order-1', $3, $3) RETURNING id`, merchant, quote, t0).Scan(&id)
+	err = pool.QueryRow(ctx, `INSERT INTO payments (merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, expiry_check_at)
+		VALUES ($1, $2, 'pending', 'pix', 2000, 'USD', 'order-1', $3, $3, (SELECT expires_at FROM quotes WHERE id = $2)) RETURNING id`, merchant, quote, t0).Scan(&id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func create(t *testing.T, store *adapters.Postgres, payment domain.PaymentID) do
 func apply(t *testing.T, store *adapters.Postgres, id domain.AttemptID, events ...domain.AttemptEvent) {
 	t.Helper()
 	for _, e := range events {
-		if _, _, err := store.ApplyAttempt(t.Context(), id, domain.AttemptUpdate{Event: e}, t0); err != nil {
+		if _, _, err := store.ApplyAttempt(t.Context(), id, domain.AttemptUpdate{Event: e, PaidAt: t0}, t0); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -87,17 +87,18 @@ type OutboxEvent struct {
 }
 
 type Payment struct {
-	ID         pgtype.UUID
-	MerchantID pgtype.UUID
-	QuoteID    pgtype.UUID
-	Status     string
-	Method     string
-	Amount     int64
-	Currency   string
-	Reference  string
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	Version    int32
+	ID            pgtype.UUID
+	MerchantID    pgtype.UUID
+	QuoteID       pgtype.UUID
+	Status        string
+	Method        string
+	Amount        int64
+	Currency      string
+	Reference     string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	Version       int32
+	ExpiryCheckAt pgtype.Timestamptz
 }
 
 type PaymentAttempt struct {

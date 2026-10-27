@@ -86,11 +86,7 @@ func (r *Resolver) check(ctx context.Context, d *DueAttempt) error {
 	now = r.clock.Now()
 	switch {
 	case err == nil:
-		u := domain.AttemptUpdate{Event: result.Event(), ExternalID: result.ExternalID}
-		if result.Pix != nil {
-			u.BRCode = result.Pix.BRCode
-		}
-		return r.apply(ctx, a, u, now)
+		return r.apply(ctx, a, result.Update(), now)
 	case errors.Is(err, ErrNotAtProvider) && now.Sub(a.CreatedAt()) >= domain.NotFoundGrace:
 		// Our create gave up long ago, so nothing can still reach the provider: the
 		// attempt never existed there.
