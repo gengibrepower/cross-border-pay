@@ -17,9 +17,11 @@ func (id EventID) String() string { return publicid.Encode("evt_", id) }
 type EventType string
 
 const (
-	PaymentPaid     EventType = "payment.paid"
-	PaymentExpired  EventType = "payment.expired"
-	PaymentCanceled EventType = "payment.canceled"
+	PaymentPaid          EventType = "payment.paid"
+	PaymentExpired       EventType = "payment.expired"
+	PaymentCanceled      EventType = "payment.canceled"
+	RefundSucceededEvent EventType = "refund.succeeded"
+	RefundFailedEvent    EventType = "refund.failed"
 )
 
 // PaymentSnapshot is what an event tells the merchant about a payment right after a
@@ -68,6 +70,40 @@ func NewPaymentEvent(id EventID, t EventType, p *PaymentSnapshot, now time.Time)
 		PaymentID:      p.ID.String(),
 		PaymentVersion: p.Version,
 		Data:           paymentEventData{Status: p.Status, Amount: p.Amount},
+	})
+	if err != nil {
+		return MerchantEvent{}, fmt.Errorf("payments: event %s: %w", t, err)
+	}
+	return MerchantEvent{ID: id, Merchant: p.Merchant, Type: t, Payment: p.ID, Payload: payload, CreatedAt: at}, nil
+}
+
+type refundEventJSON struct {
+	ID             string          `json:"id"`
+	Type           EventType       `json:"type"`
+	CreatedAt      time.Time       `json:"created_at"`
+	PaymentID      string          `json:"payment_id"`
+	PaymentVersion int             `json:"payment_version"`
+	Data           refundEventData `json:"data"`
+}
+
+type refundEventData struct {
+	RefundID      string      `json:"refund_id"`
+	Amount        money.Money `json:"amount"`
+	PaymentStatus Status      `json:"payment_status"`
+}
+
+// NewRefundEvent serializes the end of a refund: refund.succeeded or refund.failed. p is
+// the payment right after the refund ended, so payment_version orders it with the
+// payment's own events.
+func NewRefundEvent(id EventID, t EventType, refund RefundID, amount money.Money, p *PaymentSnapshot, now time.Time) (MerchantEvent, error) {
+	at := now.UTC().Truncate(time.Microsecond)
+	payload, err := json.Marshal(refundEventJSON{
+		ID:             id.String(),
+		Type:           t,
+		CreatedAt:      at,
+		PaymentID:      p.ID.String(),
+		PaymentVersion: p.Version,
+		Data:           refundEventData{RefundID: refund.String(), Amount: amount, PaymentStatus: p.Status},
 	})
 	if err != nil {
 		return MerchantEvent{}, fmt.Errorf("payments: event %s: %w", t, err)

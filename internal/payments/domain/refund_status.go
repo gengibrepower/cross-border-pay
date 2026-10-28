@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrUnknownRefundStatus = errors.New("payments: unknown refund status")
@@ -95,4 +96,85 @@ func TransitionRefund(from RefundStatus, e RefundEvent) (to RefundStatus, change
 		return from, false, nil
 	}
 	return from, false, fmt.Errorf("%w: refund %s on %s", ErrInvalidTransition, e, from)
+}
+
+// Refund is one refund of a payment at its provider. Its status only changes through
+// Apply.
+type Refund struct {
+	id         RefundID
+	payment    PaymentID
+	provider   ProviderName
+	status     RefundStatus
+	amounts    RefundAmounts
+	externalID string
+	reason     string
+	createdAt  time.Time
+	updatedAt  time.Time
+}
+
+// NewRefund is a refund priced and about to be stored, before the provider is called.
+func NewRefund(id RefundID, payment PaymentID, provider ProviderName, amounts *RefundAmounts, now time.Time) Refund {
+	return Refund{id: id, payment: payment, provider: provider, status: RefundCreated, amounts: *amounts, createdAt: now, updatedAt: now}
+}
+
+// RestoreRefund rebuilds a refund from storage; only adapters call it.
+func RestoreRefund(id RefundID, payment PaymentID, provider ProviderName, status RefundStatus, amounts *RefundAmounts,
+	externalID, reason string, createdAt, updatedAt time.Time,
+) Refund {
+	return Refund{
+		id: id, payment: payment, provider: provider, status: status, amounts: *amounts,
+		externalID: externalID, reason: reason, createdAt: createdAt, updatedAt: updatedAt,
+	}
+}
+
+func (r *Refund) ID() RefundID { return r.id }
+
+func (r *Refund) Payment() PaymentID { return r.payment }
+
+func (r *Refund) Provider() ProviderName { return r.provider }
+
+func (r *Refund) Status() RefundStatus { return r.status }
+
+func (r *Refund) Amounts() RefundAmounts { return r.amounts }
+
+// ExternalID is the provider's ID for the refund, empty until the provider names it.
+func (r *Refund) ExternalID() string { return r.externalID }
+
+// Reason is the provider's words for a rejection.
+func (r *Refund) Reason() string { return r.reason }
+
+func (r *Refund) CreatedAt() time.Time { return r.createdAt }
+
+func (r *Refund) UpdatedAt() time.Time { return r.updatedAt }
+
+// RefundUpdate is what one answer says about a refund.
+type RefundUpdate struct {
+	Event      RefundEvent
+	ExternalID string
+	Reason     string
+}
+
+// Apply moves the refund by the update's event and records the provider's ID the first
+// time it is named; a provider renaming a refund is refused.
+func (r *Refund) Apply(u *RefundUpdate, now time.Time) (changed bool, err error) {
+	to, moved, err := TransitionRefund(r.status, u.Event)
+	if err != nil {
+		return false, err
+	}
+	learnedID, err := learn(r.externalID, u.ExternalID, ErrExternalIDMismatch)
+	if err != nil {
+		return false, fmt.Errorf("refund %s: %w", r.id, err)
+	}
+	if !moved && !learnedID {
+		return false, nil
+	}
+	r.status = to
+	if learnedID {
+		r.externalID = u.ExternalID
+	}
+	if moved && u.Reason != "" {
+		r.reason = u.Reason
+	}
+	r.updatedAt = now
+	return true, nil
 }

@@ -73,7 +73,9 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: FX_USD_BRL_RATE: %w", err)
 	}
-	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), d.clock, fx.DefaultPricing)
+	rates := fxadapters.NewFixedRates(rate)
+	quoter := fxapp.NewQuoter(rates, d.clock, fx.DefaultPricing)
+	paymentsStore := paymentsadapters.NewPostgres(pool, paymentSinks())
 	merchantsStore := merchantsadapters.NewPostgres(pool)
 	merchants := merchantsapp.NewService(merchantsStore, rand.Reader)
 	endpoints, err := merchantsapp.NewEndpoints(merchantsStore, d.webhooks, d.signingKey, d.clock)
@@ -83,7 +85,8 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(pool, paymentSinks()), d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewService(quoter, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewRefunder(rates, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
 			merchantFrom,
 			logger,
 		),
