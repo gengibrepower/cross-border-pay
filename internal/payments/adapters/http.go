@@ -27,6 +27,7 @@ type Payments interface {
 	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (app.Priced, error)
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
+	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 }
 
 // MerchantFunc returns the authenticated merchant; cmd/api wires it to the merchants
@@ -44,11 +45,13 @@ func NewHandler(payments Payments, merchant MerchantFunc, logger *slog.Logger) *
 }
 
 // Register adds the payment routes, each wrapped by auth; the ones that create or move
-// money are idempotent too, inside auth.
+// money are idempotent too, inside auth. Cancel moves no money and is idempotent by
+// itself: canceling twice leaves the payment as the first cancel did.
 func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handler) http.Handler) {
 	mux.Handle("POST /v1/payments", auth(idempotent(http.HandlerFunc(h.create))))
 	mux.Handle("GET /v1/payments", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/payments/{id}", auth(http.HandlerFunc(h.get)))
+	mux.Handle("POST /v1/payments/{id}/cancel", auth(http.HandlerFunc(h.cancel)))
 }
 
 type createRequest struct {
@@ -179,6 +182,31 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newPaymentResponse(&p))
+}
+
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := h.authenticated(w, r)
+	if !ok {
+		return
+	}
+	id, err := domain.ParsePaymentID(r.PathValue("id"))
+	if err != nil {
+		writeNotFound(w, r)
+		return
+	}
+	p, err := h.payments.Cancel(r.Context(), merchant, id)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, newPaymentResponse(&p))
+	case errors.Is(err, app.ErrPaymentNotFound):
+		writeNotFound(w, r)
+	case errors.Is(err, domain.ErrInvalidTransition):
+		writeProblem(w, r, http.StatusConflict, "payment_not_cancelable", "only a pending payment can be canceled")
+	case errors.Is(err, app.ErrProviderUnavailable):
+		writeProblem(w, r, http.StatusServiceUnavailable, "provider_unavailable", "the provider could not confirm the payment is unpaid; nothing changed, retry later")
+	default:
+		httpapi.WriteInternalError(w, r, h.logger, err)
+	}
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {

@@ -27,6 +27,9 @@ var (
 	ErrPaymentNotFound = errors.New("payments: payment not found")
 	ErrInvalidLimit    = errors.New("payments: limit out of range")
 	ErrRecoveryPoint   = errors.New("payments: unknown recovery point")
+	// ErrProviderUnavailable is a provider that could not say whether the payer already
+	// paid, so nothing was decided.
+	ErrProviderUnavailable = errors.New("payments: provider unavailable")
 )
 
 // AttemptRequested is the recovery point of a create whose payment and attempt are
@@ -70,6 +73,10 @@ type Store interface {
 	// List returns at most q.Limit payments of the merchant, newest first.
 	List(ctx context.Context, merchant domain.MerchantID, q ListQuery) ([]Priced, error)
 	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
+	// Cancel moves the merchant's pending payment to canceled with payment.canceled in
+	// the outbox. A payment already canceled is left as it is; any other status is
+	// domain.ErrInvalidTransition.
+	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, now time.Time) error
 }
 
 type Service struct {
@@ -147,4 +154,27 @@ func (s *Service) List(ctx context.Context, merchant domain.MerchantID, q ListQu
 		return Page{Payments: payments[:want], More: true}, nil
 	}
 	return Page{Payments: payments}, nil
+}
+
+// Cancel closes a pending payment at the merchant's request. Like the expiry job, it
+// asks the provider first: a payer who already paid is confirmed, and the cancel then
+// fails because the payment is paid. Money paid after the cancel is late money and is
+// held for review (decision 8).
+func (s *Service) Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (Priced, error) {
+	p, err := s.store.Get(ctx, merchant, id)
+	if err != nil {
+		return Priced{}, fmt.Errorf("payments: cancel: %w", err)
+	}
+	if p.Payment.Status() == domain.Pending && p.Attempt != nil && p.Attempt.Status() != domain.AttemptRejected {
+		// A payment found at the provider is applied whatever the client does meanwhile.
+		err := applyIfPaid(context.WithoutCancel(ctx), s.provider, s.providerTimeout, s.store, s.clock, p.Attempt)
+		if err != nil {
+			s.logger.WarnContext(ctx, "cancel: provider lookup failed", "payment", id.String(), "error", err)
+			return Priced{}, fmt.Errorf("payments: cancel %s: %w: %w", id, ErrProviderUnavailable, err)
+		}
+	}
+	if err := s.store.Cancel(ctx, merchant, id, s.clock.Now()); err != nil {
+		return Priced{}, fmt.Errorf("payments: cancel %s: %w", id, err)
+	}
+	return s.Get(ctx, merchant, id)
 }

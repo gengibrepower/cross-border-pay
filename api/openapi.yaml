@@ -133,6 +133,66 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/payments/{id}/cancel:
+    post:
+      operationId: cancelPayment
+      summary: Cancel a payment before it is paid
+      description: |
+        Asks the provider first: a payer who already paid is confirmed, and the cancel
+        answers 409. Canceling a canceled payment answers 200 with it unchanged, so the
+        request needs no Idempotency-Key. Money the payer sends after the cancel is held
+        for review and returned (decision 8).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PaymentId"
+      responses:
+        "200":
+          description: The canceled payment.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: No such payment, as for `GET /v1/payments/{id}`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: |
+            `payment_not_cancelable`: the payment is not pending, e.g. paid or expired.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "503":
+          description: |
+            `provider_unavailable`: the provider could not say whether the payer already
+            paid. Nothing changed; retry later.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
   /v1/providers/{provider}/events:
     post:
       operationId: receiveProviderEvent
@@ -489,7 +549,7 @@ components:
           pattern: "^evt_[0-9a-z]{26}$"
         type:
           type: string
-          enum: [payment.paid, payment.expired]
+          enum: [payment.paid, payment.expired, payment.canceled]
         created_at:
           type: string
           format: date-time

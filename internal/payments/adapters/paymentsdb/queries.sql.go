@@ -358,6 +358,38 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 	return i, err
 }
 
+const lockMerchantPayment = `-- name: LockMerchantPayment :one
+SELECT id, merchant_id, status, amount, currency FROM payments
+WHERE merchant_id = $1 AND id = $2
+FOR NO KEY UPDATE
+`
+
+type LockMerchantPaymentParams struct {
+	MerchantID pgtype.UUID
+	ID         pgtype.UUID
+}
+
+type LockMerchantPaymentRow struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	Status     string
+	Amount     int64
+	Currency   string
+}
+
+func (q *Queries) LockMerchantPayment(ctx context.Context, arg LockMerchantPaymentParams) (LockMerchantPaymentRow, error) {
+	row := q.db.QueryRow(ctx, lockMerchantPayment, arg.MerchantID, arg.ID)
+	var i LockMerchantPaymentRow
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.Status,
+		&i.Amount,
+		&i.Currency,
+	)
+	return i, err
+}
+
 const lockPayment = `-- name: LockPayment :one
 SELECT p.id, p.merchant_id, p.status, p.amount, p.currency, q.expires_at
 FROM payments AS p

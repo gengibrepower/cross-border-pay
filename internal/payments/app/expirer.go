@@ -67,11 +67,11 @@ func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 		return fmt.Errorf("latest attempt: %w", err)
 	}
 	if ok && a.Status() != domain.AttemptRejected {
-		if err := x.settle(ctx, &a); err != nil {
+		if err := applyIfPaid(ctx, x.provider, x.providerTimeout, x.queue, x.clock, &a); err != nil {
 			return err
 		}
 	}
-	// A no-op for a payment settle confirmed.
+	// A no-op for a payment the provider just confirmed.
 	expired, err := x.queue.Expire(ctx, id, x.clock.Now())
 	if err != nil {
 		return fmt.Errorf("expire: %w", err)
@@ -82,11 +82,17 @@ func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 	return nil
 }
 
-// settle applies a payment the provider reports, which either confirms the payment or
-// posts the money as a divergence.
-func (x *Expirer) settle(ctx context.Context, a *domain.PaymentAttempt) error {
-	callCtx, cancel := context.WithTimeout(ctx, x.providerTimeout)
-	result, err := x.provider.GetAttempt(callCtx, a.ID())
+type attemptApplier interface {
+	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
+}
+
+// applyIfPaid asks the provider whether the attempt was paid and applies the payment if
+// so, which either confirms it or posts the money as a divergence. Every path that
+// closes a pending payment runs it first, so a payer who paid on time is never turned
+// away because the news was slow.
+func applyIfPaid(ctx context.Context, provider Provider, timeout time.Duration, applier attemptApplier, clock Clock, a *domain.PaymentAttempt) error {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	result, err := provider.GetAttempt(callCtx, a.ID())
 	cancel()
 	switch {
 	case errors.Is(err, ErrNotAtProvider):
@@ -97,7 +103,7 @@ func (x *Expirer) settle(ctx context.Context, a *domain.PaymentAttempt) error {
 		return nil
 	}
 	u := result.Update()
-	if _, _, err := x.queue.ApplyAttempt(ctx, a.ID(), &u, x.clock.Now()); err != nil {
+	if _, _, err := applier.ApplyAttempt(ctx, a.ID(), &u, clock.Now()); err != nil {
 		return fmt.Errorf("apply payment of attempt %s: %w", a.ID(), err)
 	}
 	return nil
