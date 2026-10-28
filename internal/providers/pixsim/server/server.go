@@ -57,6 +57,13 @@ type Clock interface {
 type record struct {
 	req    pixsim.CreateCharge
 	charge pixsim.Charge
+	// refunded is what completed refunds returned of the charge, in minor units.
+	refunded int64
+}
+
+type refundRecord struct {
+	req    pixsim.CreateRefund
+	refund pixsim.Refund
 }
 
 type Simulator struct {
@@ -69,6 +76,7 @@ type Simulator struct {
 	byKey   map[string]*record
 	keyByID map[string]string
 	faults  []pixsim.Fault
+	refunds map[string]*refundRecord
 	// events holds each event already encoded, so a redelivery sends the same bytes.
 	events map[string][]byte
 }
@@ -84,12 +92,15 @@ func New(cfg *Config, clock Clock, logger *slog.Logger) (*Simulator, error) {
 	return &Simulator{
 		cfg: *cfg, clock: clock, logger: logger, http: &http.Client{Timeout: DeliveryTimeout},
 		byKey: map[string]*record{}, keyByID: map[string]string{}, events: map[string][]byte{},
+		refunds: map[string]*refundRecord{},
 	}, nil
 }
 
 func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/charges", s.create)
 	mux.HandleFunc("GET /v1/charges/by-key/{key}", s.get)
+	mux.HandleFunc("POST /v1/charges/{id}/refunds", s.refund)
+	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
 	mux.HandleFunc("POST /control/charges/{id}/pay", s.pay)
 	mux.HandleFunc("POST /control/faults", s.injectFault)
 	mux.HandleFunc("POST /control/events/{id}/deliver", s.redeliver)
@@ -151,6 +162,109 @@ func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ch)
+}
+
+func (s *Simulator) refund(w http.ResponseWriter, r *http.Request) {
+	key := r.Header.Get("Idempotency-Key")
+	if !validKey(key) {
+		invalid(w, r, "Idempotency-Key must have 1 to 255 printable ASCII characters")
+		return
+	}
+	var req pixsim.CreateRefund
+	if err := decode(w, r, &req); err != nil {
+		invalid(w, r, err.Error())
+		return
+	}
+	if req.Amount.Amount() <= 0 {
+		invalid(w, r, fmt.Sprintf("amount must be positive, got %s", req.Amount))
+		return
+	}
+
+	fault, _ := s.nextFault(pixsim.OpRefund)
+	if !s.before(w, r, fault) {
+		return
+	}
+	rf, err := s.storeRefund(key, r.PathValue("id"), &req, fault.Kind == pixsim.Reject)
+	if fault.Kind == pixsim.TimeoutAfter {
+		hang(r)
+	}
+	switch {
+	case errors.Is(err, pixsim.ErrKeyReused):
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeKeyReused, err.Error()))
+	case errors.Is(err, pixsim.ErrNotFound):
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeNotFound, "no charge with this ID"))
+	case err != nil:
+		invalid(w, r, err.Error())
+	case rf.Status == pixsim.RefundRejected:
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeRefundRejected, rf.Reason))
+	default:
+		writeJSON(w, http.StatusCreated, rf)
+	}
+}
+
+func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
+	fault, _ := s.nextFault(pixsim.OpGetRefund)
+	if !s.before(w, r, fault) {
+		return
+	}
+	if fault.Kind == pixsim.TimeoutAfter {
+		hang(r)
+	}
+	s.mu.Lock()
+	rec, ok := s.refunds[r.PathValue("key")]
+	var rf pixsim.Refund
+	if ok {
+		rf = rec.refund
+	}
+	s.mu.Unlock()
+	if !ok {
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeRefundNotFound, "no refund with this idempotency key"))
+		return
+	}
+	writeJSON(w, http.StatusOK, rf)
+}
+
+// storeRefund decides the refund once per key and keeps it, rejected too, so a caller
+// that lost the answer finds the same decision with GetRefund. The simulator holds
+// its own line on invariant 8: it never returns more than the charge took in.
+func (s *Simulator) storeRefund(key, chargeID string, req *pixsim.CreateRefund, reject bool) (pixsim.Refund, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec, ok := s.refunds[key]; ok {
+		if rec.refund.ChargeID != chargeID || rec.req.Amount != req.Amount {
+			return pixsim.Refund{}, pixsim.ErrKeyReused
+		}
+		return rec.refund, nil
+	}
+	chargeKey, ok := s.keyByID[chargeID]
+	if !ok {
+		return pixsim.Refund{}, pixsim.ErrNotFound
+	}
+	charge := s.byKey[chargeKey]
+
+	rf := pixsim.Refund{
+		ID:             "rfd_" + text(s.rng("refund\x00"+key), idLength),
+		IdempotencyKey: key,
+		ChargeID:       chargeID,
+		Status:         pixsim.RefundRejected,
+		Amount:         req.Amount,
+		CreatedAt:      s.clock.Now(),
+	}
+	switch {
+	case reject:
+		rf.Reason = "the refund was refused"
+	case charge.charge.Status != pixsim.Paid:
+		rf.Reason = "only a paid charge can be refunded"
+	case req.Amount.Currency() != charge.charge.Amount.Currency():
+		rf.Reason = fmt.Sprintf("the charge is in %s", charge.charge.Amount.Currency())
+	case req.Amount.Amount() > charge.charge.Amount.Amount()-charge.refunded:
+		rf.Reason = fmt.Sprintf("only %d of the charge is left to refund", charge.charge.Amount.Amount()-charge.refunded)
+	default:
+		rf.Status = pixsim.RefundCompleted
+		charge.refunded += req.Amount.Amount()
+	}
+	s.refunds[key] = &refundRecord{req: *req, refund: rf}
+	return rf, nil
 }
 
 // pay plays the payer. A static PIX code can be paid at any time, so a charge past
@@ -395,14 +509,14 @@ func validateCharge(req *pixsim.CreateCharge) error {
 
 func validateFault(f *pixsim.Fault) error {
 	switch f.Op {
-	case pixsim.OpCreate, pixsim.OpGet:
+	case pixsim.OpCreate, pixsim.OpGet, pixsim.OpRefund, pixsim.OpGetRefund:
 	default:
-		return fmt.Errorf("op must be create or get, got %q", f.Op)
+		return fmt.Errorf("op must be create, get, refund or get_refund, got %q", f.Op)
 	}
 	switch f.Kind {
 	case pixsim.Reject:
-		if f.Op != pixsim.OpCreate {
-			return errors.New("only a create can be rejected")
+		if f.Op != pixsim.OpCreate && f.Op != pixsim.OpRefund {
+			return errors.New("only a create or a refund can be rejected")
 		}
 	case pixsim.Delay:
 		if d := time.Duration(f.DelayMS) * time.Millisecond; d <= 0 || d > maxDelay {

@@ -34,17 +34,42 @@ type Charge struct {
 	PaidAt    *time.Time `json:"paid_at,omitempty"`
 }
 
+// CreateRefund returns part or all of a paid charge to the payer, as a PIX devolução.
+type CreateRefund struct {
+	Amount money.Money `json:"amount"`
+}
+
+type RefundStatus string
+
+const (
+	RefundCompleted RefundStatus = "completed"
+	RefundRejected  RefundStatus = "rejected"
+)
+
+type Refund struct {
+	ID             string       `json:"id"`
+	IdempotencyKey string       `json:"idempotency_key"`
+	ChargeID       string       `json:"charge_id"`
+	Status         RefundStatus `json:"status"`
+	Amount         money.Money  `json:"amount"`
+	// Reason says why a rejected refund was refused.
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Op string
 
 const (
-	OpCreate Op = "create"
-	OpGet    Op = "get"
+	OpCreate    Op = "create"
+	OpGet       Op = "get"
+	OpRefund    Op = "refund"
+	OpGetRefund Op = "get_refund"
 )
 
 type FaultKind string
 
 const (
-	// Reject refuses the create for good, as a provider that says no.
+	// Reject refuses the create or the refund for good, as a provider that says no.
 	Reject FaultKind = "reject"
 	// FailBefore answers 500 without doing anything.
 	FailBefore FaultKind = "fail_before"
@@ -67,6 +92,8 @@ type Fault struct {
 // Problem codes the simulator answers with.
 const (
 	CodeRejected       = "charge_rejected"
+	CodeRefundRejected = "refund_rejected"
+	CodeRefundNotFound = "refund_not_found"
 	CodeKeyReused      = "idempotency_key_reused"
 	CodeNotFound       = "charge_not_found"
 	CodeInvalid        = "invalid_request"

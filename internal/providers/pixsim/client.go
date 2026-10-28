@@ -24,6 +24,10 @@ var (
 	// ErrDeliveryFailed is the webhook not answering 2xx to a redelivery.
 	ErrDeliveryFailed = errors.New("pixsim: event delivery failed")
 	ErrBadResponse    = errors.New("pixsim: unexpected response")
+	// ErrRefundRejected is the simulator refusing a refund for good; like ErrRejected,
+	// the refund is stored and Get finds it rejected.
+	ErrRefundRejected = errors.New("pixsim: refund rejected")
+	ErrRefundNotFound = errors.New("pixsim: refund not found")
 )
 
 // DefaultTimeout bounds every call; a call that hits it is ambiguous, not failed.
@@ -62,6 +66,21 @@ func (c *Client) Get(ctx context.Context, key string) (Charge, error) {
 	var ch Charge
 	err := c.do(ctx, http.MethodGet, "/v1/charges/by-key/"+url.PathEscape(key), "", nil, http.StatusOK, &ch)
 	return ch, err
+}
+
+// Refund returns amount of the paid charge to the payer, once per key: repeating the
+// same request returns the same refund.
+func (c *Client) Refund(ctx context.Context, key, chargeID string, req CreateRefund) (Refund, error) {
+	var r Refund
+	err := c.do(ctx, http.MethodPost, "/v1/charges/"+url.PathEscape(chargeID)+"/refunds", key, req, http.StatusCreated, &r)
+	return r, err
+}
+
+// GetRefund finds a refund by the idempotency key it was created with.
+func (c *Client) GetRefund(ctx context.Context, key string) (Refund, error) {
+	var r Refund
+	err := c.do(ctx, http.MethodGet, "/v1/refunds/by-key/"+url.PathEscape(key), "", nil, http.StatusOK, &r)
+	return r, err
 }
 
 // Pay is the control endpoint that plays the payer: it pays the charge now.
@@ -134,6 +153,10 @@ func problemError(status int, body []byte) error {
 	switch {
 	case status == http.StatusUnprocessableEntity && p.Code == CodeRejected:
 		return ErrRejected
+	case status == http.StatusUnprocessableEntity && p.Code == CodeRefundRejected:
+		return ErrRefundRejected
+	case status == http.StatusNotFound && p.Code == CodeRefundNotFound:
+		return ErrRefundNotFound
 	case status == http.StatusUnprocessableEntity && p.Code == CodeKeyReused:
 		return ErrKeyReused
 	case status == http.StatusNotFound && p.Code == CodeNotFound:
