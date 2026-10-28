@@ -6,7 +6,6 @@ import (
 
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
-	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
 // ConfirmationAccounts are where a confirmation posts (section 3.3). Receivables and
@@ -45,34 +44,12 @@ func ConfirmationReference(id PaymentID) string { return "payment:" + id.String(
 // the fee, the spread and the rounding. Zero legs are left out; the ledger refuses
 // them.
 func Confirmation(id PaymentID, q *fx.Quote, a *ConfirmationAccounts) (ledger.Transaction, error) {
-	paid, err := q.PayerAmount().Neg()
-	if err != nil {
-		return ledger.Transaction{}, fmt.Errorf("payments: confirm %s: %w", id, err)
-	}
-	converted, err := q.Converted().Neg()
-	if err != nil {
-		return ledger.Transaction{}, fmt.Errorf("payments: confirm %s: %w", id, err)
-	}
-	var entries []ledger.Entry
-	for _, leg := range []struct {
-		account ledger.AccountID
-		amount  money.Money
-	}{
-		{a.ProviderReceivables, q.PayerAmount()},
-		{a.FXPayer, paid},
-		{a.FXMerchant, converted},
-		{a.MerchantPayable, q.MerchantNet()},
-		{a.FeeRevenue, q.Fee()},
-		{a.SpreadRevenue, q.Spread()},
-		{a.Rounding, q.Rounding()},
-	} {
-		if !leg.amount.IsZero() {
-			entries = append(entries, ledger.NewEntry(leg.account, leg.amount))
-		}
-	}
-	t, err := ledger.NewTransaction(ConfirmationReference(id), entries...)
-	if err != nil {
-		return ledger.Transaction{}, fmt.Errorf("payments: confirm %s: %w", id, err)
-	}
-	return t, nil
+	return postLegs(ConfirmationReference(id),
+		leg{a.ProviderReceivables, q.PayerAmount(), false},
+		leg{a.FXPayer, q.PayerAmount(), true},
+		leg{a.FXMerchant, q.Converted(), true},
+		leg{a.MerchantPayable, q.MerchantNet(), false},
+		leg{a.FeeRevenue, q.Fee(), false},
+		leg{a.SpreadRevenue, q.Spread(), false},
+		leg{a.Rounding, q.Rounding(), false})
 }

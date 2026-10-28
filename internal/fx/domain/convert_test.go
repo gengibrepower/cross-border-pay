@@ -159,3 +159,27 @@ func TestConvertRoundTripsWhenRateAtLeastOne(t *testing.T) {
 		}
 	})
 }
+
+func TestShare(t *testing.T) {
+	for _, tc := range []struct {
+		total, part, whole, want int64
+	}{
+		{10150, 1000, 2000, 5075},
+		{10151, 1000, 2000, 5076}, // 5075.5: half-even to the even 5076
+		{10149, 1000, 2000, 5074}, // 5074.5: half-even to the even 5074
+		{10150, 1500, 2000, 7612}, // 7612.5
+		{10150, 2000, 2000, 10150},
+		{10150, 0, 2000, 0},
+		{-31, 1, 2, -16}, // -15.5: to the even -16
+	} {
+		got, err := domain.Share(money.New(tc.total, money.BRL), tc.part, tc.whole)
+		if err != nil || got != money.New(tc.want, money.BRL) {
+			t.Errorf("Share(%d, %d/%d) = %v, %v; want %d", tc.total, tc.part, tc.whole, got, err, tc.want)
+		}
+	}
+	for _, bad := range [][2]int64{{1, 0}, {1, -1}, {-1, 2}} {
+		if _, err := domain.Share(money.New(100, money.BRL), bad[0], bad[1]); err == nil {
+			t.Errorf("Share(100, %d/%d) succeeded", bad[0], bad[1])
+		}
+	}
+}

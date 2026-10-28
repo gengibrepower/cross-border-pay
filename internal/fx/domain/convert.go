@@ -44,6 +44,15 @@ func convertScaled(m money.Money, r Rate, num, den *big.Int) (money.Money, error
 	return result, nil
 }
 
+// Share is the part/whole share of total, rounded half-even, in total's currency: the
+// one place outside a conversion where an amount is split.
+func Share(total money.Money, part, whole int64) (money.Money, error) {
+	if whole <= 0 || part < 0 {
+		return money.Money{}, fmt.Errorf("fx: share %d/%d of %s: part must be non-negative and whole positive", part, whole, total)
+	}
+	return mulRatio(total, part, whole)
+}
+
 // mulRatio returns m × num/den rounded half-even, in m's currency.
 func mulRatio(m money.Money, num, den int64) (money.Money, error) {
 	n := new(big.Int).Mul(big.NewInt(m.Amount()), big.NewInt(num))
