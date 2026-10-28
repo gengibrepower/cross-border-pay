@@ -17,8 +17,9 @@ func (id EventID) String() string { return publicid.Encode("evt_", id) }
 type EventType string
 
 const (
-	PaymentPaid    EventType = "payment.paid"
-	PaymentExpired EventType = "payment.expired"
+	PaymentPaid     EventType = "payment.paid"
+	PaymentExpired  EventType = "payment.expired"
+	PaymentCanceled EventType = "payment.canceled"
 )
 
 // PaymentSnapshot is what an event tells the merchant about a payment right after a

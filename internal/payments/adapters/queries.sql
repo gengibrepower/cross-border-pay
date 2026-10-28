@@ -94,6 +94,11 @@ WHERE id IN (
 )
 RETURNING id;
 
+-- name: LockMerchantPayment :one
+SELECT id, merchant_id, status, amount, currency FROM payments
+WHERE merchant_id = @merchant_id AND id = @id
+FOR NO KEY UPDATE;
+
 -- name: LockPayment :one
 SELECT p.id, p.merchant_id, p.status, p.amount, p.currency, q.expires_at
 FROM payments AS p
