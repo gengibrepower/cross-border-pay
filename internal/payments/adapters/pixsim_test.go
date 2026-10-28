@@ -112,3 +112,40 @@ func TestPixSimFailuresAreErrors(t *testing.T) {
 		t.Error("CreateAttempt(boleto) succeeded")
 	}
 }
+
+func TestPixSimRefund(t *testing.T) {
+	p, client := newPixSim(t)
+	created, err := p.CreateAttempt(t.Context(), attemptRequest(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Pay(t.Context(), created.ExternalID); err != nil {
+		t.Fatal(err)
+	}
+	req := &app.RefundRequest{Refund: domain.RefundID{1}, Charge: created.ExternalID, Amount: money.New(5075, money.BRL)}
+	r, err := p.Refund(t.Context(), req)
+	if err != nil || r.Outcome != app.RefundSucceeded || r.ExternalID == "" || r.Amount != req.Amount {
+		t.Fatalf("Refund() = %+v, %v; want succeeded for %s", r, err, req.Amount)
+	}
+	if got, err := p.GetRefund(t.Context(), req.Refund); err != nil || got != r {
+		t.Errorf("GetRefund() = %+v, %v; want %+v", got, err, r)
+	}
+
+	over := &app.RefundRequest{Refund: domain.RefundID{2}, Charge: created.ExternalID, Amount: money.New(5076, money.BRL)}
+	if r, err := p.Refund(t.Context(), over); err != nil || r.Outcome != app.RefundRejected {
+		t.Errorf("Refund() over what is left = %+v, %v; want a rejection without error", r, err)
+	}
+	if got, err := p.GetRefund(t.Context(), over.Refund); err != nil || got.Outcome != app.RefundRejected || got.Reason == "" {
+		t.Errorf("GetRefund() = %+v, %v; want rejected with the reason", got, err)
+	}
+
+	if err := client.InjectFault(t.Context(), pixsim.Fault{Op: pixsim.OpRefund, Kind: pixsim.TimeoutAfter, Count: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := p.Refund(t.Context(), &app.RefundRequest{Refund: domain.RefundID{3}, Charge: created.ExternalID, Amount: money.New(1, money.BRL)}); err == nil {
+		t.Errorf("Refund() that timed out = %+v, want an error", r)
+	}
+	if _, err := p.GetRefund(t.Context(), domain.RefundID{9}); !errors.Is(err, app.ErrNotAtProvider) {
+		t.Errorf("GetRefund(unknown) error = %v, want %v", err, app.ErrNotAtProvider)
+	}
+}

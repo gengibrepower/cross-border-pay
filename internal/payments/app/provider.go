@@ -23,17 +23,46 @@ var (
 	ErrEventDivergent = errors.New("payments: event diverges from the payment")
 )
 
-// Provider is the port of section 4.3. Refund joins it in F7, when refunds exist.
+// Provider is the port of section 4.3.
 //
 // A returned error never means the provider refused: a refusal is a result with
 // Rejected. Any error is ambiguous, because the provider may have acted before it
-// failed, and the attempt goes to unknown.
+// failed, and the attempt or refund goes to unknown.
 type Provider interface {
 	Name() domain.ProviderName
 	CreateAttempt(ctx context.Context, req *AttemptRequest) (AttemptResult, error)
 	// GetAttempt looks the attempt up by our ID, which CreateAttempt sent as the
 	// provider's idempotency key. It returns ErrNotAtProvider when there is none.
 	GetAttempt(ctx context.Context, id domain.AttemptID) (AttemptResult, error)
+	// Refund returns money of a paid attempt to the payer, with our refund ID as the
+	// provider's idempotency key.
+	Refund(ctx context.Context, req *RefundRequest) (RefundResult, error)
+	// GetRefund looks the refund up by our ID. It returns ErrNotAtProvider when there
+	// is none.
+	GetRefund(ctx context.Context, id domain.RefundID) (RefundResult, error)
+}
+
+type RefundRequest struct {
+	Refund domain.RefundID
+	// Charge is the provider's ID of the paid attempt, its ExternalID.
+	Charge string
+	// Amount is what goes back to the payer, in the payer's currency.
+	Amount money.Money
+}
+
+type RefundOutcome int
+
+const (
+	RefundSucceeded RefundOutcome = iota + 1
+	RefundRejected
+)
+
+type RefundResult struct {
+	Outcome    RefundOutcome
+	ExternalID string
+	Amount     money.Money
+	// Reason is the provider's words for a rejection, kept for the operator.
+	Reason string
 }
 
 type AttemptRequest struct {

@@ -72,3 +72,38 @@ func result(ch *pixsim.Charge) (app.AttemptResult, error) {
 	r.Pix = &app.PixInstructions{BRCode: ch.BRCode}
 	return r, nil
 }
+
+func (p *PixSim) Refund(ctx context.Context, req *app.RefundRequest) (app.RefundResult, error) {
+	rf, err := p.client.Refund(ctx, req.Refund.String(), req.Charge, pixsim.CreateRefund{Amount: req.Amount})
+	if errors.Is(err, pixsim.ErrRefundRejected) {
+		return app.RefundResult{Outcome: app.RefundRejected, Amount: req.Amount, Reason: err.Error()}, nil
+	}
+	if err != nil {
+		return app.RefundResult{}, fmt.Errorf("pixsim: refund %s: %w", req.Refund, err)
+	}
+	return refundResult(&rf)
+}
+
+func (p *PixSim) GetRefund(ctx context.Context, id domain.RefundID) (app.RefundResult, error) {
+	rf, err := p.client.GetRefund(ctx, id.String())
+	if errors.Is(err, pixsim.ErrRefundNotFound) {
+		return app.RefundResult{}, fmt.Errorf("pixsim: get refund %s: %w: %w", id, app.ErrNotAtProvider, err)
+	}
+	if err != nil {
+		return app.RefundResult{}, fmt.Errorf("pixsim: get refund %s: %w", id, err)
+	}
+	return refundResult(&rf)
+}
+
+func refundResult(rf *pixsim.Refund) (app.RefundResult, error) {
+	r := app.RefundResult{ExternalID: rf.ID, Amount: rf.Amount, Reason: rf.Reason}
+	switch rf.Status {
+	case pixsim.RefundCompleted:
+		r.Outcome = app.RefundSucceeded
+	case pixsim.RefundRejected:
+		r.Outcome = app.RefundRejected
+	default:
+		return app.RefundResult{}, fmt.Errorf("pixsim: refund %s has unknown status %q", rf.ID, rf.Status)
+	}
+	return r, nil
+}
