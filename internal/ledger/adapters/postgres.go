@@ -121,6 +121,20 @@ func (Ledger) Balance(ctx context.Context, db DB, id domain.AccountID) (money.Mo
 	return money.New(balances[0].Balance, currency), nil
 }
 
+// LockBalance locks the account as Post does and returns its balance, which no other
+// writer can change until tx ends: a caller can decide on it and then post.
+func (Ledger) LockBalance(ctx context.Context, tx pgx.Tx, id domain.AccountID) (money.Money, error) {
+	states, err := lock(ctx, ledgerdb.New(tx), []domain.AccountID{id})
+	if err != nil {
+		return money.Money{}, err
+	}
+	s, ok := states[id]
+	if !ok {
+		return money.Money{}, fmt.Errorf("%w: %s", domain.ErrUnknownAccount, id)
+	}
+	return s.Balance, nil
+}
+
 // Post locks the accounts in ascending order, sums their balances and only then
 // checks and writes. Under READ COMMITTED each statement sees what was committed
 // before it started, and the lock makes every other writer to these accounts commit

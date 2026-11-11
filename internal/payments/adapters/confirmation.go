@@ -41,6 +41,13 @@ func confirm(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockP
 	if err != nil {
 		return err
 	}
+	// When the money became the merchant's, posted below: availability (decision 25)
+	// counts from when the gateway booked it, not from the provider's paid time.
+	if err := paymentsdb.New(tx).SetPaidAt(ctx, paymentsdb.SetPaidAtParams{
+		ID: pay.PaymentID, PaidAt: pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("paid at: %w", err)
+	}
 
 	accounts, err := confirmationAccounts(ctx, tx, pay.MerchantID.Bytes, &quote)
 	if err != nil {

@@ -179,3 +179,56 @@ WHERE id = @id AND status IN ('sent', 'unknown');
 -- name: SucceededAttempt :one
 -- At most one: a payment has one live attempt at a time.
 SELECT * FROM payment_attempts WHERE payment_id = @payment_id AND status = 'succeeded';
+
+-- name: SetPaidAt :exec
+UPDATE payments SET paid_at = @paid_at WHERE id = @id;
+
+-- name: SettlementCandidates :many
+-- Merchants with confirmed money and no settlement for the cutoff yet, after the last
+-- one seen, so a round pages through all of them.
+SELECT DISTINCT p.merchant_id FROM payments AS p
+WHERE p.paid_at IS NOT NULL AND p.merchant_id > @after
+    AND NOT EXISTS (SELECT 1 FROM settlements AS s WHERE s.merchant_id = p.merchant_id AND s.cutoff_date = @cutoff_date)
+ORDER BY p.merchant_id
+LIMIT @max_rows::bigint;
+
+-- name: LockSettleablePayments :many
+-- The merchant's confirmed payments available by the cutoff and in no settlement yet,
+-- each method by its own availability (decision 25). Locked first, before the ledger,
+-- in the order every path takes: payment, then accounts.
+SELECT p.id FROM payments AS p
+WHERE p.merchant_id = @merchant_id AND p.paid_at IS NOT NULL AND p.settlement_id IS NULL
+    AND p.paid_at < CASE p.method
+        WHEN 'pix' THEN @pix_before::timestamptz
+        WHEN 'boleto' THEN @boleto_before::timestamptz
+        ELSE @card_before::timestamptz END
+ORDER BY p.id
+FOR NO KEY UPDATE;
+
+-- name: PendingNet :one
+-- What the merchant's payable holds for payments not available yet: each one's net,
+-- less its refunds that still count. Every refund takes its amount from the payable
+-- when created and only a rejection gives it back (migration 00017), so this is
+-- exactly their share of the payable's balance.
+SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
+FROM payments AS p
+JOIN quotes AS q ON q.id = p.quote_id
+CROSS JOIN LATERAL (
+    SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
+    WHERE payment_id = p.id AND status <> 'rejected'
+) AS r
+WHERE p.merchant_id = @merchant_id AND p.paid_at IS NOT NULL
+    AND p.paid_at >= CASE p.method
+        WHEN 'pix' THEN @pix_before::timestamptz
+        WHEN 'boleto' THEN @boleto_before::timestamptz
+        ELSE @card_before::timestamptz END;
+
+-- name: InsertSettlement :one
+-- No row when the cutoff is already settled: a concurrent run got there first.
+INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, created_at)
+VALUES (@merchant_id, @cutoff_date, @amount, @currency, @created_at)
+ON CONFLICT (merchant_id, cutoff_date) DO NOTHING
+RETURNING *;
+
+-- name: MarkSettled :exec
+UPDATE payments SET settlement_id = @settlement_id WHERE id = ANY(@ids::uuid[]);
