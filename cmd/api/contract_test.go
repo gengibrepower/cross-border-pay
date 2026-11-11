@@ -57,7 +57,13 @@ type contract struct {
 type countingProvider struct {
 	paymentsapp.Provider
 	creates atomic.Int64
+	refunds atomic.Int64
 	before  func()
+}
+
+func (p *countingProvider) Refund(ctx context.Context, req *paymentsapp.RefundRequest) (paymentsapp.RefundResult, error) {
+	p.refunds.Add(1)
+	return p.Provider.Refund(ctx, req) //nolint:wrapcheck // a test double passes the provider's error through untouched.
 }
 
 func (p *countingProvider) CreateAttempt(ctx context.Context, req *paymentsapp.AttemptRequest) (paymentsapp.AttemptResult, error) {

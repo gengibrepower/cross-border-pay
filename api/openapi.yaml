@@ -193,6 +193,88 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
 
+  /v1/payments/{id}/refunds:
+    post:
+      operationId: refundPayment
+      summary: Refund part or all of a paid payment
+      description: |
+        Returns `amount`, in the payment's currency, by the proportion of the original
+        payment (decision 13): the payer gets back the same share of the reais they paid,
+        the merchant's balance loses the whole amount (the fee is not returned). The
+        refunds of a payment never pass what was paid, even when sent at the same time.
+        Answered 201 whatever the provider said; `status` tells whether the money went
+        back, will not, or is on its way, and `refund.succeeded` or `refund.failed`
+        follows on the webhook.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PaymentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefundRequest"
+            example:
+              amount: { value: 1000, currency: USD }
+      responses:
+        "201":
+          description: The refund.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Refund"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: No such payment, as for `GET /v1/payments/{id}`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: |
+            `payment_not_refundable`: the payment is not paid, or already refunded in
+            full. `idempotency_key_in_progress`: another request with this key is running.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "422":
+          description: |
+            `refund_exceeds_payment`: with the refunds that still count, this one would
+            pass what was paid. `refund_too_small`: it rounds to nothing in reais.
+            `invalid_amount`, `unsupported_currency`, `idempotency_key_reused`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "503":
+          $ref: "#/components/responses/Problem"
+
   /v1/providers/{provider}/events:
     post:
       operationId: receiveProviderEvent
@@ -568,6 +650,74 @@ components:
             amount:
               $ref: "#/components/schemas/Money"
 
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      required: [amount]
+      properties:
+        amount:
+          $ref: "#/components/schemas/Money"
+
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [id, payment_id, status, amount, payer_amount, created_at]
+      properties:
+        id:
+          type: string
+          pattern: "^ref_[0-9a-z]{26}$"
+        payment_id:
+          $ref: "#/components/schemas/PaymentId"
+        status:
+          type: string
+          enum: [pending, succeeded, failed]
+          description: |
+            `pending` while the provider has not answered for sure; the webhook tells
+            how it ends.
+        amount:
+          $ref: "#/components/schemas/Money"
+        payer_amount:
+          $ref: "#/components/schemas/Money"
+        created_at:
+          type: string
+          format: date-time
+
+    RefundEvent:
+      description: |
+        Posted when a refund ends, signed and delivered like PaymentEvent.
+        `payment_version` orders it with the payment's own events: a succeeded refund
+        moves the payment, a failed one does not.
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at, payment_id, payment_version, data]
+      properties:
+        id:
+          type: string
+          pattern: "^evt_[0-9a-z]{26}$"
+        type:
+          type: string
+          enum: [refund.succeeded, refund.failed]
+        created_at:
+          type: string
+          format: date-time
+        payment_id:
+          $ref: "#/components/schemas/PaymentId"
+        payment_version:
+          type: integer
+          minimum: 1
+        data:
+          type: object
+          additionalProperties: false
+          required: [refund_id, amount, payment_status]
+          properties:
+            refund_id:
+              type: string
+              pattern: "^ref_[0-9a-z]{26}$"
+            amount:
+              $ref: "#/components/schemas/Money"
+            payment_status:
+              $ref: "#/components/schemas/PaymentStatus"
+
     EventList:
       type: object
       additionalProperties: false
@@ -588,7 +738,9 @@ components:
       required: [event, delivery]
       properties:
         event:
-          $ref: "#/components/schemas/PaymentEvent"
+          oneOf:
+            - $ref: "#/components/schemas/PaymentEvent"
+            - $ref: "#/components/schemas/RefundEvent"
         delivery:
           type: object
           additionalProperties: false

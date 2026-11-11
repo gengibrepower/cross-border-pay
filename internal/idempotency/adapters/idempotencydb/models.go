@@ -141,6 +141,22 @@ type Quote struct {
 	ExpiresAt     pgtype.Timestamptz
 }
 
+type Refund struct {
+	ID            pgtype.UUID
+	PaymentID     pgtype.UUID
+	Provider      string
+	Status        string
+	Amount        int64
+	Currency      string
+	PayerAmount   int64
+	PayerCurrency string
+	Spread        int64
+	ExternalID    pgtype.Text
+	Reason        pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type ReviewCase struct {
 	ID              pgtype.UUID
 	Kind            string

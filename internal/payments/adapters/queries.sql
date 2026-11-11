@@ -110,3 +110,49 @@ FOR NO KEY UPDATE OF p;
 -- Every ID is a UUIDv7 the database issues; an event's is needed before its row
 -- exists, because the payload carries it.
 SELECT uuidv7()::uuid AS id;
+
+-- name: LockRefundablePayment :one
+-- The refund's lock: every refund of a payment, and every confirmation, waits for it,
+-- so two refunds never sum what counts at the same time (invariant 8).
+SELECT id, merchant_id, status, version, amount, currency, quote_id FROM payments
+WHERE merchant_id = @merchant_id AND id = @id
+FOR NO KEY UPDATE;
+
+-- name: CountedRefunds :one
+-- What a payment's refunds take, every one but the rejected: the running total a new
+-- refund is priced against.
+SELECT coalesce(sum(amount), 0)::bigint AS amount, coalesce(sum(payer_amount), 0)::bigint AS payer_amount,
+    coalesce(sum(spread), 0)::bigint AS spread
+FROM refunds WHERE payment_id = @payment_id AND status <> 'rejected';
+
+-- name: SucceededRefunds :one
+SELECT coalesce(sum(amount), 0)::bigint FROM refunds WHERE payment_id = @payment_id AND status = 'succeeded';
+
+-- name: InsertRefund :one
+INSERT INTO refunds (payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, created_at, updated_at)
+VALUES (@payment_id, @provider, 'created', @amount, @currency, @payer_amount, @payer_currency, @spread, @created_at, @created_at)
+RETURNING *;
+
+-- name: GetMerchantRefund :one
+SELECT r.* FROM refunds AS r
+JOIN payments AS p ON p.id = r.payment_id
+WHERE r.id = @id AND p.merchant_id = @merchant_id;
+
+-- name: LockPaymentOfRefund :one
+-- The same lock order as attempts: payment, then the refund, then ledger accounts.
+SELECT p.id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id
+FROM refunds AS r
+JOIN payments AS p ON p.id = r.payment_id
+WHERE r.id = @id
+FOR NO KEY UPDATE OF p;
+
+-- name: LockRefund :one
+SELECT * FROM refunds WHERE id = @id FOR UPDATE;
+
+-- name: UpdateRefund :exec
+UPDATE refunds SET status = @status, external_id = sqlc.narg(external_id), reason = sqlc.narg(reason), updated_at = @updated_at
+WHERE id = @id;
+
+-- name: SucceededAttempt :one
+-- At most one: a payment has one live attempt at a time.
+SELECT * FROM payment_attempts WHERE payment_id = @payment_id AND status = 'succeeded';
