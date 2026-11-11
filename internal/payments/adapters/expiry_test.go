@@ -208,6 +208,10 @@ func TestPaidLateIsHeldForReview(t *testing.T) {
 			})
 			wg.Go(func() { e.mustHandle(event) })
 			wg.Wait()
+			// The job's next tick. A claim made while the event holds the payment's lock
+			// skips it (SKIP LOCKED) and the event leaves expiring to the job, so one
+			// round may close nothing; once the lock is gone the next one does.
+			e.expire()
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
