@@ -17,9 +17,12 @@ import (
 
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
 	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
+	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
+	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
 	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
 	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
@@ -38,6 +41,8 @@ const (
 	// attemptResolverInterval is how often due attempts are looked for; each attempt's
 	// own backoff lives in its next_check_at.
 	attemptResolverInterval = time.Second
+	// refundResolverInterval is attemptResolverInterval for refunds.
+	refundResolverInterval = time.Second
 	// inboxInterval paces the inbox; a pending event's own backoff is in its row.
 	inboxInterval = time.Second
 	// expiryInterval is how often expired quotes are looked for; a payment the provider
@@ -67,6 +72,11 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		return fmt.Errorf("config: %w", err)
 	}
 	logger := logging.New(stdout, cfg.LogLevel)
+	// A refund the resolver completes is bought back at today's rate, as in the API.
+	rate, err := fx.ParseRate(money.USD, money.BRL, cfg.USDBRLRate)
+	if err != nil {
+		return fmt.Errorf("config: FX_USD_BRL_RATE: %w", err)
+	}
 
 	pool, err := postgres.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -81,6 +91,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	store, provider := paymentsadapters.NewPostgres(pool, paymentSinks()), paymentsadapters.NewPixSim(pixsimClient)
 	resolver := paymentsapp.NewResolver(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
 	expirer := paymentsapp.NewExpirer(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
+	refunds := paymentsapp.NewRefundResolver(
+		paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, provider, clock.System{}, logger, cfg.ProviderTimeout), store)
 	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks()}, clock.System{}, logger)
 	deliverer, err := webhooksapp.NewDeliverer(
 		eventsadapters.NewDeliveries(pool), merchantsadapters.NewPostgres(pool),
@@ -92,14 +104,14 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 
 	logger.Info("worker started")
-	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, expirer, inbox, deliverer, logger)...); err != nil {
+	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, refunds, expirer, inbox, deliverer, logger)...); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")
 	return nil
 }
 
-func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, expirer *paymentsapp.Expirer, inbox *eventsapp.Processor, deliverer *webhooksapp.Deliverer, logger *slog.Logger) []worker.Job {
+func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, refunds *paymentsapp.RefundResolver, expirer *paymentsapp.Expirer, inbox *eventsapp.Processor, deliverer *webhooksapp.Deliverer, logger *slog.Logger) []worker.Job {
 	keys := idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock.System{}, rand.Reader)
 	return []worker.Job{
 		worker.Every("idempotency-cleanup", idempotencyCleanupInterval, logger, func(ctx context.Context) error {
@@ -115,6 +127,12 @@ func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, expirer *paymentsa
 		worker.Every("attempt-resolver", attemptResolverInterval, logger, func(ctx context.Context) error {
 			if _, err := resolver.Resolve(ctx, paymentsapp.ResolveBatch); err != nil {
 				return fmt.Errorf("resolve: %w", err)
+			}
+			return nil
+		}),
+		worker.Every("refund-resolver", refundResolverInterval, logger, func(ctx context.Context) error {
+			if _, err := refunds.Resolve(ctx, paymentsapp.ResolveBatch); err != nil {
+				return fmt.Errorf("resolve refunds: %w", err)
 			}
 			return nil
 		}),

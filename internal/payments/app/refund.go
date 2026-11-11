@@ -106,9 +106,14 @@ func (r *Refunder) send(ctx context.Context, refund *domain.Refund, rate fx.Rate
 	if err != nil {
 		return domain.Refund{}, fmt.Errorf("paid attempt: %w", err)
 	}
-	sent, err := r.apply(ctx, refund, &domain.RefundUpdate{Event: domain.SendRefund}, rate)
+	sent, changed, err := r.store.ApplyRefund(ctx, refund.ID(), &domain.RefundUpdate{Event: domain.SendRefund}, rate, r.clock.Now())
 	if err != nil {
-		return domain.Refund{}, err
+		return domain.Refund{}, fmt.Errorf("apply %s: %w", domain.SendRefund, err)
+	}
+	if !changed {
+		// A retried request and the resolver can both find the refund created; only the
+		// one that moved it to sent calls the provider.
+		return sent, nil
 	}
 	u := r.call(ctx, &sent, attempt.ExternalID())
 	return r.apply(ctx, &sent, &u, rate)

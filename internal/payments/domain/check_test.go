@@ -42,3 +42,24 @@ func TestFirstCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstRefundCheck(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, status := range domain.RefundStatuses() {
+		at, ok := domain.FirstRefundCheck(status, now)
+		switch status {
+		case domain.RefundCreated, domain.RefundSent:
+			if !ok || !at.Equal(now.Add(domain.SentStaleAfter)) {
+				t.Errorf("FirstRefundCheck(%s) = %v, %v; want %v", status, at, ok, now.Add(domain.SentStaleAfter))
+			}
+		case domain.RefundUnknown:
+			if !ok || !at.Equal(now.Add(domain.CheckBase)) {
+				t.Errorf("FirstRefundCheck(unknown) = %v, %v; want %v", at, ok, now.Add(domain.CheckBase))
+			}
+		case domain.RefundSucceeded, domain.RefundRejected:
+			if ok {
+				t.Errorf("FirstRefundCheck(%s) = %v, want no check", status, at)
+			}
+		}
+	}
+}
