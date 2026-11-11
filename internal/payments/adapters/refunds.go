@@ -71,6 +71,7 @@ func (p *Postgres) CreateRefund(ctx context.Context, held *idempotency.Held, mer
 			PayerCurrency: amounts.PayerAmount.Currency().Code(),
 			Spread:        amounts.Spread.Amount(),
 			CreatedAt:     pgtype.Timestamptz{Time: now, Valid: true},
+			NextCheckAt:   refundCheck(domain.RefundCreated, now),
 		})
 		if err != nil {
 			return fmt.Errorf("insert refund: %w", err)
@@ -148,12 +149,20 @@ func (p *Postgres) ApplyRefund(ctx context.Context, id domain.RefundID, u *domai
 		if !changed {
 			return nil
 		}
+		// As for attempts, a new status restarts the check schedule: created, sent and
+		// unknown are in the queue, the final statuses leave it.
+		checks, next := row.Checks, row.NextCheckAt
+		if refund.Status() != from {
+			checks, next = 0, refundCheck(refund.Status(), now)
+		}
 		err = q.UpdateRefund(ctx, paymentsdb.UpdateRefundParams{
-			ID:         row.ID,
-			Status:     string(refund.Status()),
-			ExternalID: pgtype.Text{String: refund.ExternalID(), Valid: refund.ExternalID() != ""},
-			Reason:     pgtype.Text{String: refund.Reason(), Valid: refund.Reason() != ""},
-			UpdatedAt:  pgtype.Timestamptz{Time: refund.UpdatedAt(), Valid: true},
+			ID:          row.ID,
+			Status:      string(refund.Status()),
+			ExternalID:  pgtype.Text{String: refund.ExternalID(), Valid: refund.ExternalID() != ""},
+			Reason:      pgtype.Text{String: refund.Reason(), Valid: refund.Reason() != ""},
+			UpdatedAt:   pgtype.Timestamptz{Time: refund.UpdatedAt(), Valid: true},
+			Checks:      checks,
+			NextCheckAt: next,
 		})
 		if err != nil {
 			return fmt.Errorf("update refund: %w", err)
@@ -176,6 +185,55 @@ func (p *Postgres) ApplyRefund(ctx context.Context, id domain.RefundID, u *domai
 		return domain.Refund{}, false, fmt.Errorf("payments: apply %s to refund %s: %w", u.Event, id, err)
 	}
 	return refund, changed, nil
+}
+
+func refundCheck(status domain.RefundStatus, now time.Time) pgtype.Timestamptz {
+	at, ok := domain.FirstRefundCheck(status, now)
+	return pgtype.Timestamptz{Time: at, Valid: ok}
+}
+
+func (p *Postgres) ClaimDueRefunds(ctx context.Context, now, leaseUntil time.Time, limit int) ([]app.DueRefund, error) {
+	rows, err := paymentsdb.New(p.pool).ClaimDueRefunds(ctx, paymentsdb.ClaimDueRefundsParams{
+		Now:        pgtype.Timestamptz{Time: now, Valid: true},
+		LeaseUntil: pgtype.Timestamptz{Time: leaseUntil, Valid: true},
+		MaxRows:    int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("payments: claim refunds: %w", err)
+	}
+	due := make([]app.DueRefund, len(rows))
+	for i := range rows {
+		r, err := restoreRefund(&rows[i])
+		if err != nil {
+			return nil, err
+		}
+		due[i] = app.DueRefund{Refund: r, Checks: int(rows[i].Checks)}
+	}
+	return due, nil
+}
+
+// RescheduleRefund is a no-op once the refund left unknown, such as when a retried
+// request resolved it during the lookup.
+func (p *Postgres) RescheduleRefund(ctx context.Context, id domain.RefundID, next time.Time) error {
+	_, err := paymentsdb.New(p.pool).RescheduleRefund(ctx, paymentsdb.RescheduleRefundParams{
+		ID:          pgtype.UUID{Bytes: id, Valid: true},
+		NextCheckAt: pgtype.Timestamptz{Time: next, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("payments: reschedule refund %s: %w", id, err)
+	}
+	return nil
+}
+
+func (p *Postgres) EscalateRefund(ctx context.Context, id domain.RefundID, now time.Time) error {
+	_, err := paymentsdb.New(p.pool).EscalateRefund(ctx, paymentsdb.EscalateRefundParams{
+		ID:          pgtype.UUID{Bytes: id, Valid: true},
+		EscalatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("payments: escalate refund %s: %w", id, err)
+	}
+	return nil
 }
 
 // completeRefund posts the money gone back and moves the payment: refunded once the

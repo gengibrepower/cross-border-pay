@@ -155,6 +155,9 @@ type Refund struct {
 	Reason        pgtype.Text
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
+	Checks        int32
+	NextCheckAt   pgtype.Timestamptz
+	EscalatedAt   pgtype.Timestamptz
 }
 
 type ReviewCase struct {

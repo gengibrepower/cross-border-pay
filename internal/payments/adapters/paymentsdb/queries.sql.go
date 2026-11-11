@@ -105,6 +105,63 @@ func (q *Queries) ClaimDueExpiries(ctx context.Context, arg ClaimDueExpiriesPara
 	return items, nil
 }
 
+const claimDueRefunds = `-- name: ClaimDueRefunds :many
+UPDATE refunds SET next_check_at = $1
+WHERE id IN (
+    SELECT due.id FROM refunds AS due
+    WHERE due.next_check_at <= $2
+    ORDER BY due.next_check_at
+    LIMIT $3::bigint
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at, checks, next_check_at, escalated_at
+`
+
+type ClaimDueRefundsParams struct {
+	LeaseUntil pgtype.Timestamptz
+	Now        pgtype.Timestamptz
+	MaxRows    int64
+}
+
+// ClaimDueAttempts for refunds: SKIP LOCKED during this short transaction, then the
+// lease in next_check_at while the provider is called.
+func (q *Queries) ClaimDueRefunds(ctx context.Context, arg ClaimDueRefundsParams) ([]Refund, error) {
+	rows, err := q.db.Query(ctx, claimDueRefunds, arg.LeaseUntil, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Refund
+	for rows.Next() {
+		var i Refund
+		if err := rows.Scan(
+			&i.ID,
+			&i.PaymentID,
+			&i.Provider,
+			&i.Status,
+			&i.Amount,
+			&i.Currency,
+			&i.PayerAmount,
+			&i.PayerCurrency,
+			&i.Spread,
+			&i.ExternalID,
+			&i.Reason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Checks,
+			&i.NextCheckAt,
+			&i.EscalatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countedRefunds = `-- name: CountedRefunds :one
 SELECT coalesce(sum(amount), 0)::bigint AS amount, coalesce(sum(payer_amount), 0)::bigint AS payer_amount,
     coalesce(sum(spread), 0)::bigint AS spread
@@ -144,6 +201,24 @@ func (q *Queries) EscalateAttempt(ctx context.Context, arg EscalateAttemptParams
 	return result.RowsAffected(), nil
 }
 
+const escalateRefund = `-- name: EscalateRefund :execrows
+UPDATE refunds SET next_check_at = NULL, escalated_at = $1
+WHERE id = $2 AND status IN ('sent', 'unknown')
+`
+
+type EscalateRefundParams struct {
+	EscalatedAt pgtype.Timestamptz
+	ID          pgtype.UUID
+}
+
+func (q *Queries) EscalateRefund(ctx context.Context, arg EscalateRefundParams) (int64, error) {
+	result, err := q.db.Exec(ctx, escalateRefund, arg.EscalatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAttempt = `-- name: GetAttempt :one
 SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts WHERE id = $1
 `
@@ -168,7 +243,7 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 }
 
 const getMerchantRefund = `-- name: GetMerchantRefund :one
-SELECT r.id, r.payment_id, r.provider, r.status, r.amount, r.currency, r.payer_amount, r.payer_currency, r.spread, r.external_id, r.reason, r.created_at, r.updated_at FROM refunds AS r
+SELECT r.id, r.payment_id, r.provider, r.status, r.amount, r.currency, r.payer_amount, r.payer_currency, r.spread, r.external_id, r.reason, r.created_at, r.updated_at, r.checks, r.next_check_at, r.escalated_at FROM refunds AS r
 JOIN payments AS p ON p.id = r.payment_id
 WHERE r.id = $1 AND p.merchant_id = $2
 `
@@ -195,6 +270,9 @@ func (q *Queries) GetMerchantRefund(ctx context.Context, arg GetMerchantRefundPa
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -295,9 +373,9 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (p
 }
 
 const insertRefund = `-- name: InsertRefund :one
-INSERT INTO refunds (payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, created_at, updated_at)
-VALUES ($1, $2, 'created', $3, $4, $5, $6, $7, $8, $8)
-RETURNING id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at
+INSERT INTO refunds (payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, created_at, updated_at, next_check_at)
+VALUES ($1, $2, 'created', $3, $4, $5, $6, $7, $8, $8, $9)
+RETURNING id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at, checks, next_check_at, escalated_at
 `
 
 type InsertRefundParams struct {
@@ -309,6 +387,7 @@ type InsertRefundParams struct {
 	PayerCurrency string
 	Spread        int64
 	CreatedAt     pgtype.Timestamptz
+	NextCheckAt   pgtype.Timestamptz
 }
 
 func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) (Refund, error) {
@@ -321,6 +400,7 @@ func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) (Ref
 		arg.PayerCurrency,
 		arg.Spread,
 		arg.CreatedAt,
+		arg.NextCheckAt,
 	)
 	var i Refund
 	err := row.Scan(
@@ -337,6 +417,9 @@ func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) (Ref
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -600,7 +683,7 @@ func (q *Queries) LockPaymentOfRefund(ctx context.Context, id pgtype.UUID) (Lock
 }
 
 const lockRefund = `-- name: LockRefund :one
-SELECT id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at FROM refunds WHERE id = $1 FOR UPDATE
+SELECT id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at, checks, next_check_at, escalated_at FROM refunds WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockRefund(ctx context.Context, id pgtype.UUID) (Refund, error) {
@@ -620,6 +703,9 @@ func (q *Queries) LockRefund(ctx context.Context, id pgtype.UUID) (Refund, error
 		&i.Reason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -687,6 +773,24 @@ type RescheduleAttemptParams struct {
 
 func (q *Queries) RescheduleAttempt(ctx context.Context, arg RescheduleAttemptParams) (int64, error) {
 	result, err := q.db.Exec(ctx, rescheduleAttempt, arg.NextCheckAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rescheduleRefund = `-- name: RescheduleRefund :execrows
+UPDATE refunds SET checks = checks + 1, next_check_at = $1
+WHERE id = $2 AND status = 'unknown'
+`
+
+type RescheduleRefundParams struct {
+	NextCheckAt pgtype.Timestamptz
+	ID          pgtype.UUID
+}
+
+func (q *Queries) RescheduleRefund(ctx context.Context, arg RescheduleRefundParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleRefund, arg.NextCheckAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -779,16 +883,20 @@ func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStat
 }
 
 const updateRefund = `-- name: UpdateRefund :exec
-UPDATE refunds SET status = $1, external_id = $2, reason = $3, updated_at = $4
-WHERE id = $5
+UPDATE refunds
+SET status = $1, external_id = $2, reason = $3, updated_at = $4,
+    checks = $5, next_check_at = $6
+WHERE id = $7
 `
 
 type UpdateRefundParams struct {
-	Status     string
-	ExternalID pgtype.Text
-	Reason     pgtype.Text
-	UpdatedAt  pgtype.Timestamptz
-	ID         pgtype.UUID
+	Status      string
+	ExternalID  pgtype.Text
+	Reason      pgtype.Text
+	UpdatedAt   pgtype.Timestamptz
+	Checks      int32
+	NextCheckAt pgtype.Timestamptz
+	ID          pgtype.UUID
 }
 
 func (q *Queries) UpdateRefund(ctx context.Context, arg UpdateRefundParams) error {
@@ -797,6 +905,8 @@ func (q *Queries) UpdateRefund(ctx context.Context, arg UpdateRefundParams) erro
 		arg.ExternalID,
 		arg.Reason,
 		arg.UpdatedAt,
+		arg.Checks,
+		arg.NextCheckAt,
 		arg.ID,
 	)
 	return err

@@ -44,3 +44,19 @@ func FirstCheck(status AttemptStatus, now time.Time) (at time.Time, ok bool) {
 		return time.Time{}, false
 	}
 }
+
+// FirstRefundCheck is FirstCheck for refunds. A created refund is in the queue too: its
+// row and hold commit before the provider is called, so one still created after
+// SentStaleAfter was left by a request that died, and the resolver sends it.
+func FirstRefundCheck(status RefundStatus, now time.Time) (at time.Time, ok bool) {
+	switch status {
+	case RefundCreated, RefundSent:
+		return now.Add(SentStaleAfter), true
+	case RefundUnknown:
+		return now.Add(CheckBackoff(0)), true
+	case RefundSucceeded, RefundRejected:
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
+}

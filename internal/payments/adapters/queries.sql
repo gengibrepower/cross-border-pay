@@ -129,8 +129,8 @@ FROM refunds WHERE payment_id = @payment_id AND status <> 'rejected';
 SELECT coalesce(sum(amount), 0)::bigint FROM refunds WHERE payment_id = @payment_id AND status = 'succeeded';
 
 -- name: InsertRefund :one
-INSERT INTO refunds (payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, created_at, updated_at)
-VALUES (@payment_id, @provider, 'created', @amount, @currency, @payer_amount, @payer_currency, @spread, @created_at, @created_at)
+INSERT INTO refunds (payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, created_at, updated_at, next_check_at)
+VALUES (@payment_id, @provider, 'created', @amount, @currency, @payer_amount, @payer_currency, @spread, @created_at, @created_at, @next_check_at)
 RETURNING *;
 
 -- name: GetMerchantRefund :one
@@ -150,8 +150,31 @@ FOR NO KEY UPDATE OF p;
 SELECT * FROM refunds WHERE id = @id FOR UPDATE;
 
 -- name: UpdateRefund :exec
-UPDATE refunds SET status = @status, external_id = sqlc.narg(external_id), reason = sqlc.narg(reason), updated_at = @updated_at
+UPDATE refunds
+SET status = @status, external_id = sqlc.narg(external_id), reason = sqlc.narg(reason), updated_at = @updated_at,
+    checks = @checks, next_check_at = sqlc.narg(next_check_at)
 WHERE id = @id;
+
+-- name: ClaimDueRefunds :many
+-- ClaimDueAttempts for refunds: SKIP LOCKED during this short transaction, then the
+-- lease in next_check_at while the provider is called.
+UPDATE refunds SET next_check_at = @lease_until
+WHERE id IN (
+    SELECT due.id FROM refunds AS due
+    WHERE due.next_check_at <= @now
+    ORDER BY due.next_check_at
+    LIMIT @max_rows::bigint
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+
+-- name: RescheduleRefund :execrows
+UPDATE refunds SET checks = checks + 1, next_check_at = @next_check_at
+WHERE id = @id AND status = 'unknown';
+
+-- name: EscalateRefund :execrows
+UPDATE refunds SET next_check_at = NULL, escalated_at = @escalated_at
+WHERE id = @id AND status IN ('sent', 'unknown');
 
 -- name: SucceededAttempt :one
 -- At most one: a payment has one live attempt at a time.
