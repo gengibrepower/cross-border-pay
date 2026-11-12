@@ -558,6 +558,49 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 	return items, nil
 }
 
+const listSettlements = `-- name: ListSettlements :many
+SELECT id, merchant_id, cutoff_date, amount, currency, created_at FROM settlements
+WHERE merchant_id = $1
+  AND ($2::date IS NULL OR cutoff_date < $2)
+ORDER BY cutoff_date DESC
+LIMIT $3::bigint
+`
+
+type ListSettlementsParams struct {
+	MerchantID pgtype.UUID
+	Before     pgtype.Date
+	MaxRows    int64
+}
+
+// Keyset pagination on settlements_merchant_id_cutoff_date_key: newest cutoff first,
+// each page starts below the last cutoff of the previous one, unique per merchant.
+func (q *Queries) ListSettlements(ctx context.Context, arg ListSettlementsParams) ([]Settlement, error) {
+	rows, err := q.db.Query(ctx, listSettlements, arg.MerchantID, arg.Before, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Settlement
+	for rows.Next() {
+		var i Settlement
+		if err := rows.Scan(
+			&i.ID,
+			&i.MerchantID,
+			&i.CutoffDate,
+			&i.Amount,
+			&i.Currency,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAttempt = `-- name: LockAttempt :one
 SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts WHERE id = $1 FOR UPDATE
 `
@@ -978,6 +1021,38 @@ func (q *Queries) SettlementCandidates(ctx context.Context, arg SettlementCandid
 			return nil, err
 		}
 		items = append(items, merchant_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const settlementPayments = `-- name: SettlementPayments :many
+SELECT settlement_id, id FROM payments
+WHERE settlement_id = ANY($1::uuid[])
+ORDER BY settlement_id, id
+`
+
+type SettlementPaymentsRow struct {
+	SettlementID pgtype.UUID
+	ID           pgtype.UUID
+}
+
+// On payments_settlement (migration 00020).
+func (q *Queries) SettlementPayments(ctx context.Context, settlementIds []pgtype.UUID) ([]SettlementPaymentsRow, error) {
+	rows, err := q.db.Query(ctx, settlementPayments, settlementIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SettlementPaymentsRow
+	for rows.Next() {
+		var i SettlementPaymentsRow
+		if err := rows.Scan(&i.SettlementID, &i.ID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

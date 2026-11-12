@@ -82,3 +82,14 @@ func SettlementPosting(id SettlementID, amount money.Money, payable, paid ledger
 		leg{payable, amount, true},
 		leg{paid, amount, false})
 }
+
+// Balance is the merchant's money held by the platform (section 4.9): Available is what
+// a settlement run now would pay, Pending what is not available yet (decision 25), and
+// Reserved what is held against chargebacks (decision 26). Available is negative when
+// refunds of settled money exceed what came in since (decision 27); the reserve arrives
+// in F8 and is zero until then.
+type Balance struct {
+	Available money.Money
+	Pending   money.Money
+	Reserved  money.Money
+}

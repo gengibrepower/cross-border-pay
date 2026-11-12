@@ -145,8 +145,9 @@ type webhook struct {
 }
 
 // ledger checks invariant 1 over the whole database, the books summing to zero in
-// each currency, and returns how many confirmations were posted. There is no balance
-// API before F7, so this one look goes to SQL.
+// each currency, and returns how many confirmations were posted. No merchant's API
+// shows the whole books, so this one look goes to SQL; the merchant's own share is
+// GET /v1/balance.
 func (s *stack) ledger() int {
 	s.t.Helper()
 	rows, err := s.pool.Query(s.t.Context(), "SELECT currency, sum(amount) FROM ledger_entries GROUP BY currency")
@@ -205,6 +206,14 @@ func TestGameStoreWalkthrough(t *testing.T) {
 	}
 	if n := s.ledger(); n != 1 {
 		t.Errorf("%d confirmations in the ledger, want 1", n)
+	}
+	// The US$ 19.40 net is the merchant's: pending today, available from tomorrow in São
+	// Paulo, so a run that crosses local midnight may see either; never both or neither.
+	status, _, balance := s.do(http.MethodGet, s.api+"/v1/balance", key, nil)
+	var b struct{ Available, Pending, Reserved struct{ Value int64 } }
+	if status != http.StatusOK || json.Unmarshal(balance, &b) != nil ||
+		b.Available.Value+b.Pending.Value != 1940 || b.Available.Value < 0 || b.Pending.Value < 0 || b.Reserved.Value != 0 {
+		t.Errorf("GET /v1/balance: %d %s, want US$ 19.40 available or pending", status, balance)
 	}
 
 	// The provider sends the same event again: the inbox drops it.

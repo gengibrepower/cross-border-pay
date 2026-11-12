@@ -78,6 +78,10 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 	paymentsStore := paymentsadapters.NewPostgres(pool, paymentSinks())
 	merchantsStore := merchantsadapters.NewPostgres(pool)
 	merchants := merchantsapp.NewService(merchantsStore, rand.Reader)
+	policy, err := payments.DefaultSettlementPolicy()
+	if err != nil {
+		return nil, fmt.Errorf("settlement: %w", err)
+	}
 	endpoints, err := merchantsapp.NewEndpoints(merchantsStore, d.webhooks, d.signingKey, d.clock)
 	if err != nil {
 		return nil, fmt.Errorf("config: WEBHOOK_SIGNING_KEY: %w", err)
@@ -87,6 +91,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 		payments: paymentsadapters.NewHandler(
 			paymentsapp.NewService(quoter, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewRefunder(rates, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewPayouts(paymentsStore, policy, d.clock),
 			merchantFrom,
 			logger,
 		),
