@@ -331,6 +331,75 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/balance:
+    get:
+      operationId: getBalance
+      summary: What the platform holds for the merchant, in USD
+      description: |
+        `available` is what the daily settlement would pay out now; `pending` is the net
+        of payments not available yet (PIX D+1, boleto D+2, card D+30, in São Paulo
+        calendar days), less their refunds. `available` is negative when refunds of
+        settled payments exceed what came in since: nothing is paid out until it is
+        positive again. `reserved` is held against chargebacks; it is zero for now.
+      responses:
+        "200":
+          description: The balance.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Balance"
+              example:
+                available: { value: 1940, currency: USD }
+                pending: { value: 940, currency: USD }
+                reserved: { value: 0, currency: USD }
+        "401":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
+  /v1/settlements:
+    get:
+      operationId: listSettlements
+      summary: The merchant's settlements, newest cutoff first, with the payments in each
+      description: |
+        One settlement at most per cutoff date (São Paulo local date). Each payment is
+        in the first settlement after it became available; a refund of a settled
+        payment comes out of a later settlement's amount, not out of its list.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page. Opaque.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of settlements.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettlementList"
+        "400":
+          description: "`invalid_limit` or `invalid_cursor`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
   /v1/events:
     get:
       operationId: listEvents
@@ -770,6 +839,55 @@ components:
               format: date-time
               nullable: true
               description: When it was delivered or given up.
+
+    Balance:
+      type: object
+      additionalProperties: false
+      required: [available, pending, reserved]
+      properties:
+        available:
+          $ref: "#/components/schemas/Money"
+        pending:
+          $ref: "#/components/schemas/Money"
+        reserved:
+          $ref: "#/components/schemas/Money"
+
+    SettlementList:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Settlement"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass it as `cursor` for the next page; null on the last page.
+
+    Settlement:
+      type: object
+      additionalProperties: false
+      required: [id, cutoff_date, amount, payments, created_at]
+      properties:
+        id:
+          type: string
+          pattern: "^stl_[0-9a-z]{26}$"
+        cutoff_date:
+          type: string
+          format: date
+          description: The São Paulo local date the settlement belongs to.
+        amount:
+          $ref: "#/components/schemas/Money"
+        payments:
+          type: array
+          description: The payments that became available for this settlement.
+          items:
+            $ref: "#/components/schemas/PaymentId"
+        created_at:
+          type: string
+          format: date-time
 
     PaymentList:
       type: object

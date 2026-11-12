@@ -232,3 +232,18 @@ RETURNING *;
 
 -- name: MarkSettled :exec
 UPDATE payments SET settlement_id = @settlement_id WHERE id = ANY(@ids::uuid[]);
+
+-- name: ListSettlements :many
+-- Keyset pagination on settlements_merchant_id_cutoff_date_key: newest cutoff first,
+-- each page starts below the last cutoff of the previous one, unique per merchant.
+SELECT * FROM settlements
+WHERE merchant_id = @merchant_id
+  AND (sqlc.narg(before)::date IS NULL OR cutoff_date < sqlc.narg(before))
+ORDER BY cutoff_date DESC
+LIMIT @max_rows::bigint;
+
+-- name: SettlementPayments :many
+-- On payments_settlement (migration 00020).
+SELECT settlement_id, id FROM payments
+WHERE settlement_id = ANY(@settlement_ids::uuid[])
+ORDER BY settlement_id, id;
