@@ -25,6 +25,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
+	paymentsdomain "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/config"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
@@ -43,6 +44,9 @@ const (
 	attemptResolverInterval = time.Second
 	// refundResolverInterval is attemptResolverInterval for refunds.
 	refundResolverInterval = time.Second
+	// settlementInterval is how soon after the local midnight a cutoff is settled; a
+	// cutoff already settled is not taken again.
+	settlementInterval = time.Minute
 	// inboxInterval paces the inbox; a pending event's own backoff is in its row.
 	inboxInterval = time.Second
 	// expiryInterval is how often expired quotes are looked for; a payment the provider
@@ -91,6 +95,11 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	store, provider := paymentsadapters.NewPostgres(pool, paymentSinks()), paymentsadapters.NewPixSim(pixsimClient)
 	resolver := paymentsapp.NewResolver(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
 	expirer := paymentsapp.NewExpirer(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
+	policy, err := paymentsdomain.DefaultSettlementPolicy()
+	if err != nil {
+		return fmt.Errorf("settlement: %w", err)
+	}
+	settler := paymentsapp.NewSettler(store, policy, clock.System{}, logger)
 	refunds := paymentsapp.NewRefundResolver(
 		paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, provider, clock.System{}, logger, cfg.ProviderTimeout), store)
 	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks()}, clock.System{}, logger)
@@ -104,14 +113,14 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 
 	logger.Info("worker started")
-	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, refunds, expirer, inbox, deliverer, logger)...); err != nil {
+	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, refunds, expirer, settler, inbox, deliverer, logger)...); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")
 	return nil
 }
 
-func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, refunds *paymentsapp.RefundResolver, expirer *paymentsapp.Expirer, inbox *eventsapp.Processor, deliverer *webhooksapp.Deliverer, logger *slog.Logger) []worker.Job {
+func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, refunds *paymentsapp.RefundResolver, expirer *paymentsapp.Expirer, settler *paymentsapp.Settler, inbox *eventsapp.Processor, deliverer *webhooksapp.Deliverer, logger *slog.Logger) []worker.Job {
 	keys := idempotencyapp.NewService(idempotencyadapters.NewPostgres(pool), clock.System{}, rand.Reader)
 	return []worker.Job{
 		worker.Every("idempotency-cleanup", idempotencyCleanupInterval, logger, func(ctx context.Context) error {
@@ -139,6 +148,12 @@ func jobs(pool *pgxpool.Pool, resolver *paymentsapp.Resolver, refunds *paymentsa
 		worker.Every("payment-expiry", expiryInterval, logger, func(ctx context.Context) error {
 			if _, err := expirer.Expire(ctx, paymentsapp.ExpiryBatch); err != nil {
 				return fmt.Errorf("expiry: %w", err)
+			}
+			return nil
+		}),
+		worker.Every("settlement", settlementInterval, logger, func(ctx context.Context) error {
+			if _, err := settler.Settle(ctx); err != nil {
+				return fmt.Errorf("settlement: %w", err)
 			}
 			return nil
 		}),

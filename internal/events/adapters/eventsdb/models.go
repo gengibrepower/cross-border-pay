@@ -107,6 +107,8 @@ type Payment struct {
 	UpdatedAt     pgtype.Timestamptz
 	Version       int32
 	ExpiryCheckAt pgtype.Timestamptz
+	PaidAt        pgtype.Timestamptz
+	SettlementID  pgtype.UUID
 }
 
 type PaymentAttempt struct {
@@ -174,6 +176,15 @@ type ReviewCase struct {
 	Status          string
 	CreatedAt       pgtype.Timestamptz
 	ResolvedAt      pgtype.Timestamptz
+}
+
+type Settlement struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+	CutoffDate pgtype.Date
+	Amount     int64
+	Currency   string
+	CreatedAt  pgtype.Timestamptz
 }
 
 type WebhookEndpoint struct {

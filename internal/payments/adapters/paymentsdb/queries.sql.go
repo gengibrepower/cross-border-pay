@@ -278,7 +278,7 @@ func (q *Queries) GetMerchantRefund(ctx context.Context, arg GetMerchantRefundPa
 }
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at FROM payments WHERE merchant_id = $1 AND id = $2
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id FROM payments WHERE merchant_id = $1 AND id = $2
 `
 
 type GetPaymentParams struct {
@@ -302,6 +302,8 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.UpdatedAt,
 		&i.Version,
 		&i.ExpiryCheckAt,
+		&i.PaidAt,
+		&i.SettlementID,
 	)
 	return i, err
 }
@@ -424,6 +426,42 @@ func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) (Ref
 	return i, err
 }
 
+const insertSettlement = `-- name: InsertSettlement :one
+INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, created_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (merchant_id, cutoff_date) DO NOTHING
+RETURNING id, merchant_id, cutoff_date, amount, currency, created_at
+`
+
+type InsertSettlementParams struct {
+	MerchantID pgtype.UUID
+	CutoffDate pgtype.Date
+	Amount     int64
+	Currency   string
+	CreatedAt  pgtype.Timestamptz
+}
+
+// No row when the cutoff is already settled: a concurrent run got there first.
+func (q *Queries) InsertSettlement(ctx context.Context, arg InsertSettlementParams) (Settlement, error) {
+	row := q.db.QueryRow(ctx, insertSettlement,
+		arg.MerchantID,
+		arg.CutoffDate,
+		arg.Amount,
+		arg.Currency,
+		arg.CreatedAt,
+	)
+	var i Settlement
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.CutoffDate,
+		&i.Amount,
+		&i.Currency,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const latestAttempts = `-- name: LatestAttempts :many
 SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at FROM payment_attempts
 WHERE payment_id = ANY($1::uuid[])
@@ -463,7 +501,7 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 }
 
 const listPayments = `-- name: ListPayments :many
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at FROM payments
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id FROM payments
 WHERE merchant_id = $1
   AND ($2::uuid IS NULL OR id < $2)
   AND ($3::text IS NULL OR status = $3)
@@ -507,6 +545,8 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 			&i.UpdatedAt,
 			&i.Version,
 			&i.ExpiryCheckAt,
+			&i.PaidAt,
+			&i.SettlementID,
 		); err != nil {
 			return nil, err
 		}
@@ -748,6 +788,66 @@ func (q *Queries) LockRefundablePayment(ctx context.Context, arg LockRefundableP
 	return i, err
 }
 
+const lockSettleablePayments = `-- name: LockSettleablePayments :many
+SELECT p.id FROM payments AS p
+WHERE p.merchant_id = $1 AND p.paid_at IS NOT NULL AND p.settlement_id IS NULL
+    AND p.paid_at < CASE p.method
+        WHEN 'pix' THEN $2::timestamptz
+        WHEN 'boleto' THEN $3::timestamptz
+        ELSE $4::timestamptz END
+ORDER BY p.id
+FOR NO KEY UPDATE
+`
+
+type LockSettleablePaymentsParams struct {
+	MerchantID   pgtype.UUID
+	PixBefore    pgtype.Timestamptz
+	BoletoBefore pgtype.Timestamptz
+	CardBefore   pgtype.Timestamptz
+}
+
+// The merchant's confirmed payments available by the cutoff and in no settlement yet,
+// each method by its own availability (decision 25). Locked first, before the ledger,
+// in the order every path takes: payment, then accounts.
+func (q *Queries) LockSettleablePayments(ctx context.Context, arg LockSettleablePaymentsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockSettleablePayments,
+		arg.MerchantID,
+		arg.PixBefore,
+		arg.BoletoBefore,
+		arg.CardBefore,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markSettled = `-- name: MarkSettled :exec
+UPDATE payments SET settlement_id = $1 WHERE id = ANY($2::uuid[])
+`
+
+type MarkSettledParams struct {
+	SettlementID pgtype.UUID
+	Ids          []pgtype.UUID
+}
+
+func (q *Queries) MarkSettled(ctx context.Context, arg MarkSettledParams) error {
+	_, err := q.db.Exec(ctx, markSettled, arg.SettlementID, arg.Ids)
+	return err
+}
+
 const newEventID = `-- name: NewEventID :one
 SELECT uuidv7()::uuid AS id
 `
@@ -759,6 +859,44 @@ func (q *Queries) NewEventID(ctx context.Context) (pgtype.UUID, error) {
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const pendingNet = `-- name: PendingNet :one
+SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
+FROM payments AS p
+JOIN quotes AS q ON q.id = p.quote_id
+CROSS JOIN LATERAL (
+    SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
+    WHERE payment_id = p.id AND status <> 'rejected'
+) AS r
+WHERE p.merchant_id = $1 AND p.paid_at IS NOT NULL
+    AND p.paid_at >= CASE p.method
+        WHEN 'pix' THEN $2::timestamptz
+        WHEN 'boleto' THEN $3::timestamptz
+        ELSE $4::timestamptz END
+`
+
+type PendingNetParams struct {
+	MerchantID   pgtype.UUID
+	PixBefore    pgtype.Timestamptz
+	BoletoBefore pgtype.Timestamptz
+	CardBefore   pgtype.Timestamptz
+}
+
+// What the merchant's payable holds for payments not available yet: each one's net,
+// less its refunds that still count. Every refund takes its amount from the payable
+// when created and only a rejection gives it back (migration 00017), so this is
+// exactly their share of the payable's balance.
+func (q *Queries) PendingNet(ctx context.Context, arg PendingNetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, pendingNet,
+		arg.MerchantID,
+		arg.PixBefore,
+		arg.BoletoBefore,
+		arg.CardBefore,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const rescheduleAttempt = `-- name: RescheduleAttempt :execrows
@@ -795,6 +933,56 @@ func (q *Queries) RescheduleRefund(ctx context.Context, arg RescheduleRefundPara
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setPaidAt = `-- name: SetPaidAt :exec
+UPDATE payments SET paid_at = $1 WHERE id = $2
+`
+
+type SetPaidAtParams struct {
+	PaidAt pgtype.Timestamptz
+	ID     pgtype.UUID
+}
+
+func (q *Queries) SetPaidAt(ctx context.Context, arg SetPaidAtParams) error {
+	_, err := q.db.Exec(ctx, setPaidAt, arg.PaidAt, arg.ID)
+	return err
+}
+
+const settlementCandidates = `-- name: SettlementCandidates :many
+SELECT DISTINCT p.merchant_id FROM payments AS p
+WHERE p.paid_at IS NOT NULL AND p.merchant_id > $1
+    AND NOT EXISTS (SELECT 1 FROM settlements AS s WHERE s.merchant_id = p.merchant_id AND s.cutoff_date = $2)
+ORDER BY p.merchant_id
+LIMIT $3::bigint
+`
+
+type SettlementCandidatesParams struct {
+	After      pgtype.UUID
+	CutoffDate pgtype.Date
+	MaxRows    int64
+}
+
+// Merchants with confirmed money and no settlement for the cutoff yet, after the last
+// one seen, so a round pages through all of them.
+func (q *Queries) SettlementCandidates(ctx context.Context, arg SettlementCandidatesParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, settlementCandidates, arg.After, arg.CutoffDate, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var merchant_id pgtype.UUID
+		if err := rows.Scan(&merchant_id); err != nil {
+			return nil, err
+		}
+		items = append(items, merchant_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const succeededAttempt = `-- name: SucceededAttempt :one
