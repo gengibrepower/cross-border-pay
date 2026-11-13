@@ -34,6 +34,8 @@ var expectedAttempt = map[domain.AttemptStatus]map[domain.AttemptEvent]attemptWa
 	domain.AttemptAccepted: {
 		domain.Accept:  {duplicate, domain.AttemptAccepted},
 		domain.Succeed: {moves, domain.AttemptSucceeded},
+		// A lost capture answer.
+		domain.Ambiguous: {moves, domain.AttemptUnknown},
 	},
 	domain.AttemptRejected: {
 		domain.Reject: {duplicate, domain.AttemptRejected},

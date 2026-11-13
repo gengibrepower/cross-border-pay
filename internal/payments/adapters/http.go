@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -28,6 +29,7 @@ type Payments interface {
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
 	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
+	Capture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money) (app.Priced, error)
 }
 
 // MerchantFunc returns the authenticated merchant; cmd/api wires it to the merchants
@@ -54,6 +56,7 @@ func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handle
 	mux.Handle("GET /v1/payments", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/payments/{id}", auth(http.HandlerFunc(h.get)))
 	mux.Handle("POST /v1/payments/{id}/cancel", auth(http.HandlerFunc(h.cancel)))
+	mux.Handle("POST /v1/payments/{id}/capture", auth(http.HandlerFunc(h.capture)))
 	mux.Handle("POST /v1/payments/{id}/refunds", auth(idempotent(http.HandlerFunc(h.refund))))
 	mux.Handle("GET /v1/balance", auth(http.HandlerFunc(h.balance)))
 	mux.Handle("GET /v1/settlements", auth(http.HandlerFunc(h.settlements)))
@@ -68,8 +71,14 @@ type createRequest struct {
 
 // cardRequest carries only a token: a card number is refused before it is read.
 type cardRequest struct {
-	Token string `json:"token"`
+	Token         string `json:"token"`
+	CaptureMethod string `json:"capture_method"`
 }
+
+const (
+	captureAutomatic = "automatic"
+	captureManual    = "manual"
+)
 
 type quoteResponse struct {
 	PayerAmount money.Money `json:"payer_amount"`
@@ -127,7 +136,19 @@ func newPixResponse(a *domain.PaymentAttempt) *pixResponse {
 
 // cardResponse shows where the card stands without the attempt's internal statuses.
 type cardResponse struct {
-	Status cardStatus `json:"status"`
+	Status        cardStatus `json:"status"`
+	CaptureMethod string     `json:"capture_method"`
+	// Captured is what the capture took, set once the card is captured.
+	Captured *capturedResponse `json:"captured,omitempty"`
+}
+
+// capturedResponse is the quote of what was captured: for a partial capture, the part
+// priced at the payment's locked rate, with the fee on what was taken.
+type capturedResponse struct {
+	Amount      money.Money `json:"amount"`
+	PayerAmount money.Money `json:"payer_amount"`
+	Fee         money.Money `json:"fee"`
+	NetAmount   money.Money `json:"net_amount"`
 }
 
 type cardStatus string
@@ -137,24 +158,37 @@ const (
 	cardAuthorized cardStatus = "authorized"
 	cardCaptured   cardStatus = "captured"
 	cardDeclined   cardStatus = "declined"
+	// cardReleased is an authorization of a payment canceled or expired before capture.
+	cardReleased cardStatus = "released"
 )
 
-func newCardResponse(a *domain.PaymentAttempt) *cardResponse {
+func newCardResponse(priced *app.Priced) *cardResponse {
+	a := priced.Attempt
 	if a == nil {
 		return nil
 	}
+	resp := &cardResponse{Status: cardProcessing, CaptureMethod: captureAutomatic}
+	if a.Card().ManualCapture {
+		resp.CaptureMethod = captureManual
+	}
 	switch a.Status() {
 	case domain.AttemptAccepted:
-		return &cardResponse{Status: cardAuthorized}
+		resp.Status = cardAuthorized
+		if priced.Payment.Status() != domain.Pending {
+			resp.Status = cardReleased
+		}
 	case domain.AttemptSucceeded:
-		return &cardResponse{Status: cardCaptured}
+		took := &priced.Quote
+		if priced.Captured != nil {
+			took = priced.Captured
+		}
+		resp.Status = cardCaptured
+		resp.Captured = &capturedResponse{Amount: took.Amount(), PayerAmount: took.PayerAmount(), Fee: took.Fee(), NetAmount: took.MerchantNet()}
 	case domain.AttemptRejected:
-		return &cardResponse{Status: cardDeclined}
+		resp.Status = cardDeclined
 	case domain.AttemptCreated, domain.AttemptSent, domain.AttemptUnknown:
-		return &cardResponse{Status: cardProcessing}
-	default:
-		return &cardResponse{Status: cardProcessing}
 	}
+	return resp
 }
 
 type listResponse struct {
@@ -196,9 +230,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	create := app.CreateRequest{Method: req.Method, Amount: *req.Amount, Reference: req.Reference}
 	if req.Card != nil {
-		create.CardToken = req.Card.Token
-		if create.CardToken == "" {
+		if req.Card.Token == "" {
 			writeProblem(w, r, http.StatusBadRequest, "invalid_request", "card.token is required")
+			return
+		}
+		create.Card.Token = req.Card.Token
+		switch req.Card.CaptureMethod {
+		case "", captureAutomatic:
+		case captureManual:
+			create.Card.ManualCapture = true
+		default:
+			writeProblem(w, r, http.StatusBadRequest, "invalid_request", "card.capture_method must be automatic or manual")
 			return
 		}
 	}
@@ -256,6 +298,55 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusConflict, "payment_not_cancelable", "only a pending payment can be canceled")
 	case errors.Is(err, app.ErrProviderUnavailable):
 		writeProblem(w, r, http.StatusServiceUnavailable, "provider_unavailable", "the provider could not confirm the payment is unpaid; nothing changed, retry later")
+	default:
+		httpapi.WriteInternalError(w, r, h.logger, err)
+	}
+}
+
+type captureRequest struct {
+	Amount *money.Money `json:"amount"`
+}
+
+// capture needs no Idempotency-Key: an authorization is captured once, so a retry of
+// the same capture gets the same payment, and a capture of another amount is a 409.
+func (h *Handler) capture(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := h.authenticated(w, r)
+	if !ok {
+		return
+	}
+	id, err := domain.ParsePaymentID(r.PathValue("id"))
+	if err != nil {
+		writeNotFound(w, r)
+		return
+	}
+	var req captureRequest
+	// The body is optional: none captures the whole payment.
+	if r.ContentLength != 0 {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			h.decodeError(w, r, err)
+			return
+		}
+	}
+	p, err := h.payments.Capture(r.Context(), merchant, id, req.Amount)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, newPaymentResponse(&p))
+	case errors.Is(err, app.ErrPaymentNotFound):
+		writeNotFound(w, r)
+	case errors.Is(err, domain.ErrCaptureExceedsAuthorization):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "capture_exceeds_authorization", "amount must be at most the payment's amount")
+	case errors.Is(err, domain.ErrInvalidAmount), errors.Is(err, money.ErrCurrencyMismatch):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_amount", "amount must be positive and in the payment's currency")
+	case errors.Is(err, app.ErrCaptureConflict):
+		writeProblem(w, r, http.StatusConflict, "capture_amount_conflict", "this payment is already captured, or being captured, for another amount")
+	case errors.Is(err, app.ErrCaptureInProgress):
+		writeProblem(w, r, http.StatusConflict, "capture_in_progress", "the card's answer is not known yet; fetch the payment again later")
+	case errors.Is(err, app.ErrAuthorizationExpired):
+		writeProblem(w, r, http.StatusConflict, "authorization_expired", "the authorization expired; create a new payment")
+	case errors.Is(err, app.ErrNotCapturable):
+		writeProblem(w, r, http.StatusConflict, "payment_not_capturable", "only an authorized card payment that is still pending can be captured")
 	default:
 		httpapi.WriteInternalError(w, r, h.logger, err)
 	}
@@ -366,7 +457,7 @@ func newPaymentResponse(priced *app.Priced) paymentResponse {
 	case domain.Pix:
 		resp.Pix = newPixResponse(priced.Attempt)
 	case domain.Card:
-		resp.Card = newCardResponse(priced.Attempt)
+		resp.Card = newCardResponse(priced)
 	case domain.Boleto:
 	}
 	return resp

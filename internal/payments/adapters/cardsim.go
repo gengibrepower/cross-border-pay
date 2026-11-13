@@ -24,12 +24,13 @@ func NewCardSim(client *cardsim.Client) *CardSim {
 
 func (*CardSim) Name() domain.ProviderName { return CardSimName }
 
-// CreateAttempt authorizes and captures at once, decision 18's default.
+// CreateAttempt authorizes, and captures at once unless the merchant captures later
+// (decision 18).
 func (p *CardSim) CreateAttempt(ctx context.Context, req *app.AttemptRequest) (app.AttemptResult, error) {
 	if req.Method != domain.Card {
 		return app.AttemptResult{}, fmt.Errorf("cardsim: method %s is not card", req.Method)
 	}
-	a, err := p.client.Authorize(ctx, req.Attempt.String(), cardsim.Authorize{Amount: req.Amount, Token: req.CardToken, Capture: true})
+	a, err := p.client.Authorize(ctx, req.Attempt.String(), cardsim.Authorize{Amount: req.Amount, Token: req.Card.Token, Capture: !req.Card.ManualCapture})
 	if err != nil {
 		return app.AttemptResult{}, fmt.Errorf("cardsim: create attempt %s: %w", req.Attempt, err)
 	}
@@ -57,13 +58,31 @@ func authorizationResult(a *cardsim.Authorization) (app.AttemptResult, error) {
 			return app.AttemptResult{}, fmt.Errorf("cardsim: authorization %s is captured without a time", a.ID)
 		}
 		r.Outcome, r.Amount, r.PaidAt = app.Succeeded, a.Captured, a.CapturedAt.UTC()
-	case cardsim.Declined, cardsim.Expired:
-		// Expired is an authorization nobody captured: no money moved, as a decline.
+	case cardsim.Declined, cardsim.Expired, cardsim.Voided:
+		// Expired and voided are authorizations nobody captured: no money moved.
 		r.Outcome = app.Rejected
 	default:
 		return app.AttemptResult{}, fmt.Errorf("cardsim: authorization %s has unknown status %q", a.ID, a.Status)
 	}
 	return r, nil
+}
+
+func (p *CardSim) Capture(ctx context.Context, req *app.CaptureRequest) (app.AttemptResult, error) {
+	a, err := p.client.Capture(ctx, req.Authorization, cardsim.Capture{Amount: req.Amount})
+	if errors.Is(err, cardsim.ErrNotCapturable) {
+		return app.AttemptResult{}, fmt.Errorf("cardsim: capture %s: %w: %w", req.Attempt, app.ErrCaptureRefused, err)
+	}
+	if err != nil {
+		return app.AttemptResult{}, fmt.Errorf("cardsim: capture %s: %w", req.Attempt, err)
+	}
+	return authorizationResult(&a)
+}
+
+func (p *CardSim) Void(ctx context.Context, req *app.CaptureRequest) error {
+	if _, err := p.client.Void(ctx, req.Authorization); err != nil {
+		return fmt.Errorf("cardsim: void %s: %w", req.Attempt, err)
+	}
+	return nil
 }
 
 func (p *CardSim) Refund(ctx context.Context, req *app.RefundRequest) (app.RefundResult, error) {

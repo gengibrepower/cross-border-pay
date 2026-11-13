@@ -198,6 +198,39 @@ func TestCaptureOnceWithinTheValidity(t *testing.T) {
 	}
 }
 
+// A void releases a live authorization once; nothing captured or closed is voided,
+// and a voided authorization cannot be captured.
+func TestVoidReleasesOnlyALiveAuthorization(t *testing.T) {
+	c, clk := newSim(t, 1)
+	a := authorize(t, c, "k", cardsim.TokenApproved, false)
+	got, err := c.Void(t.Context(), a.ID)
+	if err != nil || got.Status != cardsim.Voided {
+		t.Fatalf("Void() = %+v, %v; want voided", got, err)
+	}
+	if again, err := c.Void(t.Context(), a.ID); err != nil || again.Status != cardsim.Voided {
+		t.Errorf("Void() again = %s, %v; want the same voided authorization", again.Status, err)
+	}
+	if _, err := c.Capture(t.Context(), a.ID, cardsim.Capture{Amount: brl(10150)}); !errors.Is(err, cardsim.ErrNotCapturable) {
+		t.Errorf("capture of a voided authorization error = %v, want %v", err, cardsim.ErrNotCapturable)
+	}
+	if got, err := c.Get(t.Context(), "k"); err != nil || got.Status != cardsim.Voided {
+		t.Errorf("Get() = %s, %v; want voided", got.Status, err)
+	}
+
+	captured := authorize(t, c, "captured", cardsim.TokenApproved, true)
+	declined := authorize(t, c, "declined", cardsim.TokenDeclined, false)
+	expired := authorize(t, c, "expired", cardsim.TokenApproved, false)
+	clk.Advance(cardsim.AuthorizationValidity)
+	for _, id := range []string{captured.ID, declined.ID, expired.ID} {
+		if _, err := c.Void(t.Context(), id); !errors.Is(err, cardsim.ErrNotVoidable) {
+			t.Errorf("Void(%s) error = %v, want %v", id, err, cardsim.ErrNotVoidable)
+		}
+	}
+	if _, err := c.Void(t.Context(), "auth_none"); !errors.Is(err, cardsim.ErrNotFound) {
+		t.Errorf("Void(unknown) error = %v, want %v", err, cardsim.ErrNotFound)
+	}
+}
+
 // Invariant 8 on the simulator's side: concurrent refunds never return more than was
 // captured, and a refusal is stored for the lookup.
 func TestConcurrentRefundsNeverPassTheCapture(t *testing.T) {

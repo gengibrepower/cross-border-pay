@@ -26,7 +26,14 @@ type cardPayment struct {
 	Status string `json:"status"`
 	Method string `json:"method"`
 	Card   *struct {
-		Status string `json:"status"`
+		Status        string `json:"status"`
+		CaptureMethod string `json:"capture_method"`
+		Captured      *struct {
+			Amount      struct{ Value int64 } `json:"amount"`
+			PayerAmount struct{ Value int64 } `json:"payer_amount"`
+			Fee         struct{ Value int64 } `json:"fee"`
+			NetAmount   struct{ Value int64 } `json:"net_amount"`
+		} `json:"captured"`
 	} `json:"card"`
 	Pix   *json.RawMessage `json:"pix"`
 	Quote struct {
@@ -182,7 +189,7 @@ func TestResumedCardCreateUsesTheStoredToken(t *testing.T) {
 	c := newContract(t)
 	key := c.merchantKey()
 	body := cardBody(cardsim.TokenApproved)
-	_, crashed := c.crashedCreateOf(key, "order-123", body, "card", cardsim.TokenApproved, paymentsadapters.CardSimName)
+	_, crashed := c.crashedCreateOf(key, "order-123", body, "card", payments.CardInput{Token: cardsim.TokenApproved}, paymentsadapters.CardSimName)
 
 	c.clock.Advance(idempotency.Lease)
 	p := cardOf(t, c.do(postPayment(t, key, "order-123", body), true))

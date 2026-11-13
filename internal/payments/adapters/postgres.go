@@ -72,7 +72,7 @@ func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain
 		if err != nil {
 			return fmt.Errorf("insert payment: %w", err)
 		}
-		attempt, err = insertAttempt(ctx, queries, id.Bytes, provider, d.CardToken(), q.CreatedAt())
+		attempt, err = insertAttempt(ctx, queries, id.Bytes, provider, d.Card(), q.CreatedAt())
 		if err != nil {
 			return err
 		}
@@ -129,10 +129,13 @@ func (p *Postgres) List(ctx context.Context, merchant domain.MerchantID, q app.L
 }
 
 func (p *Postgres) withDetails(ctx context.Context, rows []paymentsdb.Payment) ([]app.Priced, error) {
-	quoteIDs := make([]fx.QuoteID, len(rows))
+	quoteIDs := make([]fx.QuoteID, 0, len(rows))
 	paymentIDs := make([]pgtype.UUID, len(rows))
 	for i := range rows {
-		quoteIDs[i] = rows[i].QuoteID.Bytes
+		quoteIDs = append(quoteIDs, rows[i].QuoteID.Bytes)
+		if rows[i].CapturedQuoteID.Valid {
+			quoteIDs = append(quoteIDs, rows[i].CapturedQuoteID.Bytes)
+		}
 		paymentIDs[i] = rows[i].ID
 	}
 	quotes, err := fxadapters.LoadQuotes(ctx, p.pool, quoteIDs)
@@ -163,6 +166,13 @@ func (p *Postgres) withDetails(ctx context.Context, rows []paymentsdb.Payment) (
 			return nil, fmt.Errorf("payments: quote %x of payment %s is missing", rows[i].QuoteID.Bytes, payment.ID())
 		}
 		priced[i] = app.Priced{Payment: payment, Quote: quote, Attempt: attempts[rows[i].ID.Bytes]}
+		if rows[i].CapturedQuoteID.Valid {
+			captured, ok := quotes[rows[i].CapturedQuoteID.Bytes]
+			if !ok {
+				return nil, fmt.Errorf("payments: captured quote %x of payment %s is missing", rows[i].CapturedQuoteID.Bytes, payment.ID())
+			}
+			priced[i].Captured = &captured
+		}
 	}
 	return priced, nil
 }

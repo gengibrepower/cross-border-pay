@@ -95,35 +95,37 @@ type OutboxEvent struct {
 }
 
 type Payment struct {
-	ID            pgtype.UUID
-	MerchantID    pgtype.UUID
-	QuoteID       pgtype.UUID
-	Status        string
-	Method        string
-	Amount        int64
-	Currency      string
-	Reference     string
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
-	Version       int32
-	ExpiryCheckAt pgtype.Timestamptz
-	PaidAt        pgtype.Timestamptz
-	SettlementID  pgtype.UUID
+	ID              pgtype.UUID
+	MerchantID      pgtype.UUID
+	QuoteID         pgtype.UUID
+	Status          string
+	Method          string
+	Amount          int64
+	Currency        string
+	Reference       string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	Version         int32
+	ExpiryCheckAt   pgtype.Timestamptz
+	PaidAt          pgtype.Timestamptz
+	SettlementID    pgtype.UUID
+	CapturedQuoteID pgtype.UUID
 }
 
 type PaymentAttempt struct {
-	ID          pgtype.UUID
-	PaymentID   pgtype.UUID
-	Provider    string
-	Status      string
-	ExternalID  pgtype.Text
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	BrCode      pgtype.Text
-	Checks      int32
-	NextCheckAt pgtype.Timestamptz
-	EscalatedAt pgtype.Timestamptz
-	CardToken   pgtype.Text
+	ID            pgtype.UUID
+	PaymentID     pgtype.UUID
+	Provider      string
+	Status        string
+	ExternalID    pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	BrCode        pgtype.Text
+	Checks        int32
+	NextCheckAt   pgtype.Timestamptz
+	EscalatedAt   pgtype.Timestamptz
+	CardToken     pgtype.Text
+	ManualCapture bool
 }
 
 type Quote struct {

@@ -61,22 +61,22 @@ const (
 // PixQuoteValidity is decision 44 for PIX.
 const PixQuoteValidity = 30 * time.Minute
 
-// CardQuoteValidity bounds a card payment's quote. Decision 44 prices a card at the
-// moment of its authorization, and with automatic capture (decision 18) the payment
-// is authorized and captured as it is created, so the quote is used at once; a
-// declined card leaves the payment pending and it expires as a PIX one would.
+// CardQuoteValidity bounds a card payment captured automatically. Decision 44 prices a
+// card at the moment of its authorization, and with automatic capture (decision 18)
+// the payment is authorized and captured as it is created, so the quote is used at
+// once; a declined card leaves the payment pending and it expires as a PIX one would.
 const CardQuoteValidity = 30 * time.Minute
 
-// QuoteValidity is how long a payment of the method may wait for its payer.
-func QuoteValidity(m Method) time.Duration {
-	switch m {
-	case Card:
-		return CardQuoteValidity
-	case Pix, Boleto:
-		return PixQuoteValidity
-	default:
-		return PixQuoteValidity
-	}
+// CardAuthorizationValidity is how long an authorization waits for its capture
+// (decision 52). A payment captured separately keeps its quote that long: the rate is
+// locked when the card is authorized, and the capture only says how much of it to take.
+const CardAuthorizationValidity = 7 * 24 * time.Hour
+
+// CardInput is the payer's card as a merchant gives it: a token, never a number, and
+// whether the merchant captures it later instead of at once.
+type CardInput struct {
+	Token         string
+	ManualCapture bool
 }
 
 // ParseMethod accepts every method the domain knows. Whether one is offered is the
@@ -96,17 +96,17 @@ type Draft struct {
 	method    Method
 	amount    money.Money
 	reference string
-	cardToken string
+	card      CardInput
 }
 
-// NewDraft validates a payment request. cardToken is the fictitious token of the
-// payer's card, required for a card payment and refused for any other.
-func NewDraft(merchant MerchantID, method string, amount money.Money, reference, cardToken string) (Draft, error) {
+// NewDraft validates a payment request. card is required for a card payment and
+// refused for any other.
+func NewDraft(merchant MerchantID, method string, amount money.Money, reference string, card CardInput) (Draft, error) {
 	m, err := ParseMethod(method)
 	if err != nil {
 		return Draft{}, err
 	}
-	if err := checkCardToken(m, cardToken); err != nil {
+	if err := checkCard(m, card); err != nil {
 		return Draft{}, err
 	}
 	if amount.Currency() != ChargeCurrency {
@@ -118,18 +118,18 @@ func NewDraft(merchant MerchantID, method string, amount money.Money, reference,
 	if n := utf8.RuneCountInString(reference); n < 1 || n > 100 {
 		return Draft{}, fmt.Errorf("%w: got %d", ErrInvalidReference, n)
 	}
-	return Draft{merchant: merchant, method: m, amount: amount, reference: reference, cardToken: cardToken}, nil
+	return Draft{merchant: merchant, method: m, amount: amount, reference: reference, card: card}, nil
 }
 
-func checkCardToken(m Method, token string) error {
+func checkCard(m Method, card CardInput) error {
 	switch {
-	case m != Card && token != "":
+	case m != Card && card != (CardInput{}):
 		return ErrCardNotAllowed
 	case m != Card:
 		return nil
-	case token == "":
+	case card.Token == "":
 		return ErrCardRequired
-	case !ValidCardToken(token):
+	case !ValidCardToken(card.Token):
 		return ErrInvalidCardToken
 	}
 	return nil
@@ -158,8 +158,21 @@ func (d *Draft) Amount() money.Money { return d.amount }
 
 func (d *Draft) Reference() string { return d.reference }
 
-// CardToken is empty unless the method is card.
-func (d *Draft) CardToken() string { return d.cardToken }
+// Card is the zero value unless the method is card.
+func (d *Draft) Card() CardInput { return d.card }
+
+// QuoteValidity is how long the payment may wait for its payer: for a card captured
+// separately, as long as the authorization lasts.
+func (d *Draft) QuoteValidity() time.Duration {
+	switch {
+	case d.method == Card && d.card.ManualCapture:
+		return CardAuthorizationValidity
+	case d.method == Card:
+		return CardQuoteValidity
+	default:
+		return PixQuoteValidity
+	}
+}
 
 // Payment is a stored payment. Its status only changes through Transition.
 type Payment struct {

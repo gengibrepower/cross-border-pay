@@ -39,6 +39,8 @@ const (
 	// Expired is an authorization never captured within AuthorizationValidity: the
 	// hold is gone and nothing was charged.
 	Expired Status = "expired"
+	// Voided is an authorization released before capture: the hold is gone at once.
+	Voided Status = "voided"
 )
 
 type Authorization struct {
@@ -93,6 +95,7 @@ const (
 	OpAuthorize Op = "authorize"
 	OpGet       Op = "get"
 	OpCapture   Op = "capture"
+	OpVoid      Op = "void"
 	OpRefund    Op = "refund"
 	OpGetRefund Op = "get_refund"
 )
@@ -101,7 +104,7 @@ const (
 // authorization, and a refusal the acquirer's to a refund; a capture of a live
 // authorization is never refused, only cut short.
 var (
-	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpRefund, OpGetRefund}
+	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpVoid, OpRefund, OpGetRefund}
 	Rejectable = []Op{OpAuthorize, OpRefund}
 )
 
@@ -116,6 +119,7 @@ const (
 const (
 	CodeNotFound       = "authorization_not_found"
 	CodeNotCapturable  = "authorization_not_capturable"
+	CodeNotVoidable    = "authorization_not_voidable"
 	CodeRefundRejected = "refund_rejected"
 	CodeRefundNotFound = "refund_not_found"
 	CodeKeyReused      = simkit.CodeKeyReused

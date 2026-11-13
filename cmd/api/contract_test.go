@@ -80,6 +80,16 @@ func (p *countingProvider) CreateAttempt(ctx context.Context, req *paymentsapp.A
 	return p.Provider.CreateAttempt(ctx, req) //nolint:wrapcheck // a test double passes the provider's error through untouched.
 }
 
+// Capture and Void pass through to a provider that captures, so the wrapper does not
+// hide app.Capturer from the service.
+func (p *countingProvider) Capture(ctx context.Context, req *paymentsapp.CaptureRequest) (paymentsapp.AttemptResult, error) {
+	return p.Provider.(paymentsapp.Capturer).Capture(ctx, req) //nolint:wrapcheck,forcetypeassert // a test double; only the card provider is asked to capture.
+}
+
+func (p *countingProvider) Void(ctx context.Context, req *paymentsapp.CaptureRequest) error {
+	return p.Provider.(paymentsapp.Capturer).Void(ctx, req) //nolint:wrapcheck,forcetypeassert // a test double; only the card provider is asked to void.
+}
+
 // providerTimeout is short so that the timeout tests do not wait long.
 const providerTimeout = 300 * time.Millisecond
 
