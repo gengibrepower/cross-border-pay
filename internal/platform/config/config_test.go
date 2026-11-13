@@ -21,7 +21,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			vars: nil,
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 		{
 			name: "all set",
@@ -32,6 +32,7 @@ func TestLoad(t *testing.T) {
 				"DATABASE_URL":          "postgres://localhost/cbp",
 				"FX_USD_BRL_RATE":       "5.4321",
 				"PIXSIM_URL":            "http://pixsim:8090",
+				"CARDSIM_URL":           "http://cardsim:8091",
 				"PROVIDER_TIMEOUT":      "2s",
 				"PIXSIM_WEBHOOK_SECRET": "s3cret",
 				"WEBHOOK_SIGNING_KEY":   "0123456789abcdef0123456789abcdef",
@@ -45,6 +46,7 @@ func TestLoad(t *testing.T) {
 				DatabaseURL:         "postgres://localhost/cbp",
 				USDBRLRate:          "5.4321",
 				PixSimURL:           "http://pixsim:8090",
+				CardSimURL:          "http://cardsim:8091",
 				ProviderTimeout:     2 * time.Second,
 				PixSimWebhookSecret: "s3cret",
 				WebhookSigningKey:   "0123456789abcdef0123456789abcdef",
@@ -55,7 +57,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "level is case insensitive",
 			vars: map[string]string{"LOG_LEVEL": "WARN"},
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 	}
 	for _, tt := range tests {

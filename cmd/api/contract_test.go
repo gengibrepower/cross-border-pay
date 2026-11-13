@@ -30,6 +30,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
+	cardsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/cardsim/server"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	pixsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/pixsim/server"
 )
@@ -50,7 +52,10 @@ type contract struct {
 	// sim is the PIX simulator's client, for injecting faults and paying charges.
 	sim      *pixsim.Client
 	provider *countingProvider
-	deps     *deps
+	// card is the card simulator's client, and cardProvider its counted adapter.
+	card         *cardsim.Client
+	cardProvider *countingProvider
+	deps         *deps
 }
 
 // countingProvider counts the calls to create an attempt and can run a hook first,
@@ -107,6 +112,19 @@ func startPixSim(t *testing.T, c *clock.Fake, webhookURL string) *pixsim.Client 
 	return client
 }
 
+func startCardSim(t *testing.T, c *clock.Fake) *cardsim.Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	cardsimserver.New(&cardsimserver.Config{Seed: 1}, c, slog.New(slog.DiscardHandler)).Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client, err := cardsim.NewClient(srv.URL, &http.Client{Timeout: pixsim.DefaultTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
 func newContract(t *testing.T) *contract {
 	t.Helper()
 	loader := openapi3.NewLoader()
@@ -133,7 +151,11 @@ func newContract(t *testing.T) *contract {
 	t.Cleanup(hook.Close)
 	c.sim = startPixSim(t, fake, hook.URL+"/v1/providers/pixsim/events")
 	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
-	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{paymentsdomain.Pix: c.provider})
+	c.card = startCardSim(t, fake)
+	c.cardProvider = &countingProvider{Provider: paymentsadapters.NewCardSim(c.card)}
+	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
+		paymentsdomain.Pix: c.provider, paymentsdomain.Card: c.cardProvider,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

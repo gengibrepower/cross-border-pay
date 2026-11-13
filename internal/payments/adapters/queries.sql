@@ -17,8 +17,8 @@ ORDER BY id DESC
 LIMIT @max_rows::bigint;
 
 -- name: InsertAttempt :one
-INSERT INTO payment_attempts (payment_id, provider, status, created_at, updated_at)
-VALUES (@payment_id, @provider, 'created', @created_at, @created_at)
+INSERT INTO payment_attempts (payment_id, provider, status, card_token, created_at, updated_at)
+VALUES (@payment_id, @provider, 'created', sqlc.narg('card_token'), @created_at, @created_at)
 RETURNING *;
 
 -- name: GetAttempt :one

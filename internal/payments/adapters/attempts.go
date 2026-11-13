@@ -24,17 +24,18 @@ const (
 // CreateAttempt stores the intention to call the provider, in created. It returns
 // app.ErrLiveAttempt while the payment has an attempt that was not rejected.
 func (p *Postgres) CreateAttempt(ctx context.Context, payment domain.PaymentID, provider domain.ProviderName, now time.Time) (domain.PaymentAttempt, error) {
-	row, err := insertAttempt(ctx, paymentsdb.New(p.pool), payment, provider, now)
+	row, err := insertAttempt(ctx, paymentsdb.New(p.pool), payment, provider, "", now)
 	if err != nil {
 		return domain.PaymentAttempt{}, err
 	}
 	return restoreAttempt(&row)
 }
 
-func insertAttempt(ctx context.Context, q *paymentsdb.Queries, payment domain.PaymentID, provider domain.ProviderName, now time.Time) (paymentsdb.PaymentAttempt, error) {
+func insertAttempt(ctx context.Context, q *paymentsdb.Queries, payment domain.PaymentID, provider domain.ProviderName, cardToken string, now time.Time) (paymentsdb.PaymentAttempt, error) {
 	row, err := q.InsertAttempt(ctx, paymentsdb.InsertAttemptParams{
 		PaymentID: pgtype.UUID{Bytes: payment, Valid: true},
 		Provider:  string(provider),
+		CardToken: pgtype.Text{String: cardToken, Valid: cardToken != ""},
 		CreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 	})
 	var pgErr *pgconn.PgError
@@ -198,5 +199,5 @@ func restoreAttempt(row *paymentsdb.PaymentAttempt) (domain.PaymentAttempt, erro
 		return domain.PaymentAttempt{}, fmt.Errorf("payments: stored attempt %x: %w", row.ID.Bytes, err)
 	}
 	return domain.RestoreAttempt(row.ID.Bytes, row.PaymentID.Bytes, domain.ProviderName(row.Provider), status,
-		row.ExternalID.String, row.BrCode.String, row.CreatedAt.Time.UTC(), row.UpdatedAt.Time.UTC()), nil
+		row.ExternalID.String, row.BrCode.String, row.CardToken.String, row.CreatedAt.Time.UTC(), row.UpdatedAt.Time.UTC()), nil
 }

@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -19,6 +20,13 @@ var (
 	ErrInvalidAmount       = errors.New("payments: amount must be positive")
 	ErrInvalidReference    = errors.New("payments: reference must have 1 to 100 characters")
 	ErrInvalidPaymentID    = errors.New("payments: invalid payment ID")
+	// ErrCardRequired is a card payment without a card token, and ErrCardNotAllowed a
+	// card token on a payment of another method.
+	ErrCardRequired   = errors.New("payments: a card payment needs a card token")
+	ErrCardNotAllowed = errors.New("payments: only a card payment takes a card token")
+	// ErrInvalidCardToken is anything that is not a token, a card number included:
+	// no card number is ever accepted or stored (section 7, PCI DSS).
+	ErrInvalidCardToken = errors.New("payments: card token must be tok_ and 1 to 60 letters, digits or underscores")
 )
 
 // ChargeCurrency is the only currency merchants charge in; payers pay in BRL.
@@ -53,6 +61,24 @@ const (
 // PixQuoteValidity is decision 44 for PIX.
 const PixQuoteValidity = 30 * time.Minute
 
+// CardQuoteValidity bounds a card payment's quote. Decision 44 prices a card at the
+// moment of its authorization, and with automatic capture (decision 18) the payment
+// is authorized and captured as it is created, so the quote is used at once; a
+// declined card leaves the payment pending and it expires as a PIX one would.
+const CardQuoteValidity = 30 * time.Minute
+
+// QuoteValidity is how long a payment of the method may wait for its payer.
+func QuoteValidity(m Method) time.Duration {
+	switch m {
+	case Card:
+		return CardQuoteValidity
+	case Pix, Boleto:
+		return PixQuoteValidity
+	default:
+		return PixQuoteValidity
+	}
+}
+
 // ParseMethod accepts every method the domain knows. Whether one is offered is the
 // providers' call: a method with no provider routed is ErrUnsupportedMethod there.
 func ParseMethod(s string) (Method, error) {
@@ -70,11 +96,17 @@ type Draft struct {
 	method    Method
 	amount    money.Money
 	reference string
+	cardToken string
 }
 
-func NewDraft(merchant MerchantID, method string, amount money.Money, reference string) (Draft, error) {
+// NewDraft validates a payment request. cardToken is the fictitious token of the
+// payer's card, required for a card payment and refused for any other.
+func NewDraft(merchant MerchantID, method string, amount money.Money, reference, cardToken string) (Draft, error) {
 	m, err := ParseMethod(method)
 	if err != nil {
+		return Draft{}, err
+	}
+	if err := checkCardToken(m, cardToken); err != nil {
 		return Draft{}, err
 	}
 	if amount.Currency() != ChargeCurrency {
@@ -86,7 +118,36 @@ func NewDraft(merchant MerchantID, method string, amount money.Money, reference 
 	if n := utf8.RuneCountInString(reference); n < 1 || n > 100 {
 		return Draft{}, fmt.Errorf("%w: got %d", ErrInvalidReference, n)
 	}
-	return Draft{merchant: merchant, method: m, amount: amount, reference: reference}, nil
+	return Draft{merchant: merchant, method: m, amount: amount, reference: reference, cardToken: cardToken}, nil
+}
+
+func checkCardToken(m Method, token string) error {
+	switch {
+	case m != Card && token != "":
+		return ErrCardNotAllowed
+	case m != Card:
+		return nil
+	case token == "":
+		return ErrCardRequired
+	case !ValidCardToken(token):
+		return ErrInvalidCardToken
+	}
+	return nil
+}
+
+// ValidCardToken accepts "tok_" and 1 to 60 ASCII letters, digits or underscores.
+func ValidCardToken(token string) bool {
+	rest, ok := strings.CutPrefix(token, "tok_")
+	if !ok || len(rest) < 1 || len(rest) > 60 {
+		return false
+	}
+	for _, c := range rest {
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !letter && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Draft) Merchant() MerchantID { return d.merchant }
@@ -96,6 +157,9 @@ func (d *Draft) Method() Method { return d.method }
 func (d *Draft) Amount() money.Money { return d.amount }
 
 func (d *Draft) Reference() string { return d.reference }
+
+// CardToken is empty unless the method is card.
+func (d *Draft) CardToken() string { return d.cardToken }
 
 // Payment is a stored payment. Its status only changes through Transition.
 type Payment struct {

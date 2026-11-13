@@ -324,6 +324,25 @@ A lista mostra os eventos do lojista, do mais novo para o mais antigo, com curso
 </details>
 
 <details>
+<summary><b>Cartão</b> · 2 testes</summary>
+
+**Simulador de cartão (`cmd/cardsim`)**
+
+Um adquirente sobre HTTP de verdade, com autorizações em memória e as falhas do `internal/providers/simkit`, compartilhado com o simulador PIX. Só chega a ele um token fictício, nunca um número de cartão: `tok_approved` é capturado, `tok_declined` e `tok_insufficient_funds` são recusados, e qualquer outro token é recusado como inválido. Uma autorização é capturada uma vez, até o valor autorizado: a mesma captura de novo recebe a mesma resposta, outro valor é recusado, e 7 dias depois (decisão 52) ela expirou, seja quem for que leia primeiro. Os estornos mantêm a invariante 8 do lado do adquirente, e uma recusa fica guardada para a consulta.
+
+**Resultado:** 50 estornos concorrentes de R$ 10,00 sobre R$ 101,50: exatamente 10 concluídos. A mesma seed e 50 keys mandadas em paralelo na ordem inversa dão as mesmas autorizações que mandadas uma a uma. Um `timeout_after` autoriza e a consulta pela key acha; um `500` não é recusa nem negação. 5/5 execuções com `-race`.
+
+---
+
+**Cobrança por cartão na criação (`POST /v1/payments`, decisão 18)**
+
+`method: card` com `card.token` é autorizado e capturado enquanto a cobrança é criada, então o `201` já vem `paid` com `card.status: captured`, os lançamentos da GameStore feitos e `payment.paid` no outbox, byte a byte igual ao `GET` e a uma repetição. O payments escolhe o provedor pelo meio (`pix` → `pixsim`, `card` → `cardsim`) e, depois que existe uma tentativa, pelo nome gravado com ela, então o estorno volta pelo adquirente que capturou. O token fica guardado com a tentativa, recusado por um `CHECK` se não for token, para que um request que morreu antes de chamar o adquirente seja completado pela repetição. Uma recusa é um `201` pendente com `declined`; uma resposta perdida é `processing`, e o resolvedor acha a captura pela key da tentativa.
+
+**Resultado:** 6 testes contra Postgres real e os dois simuladores: capturada na criação, 3 recusas, 5 requests rejeitados que não gravam nada (um número de cartão entre eles), o resolvedor confirmando uma captura perdida com 1 autorização, uma criação retomada autorizando uma vez com o token guardado, e um estorno de cartão lançado como um de PIX. 6 mutantes mortos: não reler a cobrança paga, não capturar na hora, o token não enviado ou não guardado, uma recusa lida como erro e o estorno roteado pelo meio em vez da tentativa paga.
+
+</details>
+
+<details>
 <summary><b>Ponta a ponta</b> · 1 teste</summary>
 
 **Roteiro GameStore ponta a ponta (`e2e/`, seção 4.1)**
@@ -470,7 +489,17 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 </details>
 
 <details>
-<summary><b>Provedores e PIX</b> · 10 decisões</summary>
+<summary><b>Provedores, PIX e cartão</b> · 15 decisões</summary>
+
+- **Escolha do provedor:** Pelo meio, numa cobrança nova; depois, pelo nome gravado com a tentativa ou o estorno, para o dinheiro voltar por onde entrou.<br>*Descartado:* Um provedor para tudo: sem cartão nem boleto. Rotear toda chamada pelo meio: uma rota mudada num deploy mandaria um estorno a um provedor que nunca teve o dinheiro.
+
+- **Simulador de cartão:** Um adquirente separado, `cmd/cardsim`, com falhas, seed e assinatura compartilhadas pelo `internal/providers/simkit`.<br>*Descartado:* Endpoints de cartão dentro do `pixsim`: PIX e cartão pareceriam um provedor só, e o roteamento nunca seria testado.
+
+- **Dados do cartão:** Só um token fictício, guardado com a tentativa sob um `CHECK` que recusa qualquer outra coisa, para que uma repetição termine uma criação que morreu antes de chamar o adquirente.<br>*Descartado:* Um número de cartão: escopo PCI DSS (seção 7). Não guardar o token: uma criação interrompida nunca poderia ser completada.
+
+- **Resposta do cartão na criação:** Autorizado e capturado na hora (decisão 18), então o `201` é relido e mostra a cobrança `paid`.<br>*Descartado:* Responder `pending` e confirmar depois: o lojista esperaria uma notícia que o gateway já tem.
+
+- **Cotação do cartão:** 30 minutos enquanto a captura é automática: a cotação é usada na criação, e um cartão recusado expira como uma cobrança PIX.<br>*Descartado:* Os 7 dias de uma autorização: um cartão recusado ficaria pendente por uma semana. Esses 7 dias chegam com a captura separada.
 
 - **Resultado ambíguo do provedor:** A tentativa vai para `unknown` e é resolvida consultando o provedor ativamente (`GetAttempt` com backoff), com eventos e conciliação como rede de segurança.<br>*Descartado:* Tratar timeout como falha: o provedor pode ter cobrado o pagador.
 
@@ -642,6 +671,7 @@ mise run migrate      # aplica as migrations embutidas
 # cria um lojista; imprime a API key uma única vez
 go run ./cmd/admin merchant create -name GameStore -mode test
 mise run pixsim       # simulador PIX em :8090
+mise run cardsim      # simulador de cartão em :8091
 go run ./cmd/api      # API em :8080
 go run ./cmd/worker   # jobs em segundo plano
 ```
@@ -652,8 +682,9 @@ O worker aplica os eventos do inbox, resolve tentativas e estornos `unknown`, ex
 |---|---|---|
 | `DATABASE_URL` | definida pelo mise | O Postgres do `mise run db` |
 | `FX_USD_BRL_RATE` | `5.0000` | Taxa base (API, worker) |
-| `PIXSIM_URL` | `http://localhost:8090` | Onde está o simulador |
-| `PIXSIM_SEED` | `1` | Seed de toda escolha aleatória do simulador |
+| `PIXSIM_URL` | `http://localhost:8090` | Onde está o simulador PIX |
+| `CARDSIM_URL` | `http://localhost:8091` | Onde está o simulador de cartão |
+| `PIXSIM_SEED`, `CARDSIM_SEED` | `1` | Seed de toda escolha aleatória de cada simulador |
 | `PIXSIM_WEBHOOK_URL` | definida pelo mise | Para onde o simulador manda os eventos: o inbox da API |
 | `PIXSIM_WEBHOOK_SECRET` | definida pelo mise | Assina os eventos do simulador; a API os verifica |
 | `WEBHOOK_SIGNING_KEY` | definida pelo mise | 32 bytes ou mais; deriva o segredo de webhook de cada lojista |
@@ -725,6 +756,7 @@ cmd/
   migrate/    aplica as migrations do goose embutidas
   admin/      tarefas de operação: criar lojista e API key, revogar chave
   pixsim/     simulador PIX: seed, falhas, "pagar agora", eventos
+  cardsim/    simulador de cartão: tokens, autorização, captura
 internal/
   money/      Money e Currency em minor units
   brcode/     BR Code do PIX: TLV EMV e CRC16, gerador e leitor
@@ -735,7 +767,7 @@ internal/
   events/     inbox do provedor e outbox
   webhooks/   entrega de webhooks aos lojistas
   reconciliation/ casos de revisão
-  providers/  clientes e simuladores de provedores (pixsim)
+  providers/  simuladores (pixsim, cardsim) e o que eles dividem (simkit)
   idempotency/ keys de idempotência: lock, lease, pontos de retomada
   platform/   config, logs, relógio, Postgres, HTTP, SSRF, IDs públicos
 api/          openapi.yaml, o contrato escrito à mão

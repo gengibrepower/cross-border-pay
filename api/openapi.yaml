@@ -15,7 +15,12 @@ paths:
   /v1/payments:
     post:
       operationId: createPayment
-      summary: Create a payment, priced in BRL by a quote valid for 30 minutes (PIX)
+      summary: Create a payment, priced in BRL by a quote valid for 30 minutes
+      description: |
+        A PIX payment comes back pending with its BR Code. A card payment is
+        authorized and captured as it is created (decision 18), so it comes back
+        `paid` with `card.status: captured`, or pending with `declined`. Boleto is
+        not available yet: `422 unsupported_method`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -24,10 +29,18 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreatePaymentRequest"
-            example:
-              amount: { value: 2000, currency: USD }
-              method: pix
-              reference: order-123
+            examples:
+              pix:
+                value:
+                  amount: { value: 2000, currency: USD }
+                  method: pix
+                  reference: order-123
+              card:
+                value:
+                  amount: { value: 2000, currency: USD }
+                  method: card
+                  reference: order-124
+                  card: { token: tok_approved }
       responses:
         "201":
           description: The payment, pending until the payer pays.
@@ -645,12 +658,30 @@ components:
         method:
           type: string
           enum: [pix, boleto, card]
-          description: Only pix is available now; boleto and card answer 422 until F8.
+          description: pix and card are available; boleto answers 422 `unsupported_method`.
         reference:
           type: string
           minLength: 1
           maxLength: 100
           description: The merchant's own reference, such as an order ID.
+        card:
+          $ref: "#/components/schemas/CardInput"
+
+    CardInput:
+      type: object
+      additionalProperties: false
+      required: [token]
+      description: >
+        Required for `method: card`, refused for any other (`card_required`,
+        `card_not_allowed`). Only a token is ever accepted, never a card number
+        (`invalid_card_token`). In test mode the token decides the issuer's answer:
+        `tok_approved` is captured, `tok_declined` and `tok_insufficient_funds` are
+        declined, and any other token is declined as invalid.
+      properties:
+        token:
+          type: string
+          minLength: 1
+          example: tok_approved
 
     Quote:
       type: object
@@ -923,6 +954,8 @@ components:
           $ref: "#/components/schemas/Quote"
         pix:
           $ref: "#/components/schemas/Pix"
+        card:
+          $ref: "#/components/schemas/Card"
         created_at:
           type: string
           format: date-time
@@ -943,6 +976,21 @@ components:
         br_code:
           type: string
           description: The BR Code (EMV payload with CRC16), present when status is ready.
+
+    Card:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: >
+        Where the card stands, on a card payment. `captured` means the money was
+        taken and the payment is paid. `processing` means the acquirer's answer is not
+        known yet: fetch the payment again later. `declined` means the issuer refused,
+        and this payment cannot be paid; create a new one. `authorized` is a hold not
+        captured yet, for the separate capture to come.
+      properties:
+        status:
+          type: string
+          enum: [processing, authorized, captured, declined]
 
     PutWebhookEndpointRequest:
       type: object

@@ -9,8 +9,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (Priced, error) {
-	draft, err := domain.NewDraft(merchant, method, amount, reference)
+func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, req *CreateRequest) (Priced, error) {
+	draft, err := domain.NewDraft(merchant, req.Method, req.Amount, req.Reference, req.CardToken)
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
@@ -18,7 +18,7 @@ func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, mer
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
-	quote, err := s.quoter.Quote(ctx, amount, money.BRL, domain.PixQuoteValidity)
+	quote, err := s.quoter.Quote(ctx, draft.Amount(), money.BRL, domain.QuoteValidity(draft.Method()))
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
@@ -69,6 +69,7 @@ func (s *Service) call(ctx context.Context, provider Provider, p *Priced, a *dom
 		Method:    p.Payment.Method(),
 		Amount:    p.Quote.PayerAmount(),
 		ExpiresAt: p.Quote.ExpiresAt(),
+		CardToken: a.CardToken(),
 	})
 	if err != nil {
 		s.logger.WarnContext(ctx, "provider answer is ambiguous; attempt goes to unknown",

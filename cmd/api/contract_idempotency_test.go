@@ -175,7 +175,7 @@ func TestRetryAfterACrashReturnsThePaymentAlreadyCreated(t *testing.T) {
 	quoter := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), c.clock, fx.DefaultPricing)
 	svc := paymentsapp.NewService(quoter, paymentsadapters.NewPostgres(c.pool, paymentSinks()), c.deps.providers, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
 	created, err := svc.Create(t.Context(), acquired.Held, payments.MerchantID(principal.MerchantID),
-		"pix", money.New(2000, money.USD), "order-123")
+		&paymentsapp.CreateRequest{Method: "pix", Amount: money.New(2000, money.USD), Reference: "order-123"})
 	if err != nil {
 		t.Fatal(err)
 	}

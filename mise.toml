@@ -74,3 +74,7 @@ run = "go run ./cmd/migrate"
 [tasks.pixsim]
 description = "Sobe o simulador PIX (PIXSIM_ADDR, padrão :8090; PIXSIM_SEED, padrão 1; eventos para PIXSIM_WEBHOOK_URL)"
 run = "go run ./cmd/pixsim"
+
+[tasks.cardsim]
+description = "Sobe o simulador de cartão (CARDSIM_ADDR, padrão :8091; CARDSIM_SEED, padrão 1)"
+run = "go run ./cmd/cardsim"
