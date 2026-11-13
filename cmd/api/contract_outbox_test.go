@@ -88,7 +88,7 @@ func TestPaymentExpiredMatchesTheContract(t *testing.T) {
 	key := c.merchantKey()
 	id, _ := c.createPayment(key)
 
-	expirer := paymentsapp.NewExpirer(paymentsadapters.NewPostgres(c.pool, paymentSinks()), c.provider, c.clock,
+	expirer := paymentsapp.NewExpirer(paymentsadapters.NewPostgres(c.pool, paymentSinks()), c.deps.providers, c.clock,
 		slog.New(slog.DiscardHandler), providerTimeout)
 	c.clock.Advance(payments.PixQuoteValidity - time.Microsecond)
 	if n, err := expirer.Expire(t.Context(), paymentsapp.ExpiryBatch); err != nil || n != 0 {

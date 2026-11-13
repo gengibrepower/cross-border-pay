@@ -38,14 +38,14 @@ type AttemptQueue interface {
 // (decision 17): never by repeating the call.
 type Resolver struct {
 	queue           AttemptQueue
-	provider        Provider
+	providers       *Providers
 	clock           Clock
 	logger          *slog.Logger
 	providerTimeout time.Duration
 }
 
-func NewResolver(queue AttemptQueue, provider Provider, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Resolver {
-	return &Resolver{queue: queue, provider: provider, clock: clock, logger: logger, providerTimeout: providerTimeout}
+func NewResolver(queue AttemptQueue, providers *Providers, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Resolver {
+	return &Resolver{queue: queue, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
 // Resolve checks one batch of due attempts and returns how many it claimed. One
@@ -80,8 +80,12 @@ func (r *Resolver) check(ctx context.Context, d *DueAttempt) error {
 		return nil
 	}
 
+	provider, err := r.providers.Named(a.Provider())
+	if err != nil {
+		return err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, r.providerTimeout)
-	result, err := r.provider.GetAttempt(callCtx, a.ID())
+	result, err := provider.GetAttempt(callCtx, a.ID())
 	cancel()
 	now = r.clock.Now()
 	switch {

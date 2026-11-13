@@ -24,7 +24,7 @@ import (
 // CreateRefund holds the payment's lock while it sums the refunds that count and
 // stores the new one, so concurrent refunds are priced one after another and never
 // pass what was paid together (invariant 8).
-func (p *Postgres) CreateRefund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money, provider domain.ProviderName, now time.Time) (domain.Refund, error) {
+func (p *Postgres) CreateRefund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money, now time.Time) (domain.Refund, error) {
 	var refund domain.Refund
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		q := paymentsdb.New(tx)
@@ -49,6 +49,12 @@ func (p *Postgres) CreateRefund(ctx context.Context, held *idempotency.Held, mer
 		if err != nil {
 			return err
 		}
+		// The money goes back through the provider that collected it.
+		paid, err := q.SucceededAttempt(ctx, pay.ID)
+		if err != nil {
+			return fmt.Errorf("paid attempt: %w", err)
+		}
+		provider := domain.ProviderName(paid.Provider)
 		counted, err := q.CountedRefunds(ctx, pay.ID)
 		if err != nil {
 			return fmt.Errorf("counted refunds: %w", err)

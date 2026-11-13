@@ -21,8 +21,9 @@ func TestNewDraft(t *testing.T) {
 	}{
 		{"pix", "pix", usd(2000), "order-123", nil},
 		{"100-character reference", "pix", usd(1), strings.Repeat("é", 100), nil},
-		{"boleto until F8", "boleto", usd(2000), "o", domain.ErrUnsupportedMethod},
-		{"card until F8", "card", usd(2000), "o", domain.ErrUnsupportedMethod},
+		// Whether a method is offered is the providers' call, not the draft's.
+		{"boleto", "boleto", usd(2000), "o", nil},
+		{"card", "card", usd(2000), "o", nil},
 		{"unknown method", "PIX", usd(2000), "o", domain.ErrUnknownMethod},
 		{"charged in BRL", "pix", money.New(2000, money.BRL), "o", domain.ErrUnsupportedCurrency},
 		{"zero", "pix", usd(0), "o", domain.ErrInvalidAmount},
@@ -36,7 +37,7 @@ func TestNewDraft(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("NewDraft() error = %v, want %v", err, tt.wantErr)
 			}
-			if err == nil && (d.Method() != domain.Pix || d.Amount() != tt.amount || d.Reference() != tt.reference) {
+			if err == nil && (d.Method() != domain.Method(tt.method) || d.Amount() != tt.amount || d.Reference() != tt.reference) {
 				t.Errorf("NewDraft() = %+v", d)
 			}
 		})

@@ -49,7 +49,7 @@ func newResolverEnv(t *testing.T) *resolverEnv {
 	provider := &countingGets{Provider: pix}
 	return &resolverEnv{
 		t: t, pool: pool, store: store, sim: sim, clock: c, provider: provider,
-		resolver: app.NewResolver(store, provider, c, slog.New(slog.DiscardHandler), 200*time.Millisecond),
+		resolver: app.NewResolver(store, pixOnly(t, provider), c, slog.New(slog.DiscardHandler), 200*time.Millisecond),
 	}
 }
 
@@ -302,4 +302,14 @@ func TestConcurrentResolversLookEachAttemptUpOnce(t *testing.T) {
 			t.Errorf("attempt %s ended %s, want accepted", id, s.status)
 		}
 	}
+}
+
+// pixOnly routes PIX, the only method these tests pay with, to the provider.
+func pixOnly(t *testing.T, p app.Provider) *app.Providers {
+	t.Helper()
+	providers, err := app.NewProviders(map[domain.Method]app.Provider{domain.Pix: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return providers
 }

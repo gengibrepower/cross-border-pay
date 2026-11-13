@@ -30,9 +30,9 @@ type RateSource interface {
 
 type RefundStore interface {
 	// CreateRefund locks the merchant's payment, prices the refund against the ones
-	// that still count, and stores it in created with its hold posted and the
-	// RefundRequested recovery point, or none of them.
-	CreateRefund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money, provider domain.ProviderName, now time.Time) (domain.Refund, error)
+	// that still count, and stores it in created, at the provider of the paid attempt,
+	// with its hold posted and the RefundRequested recovery point, or none of them.
+	CreateRefund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money, now time.Time) (domain.Refund, error)
 	// GetRefund returns ErrRefundNotFound unless the merchant owns the refund's payment.
 	GetRefund(ctx context.Context, merchant domain.MerchantID, id domain.RefundID) (domain.Refund, error)
 	// PaidAttempt is the attempt that collected the payment, whose charge a refund
@@ -50,14 +50,14 @@ type RefundStore interface {
 type Refunder struct {
 	rates           RateSource
 	store           RefundStore
-	provider        Provider
+	providers       *Providers
 	clock           Clock
 	logger          *slog.Logger
 	providerTimeout time.Duration
 }
 
-func NewRefunder(rates RateSource, store RefundStore, provider Provider, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Refunder {
-	return &Refunder{rates: rates, store: store, provider: provider, clock: clock, logger: logger, providerTimeout: providerTimeout}
+func NewRefunder(rates RateSource, store RefundStore, providers *Providers, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Refunder {
+	return &Refunder{rates: rates, store: store, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
 // Refund refunds amount of the payment under the idempotency key held. The rate that
@@ -71,7 +71,7 @@ func (r *Refunder) Refund(ctx context.Context, held *idempotency.Held, merchant 
 	var refund domain.Refund
 	switch held.RecoveryPoint {
 	case idempotency.Started:
-		refund, err = r.store.CreateRefund(ctx, held, merchant, payment, amount, r.provider.Name(), r.clock.Now())
+		refund, err = r.store.CreateRefund(ctx, held, merchant, payment, amount, r.clock.Now())
 	case RefundRequested:
 		refund, err = r.store.GetRefund(ctx, merchant, held.ResourceID)
 	default:
@@ -102,6 +102,10 @@ func (r *Refunder) send(ctx context.Context, refund *domain.Refund, rate fx.Rate
 		return domain.Refund{}, fmt.Errorf("refund has unknown status %q", refund.Status())
 	}
 
+	provider, err := r.providers.Named(refund.Provider())
+	if err != nil {
+		return domain.Refund{}, err
+	}
 	attempt, err := r.store.PaidAttempt(ctx, refund.Payment())
 	if err != nil {
 		return domain.Refund{}, fmt.Errorf("paid attempt: %w", err)
@@ -115,16 +119,16 @@ func (r *Refunder) send(ctx context.Context, refund *domain.Refund, rate fx.Rate
 		// one that moved it to sent calls the provider.
 		return sent, nil
 	}
-	u := r.call(ctx, &sent, attempt.ExternalID())
+	u := r.call(ctx, provider, &sent, attempt.ExternalID())
 	return r.apply(ctx, &sent, &u, rate)
 }
 
 // call asks the provider for the refund. Any error is ambiguous, never a refusal.
-func (r *Refunder) call(ctx context.Context, refund *domain.Refund, charge string) domain.RefundUpdate {
+func (r *Refunder) call(ctx context.Context, provider Provider, refund *domain.Refund, charge string) domain.RefundUpdate {
 	ctx, cancel := context.WithTimeout(ctx, r.providerTimeout)
 	defer cancel()
 	amounts := refund.Amounts()
-	result, err := r.provider.Refund(ctx, &RefundRequest{Refund: refund.ID(), Charge: charge, Amount: amounts.PayerAmount})
+	result, err := provider.Refund(ctx, &RefundRequest{Refund: refund.ID(), Charge: charge, Amount: amounts.PayerAmount})
 	if err != nil {
 		r.logger.WarnContext(ctx, "provider answer is ambiguous; refund goes to unknown",
 			"refund", refund.ID().String(), "provider", string(refund.Provider()), "error", err)

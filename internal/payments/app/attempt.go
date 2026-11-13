@@ -14,11 +14,15 @@ func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, mer
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
+	provider, err := s.providers.For(draft.Method())
+	if err != nil {
+		return Priced{}, fmt.Errorf("payments: create: %w", err)
+	}
 	quote, err := s.quoter.Quote(ctx, amount, money.BRL, domain.PixQuoteValidity)
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
-	p, err := s.store.Create(ctx, held, &draft, &quote, s.provider.Name())
+	p, err := s.store.Create(ctx, held, &draft, &quote, provider.Name())
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
@@ -41,21 +45,25 @@ func (s *Service) request(ctx context.Context, p *Priced) (domain.PaymentAttempt
 		return domain.PaymentAttempt{}, fmt.Errorf("attempt %s has unknown status %q", a.ID(), a.Status())
 	}
 
+	provider, err := s.providers.Named(a.Provider())
+	if err != nil {
+		return domain.PaymentAttempt{}, err
+	}
 	// Writing sent before the call is what makes created mean "not called".
 	sent, err := s.apply(ctx, &a, &domain.AttemptUpdate{Event: domain.Send})
 	if err != nil {
 		return domain.PaymentAttempt{}, err
 	}
-	u := s.call(ctx, p, &sent)
+	u := s.call(ctx, provider, p, &sent)
 	return s.apply(ctx, &sent, &u)
 }
 
 // call asks the provider for the attempt. Any error is ambiguous (section 4.3): the
 // provider may have acted before it failed, so the update is unknown, not a refusal.
-func (s *Service) call(ctx context.Context, p *Priced, a *domain.PaymentAttempt) domain.AttemptUpdate {
+func (s *Service) call(ctx context.Context, provider Provider, p *Priced, a *domain.PaymentAttempt) domain.AttemptUpdate {
 	ctx, cancel := context.WithTimeout(ctx, s.providerTimeout)
 	defer cancel()
-	result, err := s.provider.CreateAttempt(ctx, &AttemptRequest{
+	result, err := provider.CreateAttempt(ctx, &AttemptRequest{
 		Attempt:   a.ID(),
 		Payment:   p.Payment.ID(),
 		Method:    p.Payment.Method(),

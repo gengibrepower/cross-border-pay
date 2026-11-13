@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	ErrUnknownMethod       = errors.New("payments: unknown payment method")
+	ErrUnknownMethod = errors.New("payments: unknown payment method")
+	// ErrUnsupportedMethod is a known method no provider is routed to.
 	ErrUnsupportedMethod   = errors.New("payments: payment method not supported yet")
 	ErrUnsupportedCurrency = errors.New("payments: merchants charge in USD")
 	ErrInvalidAmount       = errors.New("payments: amount must be positive")
@@ -52,13 +53,12 @@ const (
 // PixQuoteValidity is decision 44 for PIX.
 const PixQuoteValidity = 30 * time.Minute
 
-// ParseMethod accepts only PIX until boleto and card arrive in F8.
+// ParseMethod accepts every method the domain knows. Whether one is offered is the
+// providers' call: a method with no provider routed is ErrUnsupportedMethod there.
 func ParseMethod(s string) (Method, error) {
 	switch m := Method(s); m {
-	case Pix:
+	case Pix, Boleto, Card:
 		return m, nil
-	case Boleto, Card:
-		return "", fmt.Errorf("%w: %s", ErrUnsupportedMethod, m)
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownMethod, s)
 	}
