@@ -15,7 +15,7 @@ var (
 )
 
 func attemptIn(status domain.AttemptStatus, externalID string) domain.PaymentAttempt {
-	return domain.RestoreAttempt(domain.AttemptID{1}, domain.PaymentID{2}, "pixsim", status, externalID, "", attemptCreatedAt, attemptCreatedAt)
+	return domain.RestoreAttempt(domain.AttemptID{1}, domain.PaymentID{2}, "pixsim", status, externalID, "", "", attemptCreatedAt, attemptCreatedAt)
 }
 
 func TestApplyMovesAndLearnsTheExternalID(t *testing.T) {

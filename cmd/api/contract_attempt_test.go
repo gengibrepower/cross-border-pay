@@ -176,6 +176,13 @@ func TestRetriesCallTheProviderOnce(t *testing.T) {
 // the payment with its attempt in created, and then died.
 func (c *contract) crashedCreate(merchantKey, idempotencyKey string) (*paymentsadapters.Postgres, paymentsapp.Priced) {
 	c.t.Helper()
+	return c.crashedCreateOf(merchantKey, idempotencyKey, gameStore, "pix", "", c.provider.Name())
+}
+
+// crashedCreateOf is crashedCreate for a payment of the body's method, which must be
+// the GameStore's US$ 20.00 in reference order-123.
+func (c *contract) crashedCreateOf(merchantKey, idempotencyKey, body, method, cardToken string, provider payments.ProviderName) (*paymentsadapters.Postgres, paymentsapp.Priced) {
+	c.t.Helper()
 	ctx := c.t.Context()
 	principal, err := merchantsapp.NewService(merchantsadapters.NewPostgres(c.pool), rand.Reader).Authenticate(ctx, merchantKey)
 	if err != nil {
@@ -183,7 +190,7 @@ func (c *contract) crashedCreate(merchantKey, idempotencyKey string) (*paymentsa
 	}
 	keys := idempotencyapp.NewService(idempotencyadapters.NewPostgres(c.pool), c.clock, rand.Reader)
 	req, err := idempotency.NewRequest(idempotency.MerchantID(principal.MerchantID), idempotencyKey,
-		idempotency.HashRequest(http.MethodPost, "/v1/payments", []byte(gameStore)))
+		idempotency.HashRequest(http.MethodPost, "/v1/payments", []byte(body)))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -196,16 +203,16 @@ func (c *contract) crashedCreate(merchantKey, idempotencyKey string) (*paymentsa
 		c.t.Fatal(err)
 	}
 	quote, err := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), c.clock, fx.DefaultPricing).
-		Quote(ctx, money.New(2000, money.USD), money.BRL, payments.PixQuoteValidity)
+		Quote(ctx, money.New(2000, money.USD), money.BRL, payments.QuoteValidity(payments.Method(method)))
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	draft, err := payments.NewDraft(payments.MerchantID(principal.MerchantID), "pix", money.New(2000, money.USD), "order-123")
+	draft, err := payments.NewDraft(payments.MerchantID(principal.MerchantID), method, money.New(2000, money.USD), "order-123", cardToken)
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
-	p, err := store.Create(ctx, acquired.Held, &draft, &quote, c.provider.Name())
+	p, err := store.Create(ctx, acquired.Held, &draft, &quote, provider)
 	if err != nil {
 		c.t.Fatal(err)
 	}

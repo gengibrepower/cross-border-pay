@@ -72,6 +72,8 @@ type AttemptRequest struct {
 	// Amount is what the payer pays, in the payer's currency.
 	Amount    money.Money
 	ExpiresAt time.Time
+	// CardToken is the payer's card, set for a card attempt.
+	CardToken string
 }
 
 type Outcome int
@@ -85,8 +87,8 @@ const (
 type AttemptResult struct {
 	Outcome    Outcome
 	ExternalID string
-	// Pix is set when an accepted PIX attempt returns its BR Code. Boleto and card get
-	// fields of their own in F8.
+	// Pix is set when an accepted PIX attempt returns its BR Code. A card attempt
+	// needs no instructions: the payer already gave the card.
 	Pix *PixInstructions
 	// PaidAt and Amount are when and how much the payer paid, for Succeeded.
 	PaidAt time.Time

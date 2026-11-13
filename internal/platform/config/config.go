@@ -30,6 +30,8 @@ type Config struct {
 	// PixSimURL is where the PIX simulator answers; every key mode uses it until a
 	// real provider arrives in F9.
 	PixSimURL string
+	// CardSimURL is where the card simulator answers, as PixSimURL for cards.
+	CardSimURL string
 	// ProviderTimeout bounds each call to a provider, below the server's write timeout
 	// so that the answer can still be stored and sent.
 	ProviderTimeout time.Duration
@@ -52,6 +54,7 @@ func Load(getenv func(string) string) (Config, error) {
 		ShutdownTimeout: 10 * time.Second,
 		USDBRLRate:      "5.0000",
 		PixSimURL:       "http://localhost:8090",
+		CardSimURL:      "http://localhost:8091",
 		ProviderTimeout: 5 * time.Second,
 		WebhookTimeout:  5 * time.Second,
 	}
@@ -90,6 +93,9 @@ func Load(getenv func(string) string) (Config, error) {
 
 	if v := getenv("PIXSIM_URL"); v != "" {
 		cfg.PixSimURL = v
+	}
+	if v := getenv("CARDSIM_URL"); v != "" {
+		cfg.CardSimURL = v
 	}
 
 	cfg.PixSimWebhookSecret = getenv("PIXSIM_WEBHOOK_SECRET")

@@ -24,7 +24,7 @@ import (
 const maxBodyBytes = 1 << 20
 
 type Payments interface {
-	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (app.Priced, error)
+	Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, req *app.CreateRequest) (app.Priced, error)
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
 	List(ctx context.Context, merchant domain.MerchantID, q app.ListQuery) (app.Page, error)
 	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (app.Priced, error)
@@ -63,6 +63,12 @@ type createRequest struct {
 	Amount    *money.Money `json:"amount"`
 	Method    string       `json:"method"`
 	Reference string       `json:"reference"`
+	Card      *cardRequest `json:"card"`
+}
+
+// cardRequest carries only a token: a card number is refused before it is read.
+type cardRequest struct {
+	Token string `json:"token"`
 }
 
 type quoteResponse struct {
@@ -81,6 +87,7 @@ type paymentResponse struct {
 	Reference string        `json:"reference"`
 	Quote     quoteResponse `json:"quote"`
 	Pix       *pixResponse  `json:"pix,omitempty"`
+	Card      *cardResponse `json:"card,omitempty"`
 	CreatedAt time.Time     `json:"created_at"`
 }
 
@@ -115,6 +122,38 @@ func newPixResponse(a *domain.PaymentAttempt) *pixResponse {
 		return &pixResponse{Status: pixProcessing}
 	default:
 		return &pixResponse{Status: pixProcessing}
+	}
+}
+
+// cardResponse shows where the card stands without the attempt's internal statuses.
+type cardResponse struct {
+	Status cardStatus `json:"status"`
+}
+
+type cardStatus string
+
+const (
+	cardProcessing cardStatus = "processing"
+	cardAuthorized cardStatus = "authorized"
+	cardCaptured   cardStatus = "captured"
+	cardDeclined   cardStatus = "declined"
+)
+
+func newCardResponse(a *domain.PaymentAttempt) *cardResponse {
+	if a == nil {
+		return nil
+	}
+	switch a.Status() {
+	case domain.AttemptAccepted:
+		return &cardResponse{Status: cardAuthorized}
+	case domain.AttemptSucceeded:
+		return &cardResponse{Status: cardCaptured}
+	case domain.AttemptRejected:
+		return &cardResponse{Status: cardDeclined}
+	case domain.AttemptCreated, domain.AttemptSent, domain.AttemptUnknown:
+		return &cardResponse{Status: cardProcessing}
+	default:
+		return &cardResponse{Status: cardProcessing}
 	}
 }
 
@@ -155,7 +194,15 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.payments.Create(r.Context(), held, merchant, req.Method, *req.Amount, req.Reference)
+	create := app.CreateRequest{Method: req.Method, Amount: *req.Amount, Reference: req.Reference}
+	if req.Card != nil {
+		create.CardToken = req.Card.Token
+		if create.CardToken == "" {
+			writeProblem(w, r, http.StatusBadRequest, "invalid_request", "card.token is required")
+			return
+		}
+	}
+	p, err := h.payments.Create(r.Context(), held, merchant, &create)
 	if err != nil {
 		h.createError(w, r, err)
 		return
@@ -300,7 +347,7 @@ func writeNotFound(w http.ResponseWriter, r *http.Request) {
 
 func newPaymentResponse(priced *app.Priced) paymentResponse {
 	p, q := &priced.Payment, &priced.Quote
-	return paymentResponse{
+	resp := paymentResponse{
 		ID:        p.ID().String(),
 		Status:    p.Status(),
 		Method:    p.Method(),
@@ -313,9 +360,16 @@ func newPaymentResponse(priced *app.Priced) paymentResponse {
 			NetAmount:   q.MerchantNet(),
 			ExpiresAt:   q.ExpiresAt(),
 		},
-		Pix:       newPixResponse(priced.Attempt),
 		CreatedAt: p.CreatedAt(),
 	}
+	switch p.Method() {
+	case domain.Pix:
+		resp.Pix = newPixResponse(priced.Attempt)
+	case domain.Card:
+		resp.Card = newCardResponse(priced.Attempt)
+	case domain.Boleto:
+	}
+	return resp
 }
 
 func (h *Handler) decodeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -335,7 +389,13 @@ func (h *Handler) decodeError(w http.ResponseWriter, r *http.Request, err error)
 func (h *Handler) createError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrUnsupportedMethod):
-		writeProblem(w, r, http.StatusUnprocessableEntity, "unsupported_method", "only pix is available for now")
+		writeProblem(w, r, http.StatusUnprocessableEntity, "unsupported_method", "this payment method is not available yet")
+	case errors.Is(err, domain.ErrCardRequired):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "card_required", "a card payment needs card.token")
+	case errors.Is(err, domain.ErrCardNotAllowed):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "card_not_allowed", "only a card payment takes a card")
+	case errors.Is(err, domain.ErrInvalidCardToken):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_card_token", "card.token must be a token such as tok_approved; card numbers are never accepted")
 	case errors.Is(err, domain.ErrUnknownMethod):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_method", "method must be pix, boleto or card")
 	case errors.Is(err, domain.ErrUnsupportedCurrency):

@@ -123,6 +123,7 @@ type PaymentAttempt struct {
 	Checks      int32
 	NextCheckAt pgtype.Timestamptz
 	EscalatedAt pgtype.Timestamptz
+	CardToken   pgtype.Text
 }
 
 type Quote struct {

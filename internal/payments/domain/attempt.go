@@ -43,15 +43,16 @@ type PaymentAttempt struct {
 	status     AttemptStatus
 	externalID string
 	brCode     string
+	cardToken  string
 	createdAt  time.Time
 	updatedAt  time.Time
 }
 
 // RestoreAttempt rebuilds an attempt from storage; only adapters call it.
-func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, status AttemptStatus, externalID, brCode string, createdAt, updatedAt time.Time) PaymentAttempt {
+func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, status AttemptStatus, externalID, brCode, cardToken string, createdAt, updatedAt time.Time) PaymentAttempt {
 	return PaymentAttempt{
 		id: id, payment: payment, provider: provider, status: status,
-		externalID: externalID, brCode: brCode, createdAt: createdAt, updatedAt: updatedAt,
+		externalID: externalID, brCode: brCode, cardToken: cardToken, createdAt: createdAt, updatedAt: updatedAt,
 	}
 }
 
@@ -68,6 +69,10 @@ func (a *PaymentAttempt) ExternalID() string { return a.externalID }
 
 // BRCode is the PIX code the payer pays, empty until the provider returns it.
 func (a *PaymentAttempt) BRCode() string { return a.brCode }
+
+// CardToken is the card a card attempt charges, stored with it so a request that died
+// before calling the provider can still be completed.
+func (a *PaymentAttempt) CardToken() string { return a.cardToken }
 
 func (a *PaymentAttempt) CreatedAt() time.Time { return a.createdAt }
 

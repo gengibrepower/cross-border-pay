@@ -324,6 +324,25 @@ The list shows the merchant's events, newest first, with an opaque cursor and a 
 </details>
 
 <details>
+<summary><b>Card</b> · 2 tests</summary>
+
+**Card simulator (`cmd/cardsim`)**
+
+An acquirer over real HTTP, with authorizations in memory and the faults of `internal/providers/simkit`, shared with the PIX simulator. Only a fictitious token reaches it, never a card number: `tok_approved` is captured, `tok_declined` and `tok_insufficient_funds` are declined, any other token is declined as invalid. An authorization is captured once, up to what was authorized: the same capture again gets the same answer, another amount is refused, and 7 days on (decision 52) it has expired, whoever reads it first. Refunds hold invariant 8 on the acquirer's side, and a refusal is stored for the lookup.
+
+**Result:** 50 concurrent refunds of R$ 10.00 on R$ 101.50: exactly 10 completed. The same seed and 50 keys sent concurrently in reverse order give the same authorizations as sent one by one. A `timeout_after` authorizes and the lookup by key finds it; a `500` is neither a decline nor a refusal. 5/5 runs with `-race`.
+
+---
+
+**Card payment on create (`POST /v1/payments`, decision 18)**
+
+`method: card` with `card.token` is authorized and captured as the payment is created, so the `201` is already `paid` with `card.status: captured`, the GameStore's books posted and `payment.paid` in the outbox, byte for byte the same as the `GET` and as a retry. The payments module picks the provider by method (`pix` → `pixsim`, `card` → `cardsim`) and, once an attempt exists, by the name stored with it, so a refund goes back through the acquirer that captured. The token is stored with the attempt, refused by a `CHECK` unless it is a token, so a request that died before calling the acquirer is completed by its retry. A decline is a `201` pending with `declined`; a lost answer is `processing`, and the resolver finds the capture by the attempt's key.
+
+**Result:** 6 tests against a real Postgres and both simulators: captured on create, 3 declines, 5 refused requests that store nothing (a card number among them), the resolver confirming a lost capture with 1 authorization, a resumed create authorizing once with the stored token, and a card refund posting as a PIX one. 6 mutants killed: not rereading the paid payment, not capturing at once, the token not sent or not stored, a decline read as an error and the refund routed by method instead of by the paid attempt.
+
+</details>
+
+<details>
 <summary><b>End to end</b> · 1 test</summary>
 
 **GameStore walkthrough end to end (`e2e/`, section 4.1)**
@@ -470,7 +489,17 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 </details>
 
 <details>
-<summary><b>Providers and PIX</b> · 10 decisions</summary>
+<summary><b>Providers, PIX and card</b> · 15 decisions</summary>
+
+- **Choosing the provider:** By method for a new payment; by the name stored with the attempt or refund afterwards, so money goes back where it came in.<br>*Discarded:* One provider for everything: no card or boleto. Routing every call by method: a route changed in a deploy would send a refund to a provider that never had the money.
+
+- **Card simulator:** A separate acquirer, `cmd/cardsim`, with faults, seed and signing shared through `internal/providers/simkit`.<br>*Discarded:* Card endpoints inside `pixsim`: PIX and card would look like one provider, and the routing would never be tested.
+
+- **Card data:** Only a fictitious token, kept with the attempt under a `CHECK` that refuses anything else, so a retried request can finish a create that died before calling the acquirer.<br>*Discarded:* A card number: PCI DSS scope (section 7). Not storing the token: a crashed create could never be completed.
+
+- **Card answer on create:** Authorized and captured at once (decision 18), so the `201` is reread and shows the payment `paid`.<br>*Discarded:* Answering `pending` and confirming later: the merchant would wait for news the gateway already has.
+
+- **Card quote:** 30 minutes while capture is automatic: the quote is used as the payment is created, and a declined card expires as a PIX payment does.<br>*Discarded:* The 7 days of an authorization: a declined card would sit pending for a week. Those 7 days come with the separate capture.
 
 - **Ambiguous provider result:** Attempt goes to `unknown` and is resolved by actively polling the provider (`GetAttempt` with backoff), with events and reconciliation as a safety net.<br>*Discarded:* Treating timeouts as failures: the provider may have charged the payer.
 
@@ -642,6 +671,7 @@ mise run migrate      # apply embedded migrations
 # create a merchant; prints its API key once
 go run ./cmd/admin merchant create -name GameStore -mode test
 mise run pixsim       # PIX simulator on :8090
+mise run cardsim      # card simulator on :8091
 go run ./cmd/api      # API on :8080
 go run ./cmd/worker   # background jobs
 ```
@@ -652,8 +682,9 @@ The worker applies inbox events, resolves `unknown` attempts and refunds, expire
 |---|---|---|
 | `DATABASE_URL` | set by mise | The Postgres of `mise run db` |
 | `FX_USD_BRL_RATE` | `5.0000` | Base rate (API, worker) |
-| `PIXSIM_URL` | `http://localhost:8090` | Where the simulator is |
-| `PIXSIM_SEED` | `1` | Seed of every random choice of the simulator |
+| `PIXSIM_URL` | `http://localhost:8090` | Where the PIX simulator is |
+| `CARDSIM_URL` | `http://localhost:8091` | Where the card simulator is |
+| `PIXSIM_SEED`, `CARDSIM_SEED` | `1` | Seed of every random choice of each simulator |
 | `PIXSIM_WEBHOOK_URL` | set by mise | Where the simulator posts its events: the API's inbox |
 | `PIXSIM_WEBHOOK_SECRET` | set by mise | Signs the simulator's events; the API verifies them |
 | `WEBHOOK_SIGNING_KEY` | set by mise | 32 bytes or more; derives each merchant's webhook secret |
@@ -725,6 +756,7 @@ cmd/
   migrate/    applies embedded goose migrations
   admin/      operator tasks: create a merchant and its API key, revoke a key
   pixsim/     PIX simulator: seed, faults, "pay now", events
+  cardsim/    card simulator: tokens, authorization, capture
 internal/
   money/      Money and Currency in minor units
   brcode/     PIX BR Code: EMV TLV and CRC16, encoder and parser
@@ -735,7 +767,7 @@ internal/
   events/     provider inbox and the outbox
   webhooks/   webhook delivery to merchants
   reconciliation/ review cases
-  providers/  provider clients and simulators (pixsim)
+  providers/  simulators (pixsim, cardsim) and what they share (simkit)
   idempotency/ idempotency keys: lock, lease, recovery points
   platform/   config, logs, clock, Postgres, HTTP, SSRF, public IDs
 api/          openapi.yaml, the hand-written contract

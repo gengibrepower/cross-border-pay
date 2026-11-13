@@ -32,6 +32,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/worker"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	webhooksadapters "github.com/gengibrepower/cross-border-pay/internal/webhooks/adapters"
 	webhooksapp "github.com/gengibrepower/cross-border-pay/internal/webhooks/app"
@@ -92,8 +93,13 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: PIXSIM_URL: %w", err)
 	}
+	cardsimClient, err := cardsim.NewClient(cfg.CardSimURL, &http.Client{Timeout: cfg.ProviderTimeout})
+	if err != nil {
+		return fmt.Errorf("config: CARDSIM_URL: %w", err)
+	}
 	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
-		paymentsdomain.Pix: paymentsadapters.NewPixSim(pixsimClient),
+		paymentsdomain.Pix:  paymentsadapters.NewPixSim(pixsimClient),
+		paymentsdomain.Card: paymentsadapters.NewCardSim(cardsimClient),
 	})
 	if err != nil {
 		return fmt.Errorf("providers: %w", err)

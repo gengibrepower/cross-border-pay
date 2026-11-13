@@ -50,6 +50,15 @@ type Priced struct {
 	Attempt *domain.PaymentAttempt
 }
 
+// CreateRequest is a merchant's request for a payment, before validation.
+type CreateRequest struct {
+	Method    string
+	Amount    money.Money
+	Reference string
+	// CardToken is the payer's card, for a card payment only.
+	CardToken string
+}
+
 type ListQuery struct {
 	// Status filters the list; the zero value lists every status.
 	Status domain.Status
@@ -99,11 +108,11 @@ func NewService(quoter Quoter, store Store, providers *Providers, clock Clock, l
 //	created  the provider was certainly not called yet: call it
 //	sent     it may have been called: mark unknown, never call again in the dark
 //	other    the answer is stored: return it
-func (s *Service) Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, method string, amount money.Money, reference string) (Priced, error) {
+func (s *Service) Create(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, req *CreateRequest) (Priced, error) {
 	var p Priced
 	switch held.RecoveryPoint {
 	case idempotency.Started:
-		created, err := s.createPayment(ctx, held, merchant, method, amount, reference)
+		created, err := s.createPayment(ctx, held, merchant, req)
 		if err != nil {
 			return Priced{}, err
 		}
@@ -126,6 +135,15 @@ func (s *Service) Create(ctx context.Context, held *idempotency.Held, merchant d
 	attempt, err := s.request(context.WithoutCancel(ctx), &p)
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
+	}
+	if attempt.Status() == domain.AttemptSucceeded {
+		// Paid as it was created, a card captured at once: the succeeded attempt
+		// confirmed the payment, and the answer shows it paid, as a GET would.
+		paid, err := s.store.Get(context.WithoutCancel(ctx), merchant, p.Payment.ID())
+		if err != nil {
+			return Priced{}, fmt.Errorf("payments: create: read paid payment: %w", err)
+		}
+		return paid, nil
 	}
 	p.Attempt = &attempt
 	return p, nil
