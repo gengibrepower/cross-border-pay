@@ -324,13 +324,13 @@ The list shows the merchant's events, newest first, with an opaque cursor and a 
 </details>
 
 <details>
-<summary><b>Card</b> · 2 tests</summary>
+<summary><b>Card</b> · 3 tests</summary>
 
 **Card simulator (`cmd/cardsim`)**
 
 An acquirer over real HTTP, with authorizations in memory and the faults of `internal/providers/simkit`, shared with the PIX simulator. Only a fictitious token reaches it, never a card number: `tok_approved` is captured, `tok_declined` and `tok_insufficient_funds` are declined, any other token is declined as invalid. An authorization is captured once, up to what was authorized: the same capture again gets the same answer, another amount is refused, and 7 days on (decision 52) it has expired, whoever reads it first. Refunds hold invariant 8 on the acquirer's side, and a refusal is stored for the lookup.
 
-**Result:** 50 concurrent refunds of R$ 10.00 on R$ 101.50: exactly 10 completed. The same seed and 50 keys sent concurrently in reverse order give the same authorizations as sent one by one. A `timeout_after` authorizes and the lookup by key finds it; a `500` is neither a decline nor a refusal. 5/5 runs with `-race`.
+**Result:** 50 concurrent refunds of R$ 10.00 on R$ 101.50: exactly 10 completed. The same seed and 50 keys sent concurrently in reverse order give the same authorizations as sent one by one. A `timeout_after` authorizes and the lookup by key finds it; a `500` is neither a decline nor a refusal. A void releases only a live authorization, once, and a voided one cannot be captured. 5/5 runs with `-race`.
 
 ---
 
@@ -339,6 +339,15 @@ An acquirer over real HTTP, with authorizations in memory and the faults of `int
 `method: card` with `card.token` is authorized and captured as the payment is created, so the `201` is already `paid` with `card.status: captured`, the GameStore's books posted and `payment.paid` in the outbox, byte for byte the same as the `GET` and as a retry. The payments module picks the provider by method (`pix` → `pixsim`, `card` → `cardsim`) and, once an attempt exists, by the name stored with it, so a refund goes back through the acquirer that captured. The token is stored with the attempt, refused by a `CHECK` unless it is a token, so a request that died before calling the acquirer is completed by its retry. A decline is a `201` pending with `declined`; a lost answer is `processing`, and the resolver finds the capture by the attempt's key.
 
 **Result:** 6 tests against a real Postgres and both simulators: captured on create, 3 declines, 5 refused requests that store nothing (a card number among them), the resolver confirming a lost capture with 1 authorization, a resumed create authorizing once with the stored token, and a card refund posting as a PIX one. 6 mutants killed: not rereading the paid payment, not capturing at once, the token not sent or not stored, a decline read as an error and the refund routed by method instead of by the paid attempt.
+
+
+---
+
+**Separate and partial capture (`POST /v1/payments/{id}/capture`, decisions 18 and 52)**
+
+`card.capture_method: manual` only authorizes: the payment is pending with `card.status: authorized`, its quote locked for the authorization's 7 days, and nothing is posted while the card is only held. The capture takes the whole payment, or a part of it: the part is priced again at the same locked rate and pricing, so the payer pays its BRL, the fee is charged on what was captured, never on what was only held, and the rest of the hold is released. That quote of what was captured is stored before the acquirer is called (`payments.captured_quote_id`), and everything that posts the payment's money reads it: the confirmation, the refunds, which stop at what was captured (invariant 8), and the balance. An authorization is captured once, so the endpoint needs no Idempotency-Key: the same capture again answers as it is, another amount is a `409`. A lost answer leaves the attempt `unknown` for the resolver, and a capture the acquirer never received can only be retried for the same amount, because the first could still arrive. Canceling an authorized payment voids it at once; one nobody captured expires with its quote.
+
+**Result:** 7 tests against a real Postgres and both simulators: a whole capture posting exactly the GameStore's R$ 101.50 and US$ 19.40, retried with no effect; US$ 15.00 of US$ 20.00 captured as R$ 76.12 with a US$ 0.45 fee, US$ 14.55 pending in the balance, a refund of US$ 15.01 refused and one of US$ 15.00 leaving the payment `refunded`; a lost capture confirmed by the resolver for the amount it stored; an uncertain capture refused for another amount and finished for the same one; a cancel that voids at the acquirer; an expiry after 7 days with nothing posted; and 8 refused captures. 14 mutants: 13 killed (the full refund compared with the amount asked for was a real bug, caught before it shipped), 1 equivalent.
 
 </details>
 
@@ -489,7 +498,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 </details>
 
 <details>
-<summary><b>Providers, PIX and card</b> · 15 decisions</summary>
+<summary><b>Providers, PIX and card</b> · 17 decisions</summary>
 
 - **Choosing the provider:** By method for a new payment; by the name stored with the attempt or refund afterwards, so money goes back where it came in.<br>*Discarded:* One provider for everything: no card or boleto. Routing every call by method: a route changed in a deploy would send a refund to a provider that never had the money.
 
@@ -499,7 +508,11 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Card answer on create:** Authorized and captured at once (decision 18), so the `201` is reread and shows the payment `paid`.<br>*Discarded:* Answering `pending` and confirming later: the merchant would wait for news the gateway already has.
 
-- **Card quote:** 30 minutes while capture is automatic: the quote is used as the payment is created, and a declined card expires as a PIX payment does.<br>*Discarded:* The 7 days of an authorization: a declined card would sit pending for a week. Those 7 days come with the separate capture.
+- **Card quote:** 30 minutes when capture is automatic, since the quote is used as the payment is created; the authorization's 7 days when the merchant captures later, since the rate is locked at the authorization.<br>*Discarded:* 7 days for every card: a declined card would sit pending for a week.
+
+- **Partial capture:** The captured part priced again at the locked rate, stored as its own quote that the books, refunds and balance read.<br>*Discarded:* Scaling the original quote's lines by the captured share: a fee and a spread that no longer come from their own formula, and a payer amount that may differ by a cent from the acquirer's. Repricing at today's rate: the payer would pay a rate never shown.
+
+- **Capture idempotency:** None needed: an authorization is captured once, so the same capture is answered as it is and another amount is a `409`, even after a capture the acquirer may not have received.<br>*Discarded:* An Idempotency-Key: a second key with another amount could capture twice.
 
 - **Ambiguous provider result:** Attempt goes to `unknown` and is resolved by actively polling the provider (`GetAttempt` with backoff), with events and reconciliation as a safety net.<br>*Discarded:* Treating timeouts as failures: the provider may have charged the payer.
 
@@ -710,7 +723,30 @@ curl -s "$API/v1/payments?limit=20&status=pending" \
   -H "Authorization: Bearer $KEY"
 # 200 {"data": [...], "next_cursor": null}
 # Pass next_cursor as ?cursor= for the next page.
+```
 
+A card authorized now and captured in part later (needs `mise run cardsim`):
+
+```sh
+curl -s $API/v1/payments -H "Authorization: Bearer $KEY" \
+  -H "Idempotency-Key: order-124" \
+  -d '{"amount": {"value": 2000, "currency": "USD"},
+       "method": "card", "reference": "order-124",
+       "card": {"token": "tok_approved",
+                "capture_method": "manual"}}'
+# 201 pending, card.status "authorized", quote valid 7 days
+
+curl -s -X POST $API/v1/payments/pay_.../capture \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"amount": {"value": 1500, "currency": "USD"}}'
+# 200 paid, card.captured: R$ 76.12, fee 45, net 1455
+# No body captures it all; without capture_method it is
+# captured on create and the 201 is already paid.
+```
+
+Balance and payouts:
+
+```sh
 curl -s $API/v1/balance -H "Authorization: Bearer $KEY"
 # 200 available, pending and reserved, in USD
 curl -s "$API/v1/settlements?limit=20" -H "Authorization: Bearer $KEY"
@@ -790,7 +826,7 @@ Not legal advice. Processing third-party money in Brazil requires Central Bank a
 
 ## Author
 
-**TODO: full name**, Computer Science student at PUCPR (Curitiba, Brazil).
+**Felipe Gegembauer**, Bachelor of Software Engineering student at PUCPR (Curitiba, Brazil).
 
 [GitHub](https://github.com/gengibrepower) · TODO: LinkedIn
 

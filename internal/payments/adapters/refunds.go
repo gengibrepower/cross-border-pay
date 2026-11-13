@@ -243,7 +243,7 @@ func (p *Postgres) EscalateRefund(ctx context.Context, id domain.RefundID, now t
 }
 
 // completeRefund posts the money gone back and moves the payment: refunded once the
-// refunds that succeeded add up to it, partially refunded before.
+// refunds that succeeded add up to what was paid, partially refunded before.
 func completeRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfRefundRow, refund *domain.Refund, rate fx.Rate, now time.Time) error {
 	quote, err := loadQuote(ctx, tx, pay.QuoteID.Bytes)
 	if err != nil {
@@ -266,8 +266,10 @@ func completeRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *payments
 	if err != nil {
 		return fmt.Errorf("succeeded refunds: %w", err)
 	}
+	// What was paid is the quote's amount: what a partial capture took, not what the
+	// payment asked for.
 	event := domain.RefundPartial
-	if succeeded == pay.Amount {
+	if succeeded == quote.Amount().Amount() {
 		event = domain.RefundFull
 	}
 	status, err := domain.ParseStatus(pay.Status)

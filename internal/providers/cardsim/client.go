@@ -16,6 +16,9 @@ var (
 	// ErrNotCapturable is a capture of an authorization that is declined, expired, or
 	// already captured with another amount, or of more than it holds.
 	ErrNotCapturable = errors.New("cardsim: authorization cannot be captured")
+	// ErrNotVoidable is a void of an authorization already captured, declined or
+	// expired.
+	ErrNotVoidable = errors.New("cardsim: authorization cannot be voided")
 	// ErrRefundRejected is the simulator refusing a refund for good; the refund is
 	// stored and GetRefund finds it rejected.
 	ErrRefundRejected = errors.New("cardsim: refund rejected")
@@ -59,6 +62,13 @@ func (c *Client) Capture(ctx context.Context, id string, req Capture) (Authoriza
 	return a, err
 }
 
+// Void releases an authorization not captured; voiding it again returns it as it is.
+func (c *Client) Void(ctx context.Context, id string) (Authorization, error) {
+	var a Authorization
+	err := c.c.Do(ctx, http.MethodPost, "/v1/authorizations/"+url.PathEscape(id)+"/void", "", nil, http.StatusOK, &a)
+	return a, err
+}
+
 // Refund returns amount of the captured authorization, once per key.
 func (c *Client) Refund(ctx context.Context, key, id string, req CreateRefund) (Refund, error) {
 	var r Refund
@@ -86,6 +96,8 @@ func problemError(status int, code string) error {
 		return ErrKeyReused
 	case status == http.StatusConflict && code == CodeNotCapturable:
 		return ErrNotCapturable
+	case status == http.StatusConflict && code == CodeNotVoidable:
+		return ErrNotVoidable
 	case status == http.StatusUnprocessableEntity && code == CodeRefundRejected:
 		return ErrRefundRejected
 	case status == http.StatusNotFound && code == CodeRefundNotFound:

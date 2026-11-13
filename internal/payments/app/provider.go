@@ -42,6 +42,28 @@ type Provider interface {
 	GetRefund(ctx context.Context, id domain.RefundID) (RefundResult, error)
 }
 
+// Capturer is a Provider whose attempts can be authorized now and captured later, a
+// card acquirer (decision 18).
+type Capturer interface {
+	// Capture takes the amount of an accepted attempt. A refusal, such as an
+	// authorization that expired, is ErrCaptureRefused; any other error is ambiguous.
+	Capture(ctx context.Context, req *CaptureRequest) (AttemptResult, error)
+	// Void releases an accepted attempt nothing was captured of, so the payer's limit
+	// comes back at once instead of when the authorization expires.
+	Void(ctx context.Context, req *CaptureRequest) error
+}
+
+// ErrCaptureRefused is the acquirer saying no to a capture: nothing was charged.
+var ErrCaptureRefused = errors.New("payments: provider refused the capture")
+
+type CaptureRequest struct {
+	Attempt domain.AttemptID
+	// Authorization is the provider's ID of the attempt, its ExternalID.
+	Authorization string
+	// Amount is what the capture takes, in the payer's currency; zero for a void.
+	Amount money.Money
+}
+
 type RefundRequest struct {
 	Refund domain.RefundID
 	// Charge is the provider's ID of the paid attempt, its ExternalID.
@@ -72,8 +94,8 @@ type AttemptRequest struct {
 	// Amount is what the payer pays, in the payer's currency.
 	Amount    money.Money
 	ExpiresAt time.Time
-	// CardToken is the payer's card, set for a card attempt.
-	CardToken string
+	// Card is the payer's card, set for a card attempt.
+	Card domain.CardInput
 }
 
 type Outcome int

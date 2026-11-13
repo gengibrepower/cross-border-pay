@@ -48,6 +48,8 @@ type Priced struct {
 	Payment domain.Payment
 	Quote   fx.Quote
 	Attempt *domain.PaymentAttempt
+	// Captured is the quote of what a separate capture took, nil until one started.
+	Captured *fx.Quote
 }
 
 // CreateRequest is a merchant's request for a payment, before validation.
@@ -55,8 +57,8 @@ type CreateRequest struct {
 	Method    string
 	Amount    money.Money
 	Reference string
-	// CardToken is the payer's card, for a card payment only.
-	CardToken string
+	// Card is the payer's card, for a card payment only.
+	Card domain.CardInput
 }
 
 type ListQuery struct {
@@ -86,6 +88,10 @@ type Store interface {
 	// the outbox. A payment already canceled is left as it is; any other status is
 	// domain.ErrInvalidTransition.
 	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, now time.Time) error
+	// PrepareCapture checks the merchant's payment can be captured for amount, the
+	// whole payment when nil, and stores the quote of what the capture takes before the
+	// acquirer is called. See Service.Capture for the answers.
+	PrepareCapture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money, now time.Time) (PreparedCapture, error)
 }
 
 type Service struct {
@@ -194,5 +200,12 @@ func (s *Service) Cancel(ctx context.Context, merchant domain.MerchantID, id dom
 	if err := s.store.Cancel(ctx, merchant, id, s.clock.Now()); err != nil {
 		return Priced{}, fmt.Errorf("payments: cancel %s: %w", id, err)
 	}
-	return s.Get(ctx, merchant, id)
+	canceled, err := s.Get(ctx, merchant, id)
+	if err != nil {
+		return Priced{}, err
+	}
+	if canceled.Attempt != nil {
+		s.void(context.WithoutCancel(ctx), canceled.Attempt)
+	}
+	return canceled, nil
 }

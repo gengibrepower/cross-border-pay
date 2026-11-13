@@ -19,8 +19,11 @@ paths:
       description: |
         A PIX payment comes back pending with its BR Code. A card payment is
         authorized and captured as it is created (decision 18), so it comes back
-        `paid` with `card.status: captured`, or pending with `declined`. Boleto is
-        not available yet: `422 unsupported_method`.
+        `paid` with `card.status: captured`, or pending with `declined`. With
+        `card.capture_method: manual` it is only authorized: pending with
+        `authorized`, its quote valid for the authorization's 7 days, until
+        `POST /v1/payments/{id}/capture`. Boleto is not available yet: `422
+        unsupported_method`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -206,6 +209,85 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
 
+  /v1/payments/{id}/capture:
+    post:
+      operationId: capturePayment
+      summary: Capture an authorized card payment, in whole or in part
+      description: |
+        For a card payment created with `card.capture_method: manual` (decision 18).
+        With no body, or no `amount`, the whole payment is captured. A smaller amount
+        is a partial capture: it is priced at the payment's locked rate, the fee is on
+        what was captured, the rest of the authorization is released, and refunds stop
+        at what was captured. An authorization is captured once and needs no
+        Idempotency-Key: the same capture again answers 200 with the payment as it is,
+        and another amount answers 409 `capture_amount_conflict`. If the acquirer's
+        answer is lost, the payment comes back pending with `card.status: processing`
+        until it is known.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PaymentId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapturePaymentRequest"
+            example:
+              amount: { value: 1500, currency: USD }
+      responses:
+        "200":
+          description: "The payment, `paid` with `card.status: captured`, or still pending with `processing`."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: No such payment, as for `GET /v1/payments/{id}`.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: |
+            `payment_not_capturable`: not an authorized card payment that is still
+            pending. `capture_amount_conflict`: already captured, or being captured, for
+            another amount. `capture_in_progress`: an earlier capture's answer is not
+            known yet. `authorization_expired`: 7 days passed (decision 52).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          $ref: "#/components/responses/Problem"
+        "422":
+          description: |
+            `capture_exceeds_authorization`: more than the payment's amount.
+            `invalid_amount`: not positive, or not in USD.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
   /v1/payments/{id}/refunds:
     post:
       operationId: refundPayment
@@ -682,6 +764,20 @@ components:
           type: string
           minLength: 1
           example: tok_approved
+        capture_method:
+          type: string
+          enum: [automatic, manual]
+          default: automatic
+          description: >
+            `manual` only authorizes; the merchant captures within 7 days, or cancels
+            to release the payer's limit at once.
+
+    CapturePaymentRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        amount:
+          $ref: "#/components/schemas/Money"
 
     Quote:
       type: object
@@ -980,17 +1076,38 @@ components:
     Card:
       type: object
       additionalProperties: false
-      required: [status]
       description: >
         Where the card stands, on a card payment. `captured` means the money was
         taken and the payment is paid. `processing` means the acquirer's answer is not
         known yet: fetch the payment again later. `declined` means the issuer refused,
-        and this payment cannot be paid; create a new one. `authorized` is a hold not
-        captured yet, for the separate capture to come.
+        and this payment cannot be paid; create a new one. `authorized` is a hold
+        waiting for `POST /v1/payments/{id}/capture`. `released` is an authorization
+        of a payment canceled or expired before capture.
+      required: [status, capture_method]
       properties:
         status:
           type: string
-          enum: [processing, authorized, captured, declined]
+          enum: [processing, authorized, captured, declined, released]
+        capture_method:
+          type: string
+          enum: [automatic, manual]
+        captured:
+          type: object
+          additionalProperties: false
+          required: [amount, payer_amount, fee, net_amount]
+          description: >
+            What the capture took, priced at the payment's rate. Equal to `quote` for a
+            whole capture; for a partial one, the fee and the net are on the captured
+            amount.
+          properties:
+            amount:
+              $ref: "#/components/schemas/Money"
+            payer_amount:
+              $ref: "#/components/schemas/Money"
+            fee:
+              $ref: "#/components/schemas/Money"
+            net_amount:
+              $ref: "#/components/schemas/Money"
 
     PutWebhookEndpointRequest:
       type: object

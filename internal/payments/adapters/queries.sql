@@ -17,8 +17,8 @@ ORDER BY id DESC
 LIMIT @max_rows::bigint;
 
 -- name: InsertAttempt :one
-INSERT INTO payment_attempts (payment_id, provider, status, card_token, created_at, updated_at)
-VALUES (@payment_id, @provider, 'created', sqlc.narg('card_token'), @created_at, @created_at)
+INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture, created_at, updated_at)
+VALUES (@payment_id, @provider, 'created', sqlc.narg('card_token'), @manual_capture, @created_at, @created_at)
 RETURNING *;
 
 -- name: GetAttempt :one
@@ -65,12 +65,13 @@ WHERE id = @id AND status IN ('sent', 'unknown');
 -- an attempt takes this lock first, then the attempt's, then the ledger's accounts, so
 -- no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
 -- update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
--- key check holds on the payment.
-SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id,
-    q.payer_amount, q.quote_currency
+-- key check holds on the payment. quote_id is the quote the money is posted with: what
+-- a capture took, once there is one.
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency,
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
-JOIN quotes AS q ON q.id = p.quote_id
+JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 WHERE a.id = @id
 FOR NO KEY UPDATE OF p;
 
@@ -114,7 +115,9 @@ SELECT uuidv7()::uuid AS id;
 -- name: LockRefundablePayment :one
 -- The refund's lock: every refund of a payment, and every confirmation, waits for it,
 -- so two refunds never sum what counts at the same time (invariant 8).
-SELECT id, merchant_id, status, version, amount, currency, quote_id FROM payments
+SELECT id, merchant_id, status, version, amount, currency,
+    coalesce(captured_quote_id, quote_id)::uuid AS quote_id
+FROM payments
 WHERE merchant_id = @merchant_id AND id = @id
 FOR NO KEY UPDATE;
 
@@ -140,7 +143,8 @@ WHERE r.id = @id AND p.merchant_id = @merchant_id;
 
 -- name: LockPaymentOfRefund :one
 -- The same lock order as attempts: payment, then the refund, then ledger accounts.
-SELECT p.id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id
+SELECT p.id, p.merchant_id, p.status, p.version, p.amount, p.currency,
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id
 FROM refunds AS r
 JOIN payments AS p ON p.id = r.payment_id
 WHERE r.id = @id
@@ -212,7 +216,7 @@ FOR NO KEY UPDATE;
 -- exactly their share of the payable's balance.
 SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
 FROM payments AS p
-JOIN quotes AS q ON q.id = p.quote_id
+JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 CROSS JOIN LATERAL (
     SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
     WHERE payment_id = p.id AND status <> 'rejected'
@@ -247,3 +251,12 @@ LIMIT @max_rows::bigint;
 SELECT settlement_id, id FROM payments
 WHERE settlement_id = ANY(@settlement_ids::uuid[])
 ORDER BY settlement_id, id;
+
+-- name: LockCapturablePayment :one
+-- The capture's lock, the same one a confirmation and a refund take first.
+SELECT id, merchant_id, status, method, amount, currency, quote_id, captured_quote_id FROM payments
+WHERE merchant_id = @merchant_id AND id = @id
+FOR NO KEY UPDATE;
+
+-- name: SetCapturedQuote :exec
+UPDATE payments SET captured_quote_id = @captured_quote_id WHERE id = @id;

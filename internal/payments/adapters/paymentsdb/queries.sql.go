@@ -20,7 +20,7 @@ WHERE id IN (
     LIMIT $3::bigint
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture
 `
 
 type ClaimDueAttemptsParams struct {
@@ -54,6 +54,7 @@ func (q *Queries) ClaimDueAttempts(ctx context.Context, arg ClaimDueAttemptsPara
 			&i.NextCheckAt,
 			&i.EscalatedAt,
 			&i.CardToken,
+			&i.ManualCapture,
 		); err != nil {
 			return nil, err
 		}
@@ -221,7 +222,7 @@ func (q *Queries) EscalateRefund(ctx context.Context, arg EscalateRefundParams) 
 }
 
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token FROM payment_attempts WHERE id = $1
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -240,6 +241,7 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 		&i.NextCheckAt,
 		&i.EscalatedAt,
 		&i.CardToken,
+		&i.ManualCapture,
 	)
 	return i, err
 }
@@ -280,7 +282,7 @@ func (q *Queries) GetMerchantRefund(ctx context.Context, arg GetMerchantRefundPa
 }
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id FROM payments WHERE merchant_id = $1 AND id = $2
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id, captured_quote_id FROM payments WHERE merchant_id = $1 AND id = $2
 `
 
 type GetPaymentParams struct {
@@ -306,21 +308,23 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.ExpiryCheckAt,
 		&i.PaidAt,
 		&i.SettlementID,
+		&i.CapturedQuoteID,
 	)
 	return i, err
 }
 
 const insertAttempt = `-- name: InsertAttempt :one
-INSERT INTO payment_attempts (payment_id, provider, status, card_token, created_at, updated_at)
-VALUES ($1, $2, 'created', $3, $4, $4)
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token
+INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture, created_at, updated_at)
+VALUES ($1, $2, 'created', $3, $4, $5, $5)
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture
 `
 
 type InsertAttemptParams struct {
-	PaymentID pgtype.UUID
-	Provider  string
-	CardToken pgtype.Text
-	CreatedAt pgtype.Timestamptz
+	PaymentID     pgtype.UUID
+	Provider      string
+	CardToken     pgtype.Text
+	ManualCapture bool
+	CreatedAt     pgtype.Timestamptz
 }
 
 func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (PaymentAttempt, error) {
@@ -328,6 +332,7 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		arg.PaymentID,
 		arg.Provider,
 		arg.CardToken,
+		arg.ManualCapture,
 		arg.CreatedAt,
 	)
 	var i PaymentAttempt
@@ -344,6 +349,7 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		&i.NextCheckAt,
 		&i.EscalatedAt,
 		&i.CardToken,
+		&i.ManualCapture,
 	)
 	return i, err
 }
@@ -472,7 +478,7 @@ func (q *Queries) InsertSettlement(ctx context.Context, arg InsertSettlementPara
 }
 
 const latestAttempts = `-- name: LatestAttempts :many
-SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token FROM payment_attempts
+SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts
 WHERE payment_id = ANY($1::uuid[])
 ORDER BY payment_id, id DESC
 `
@@ -499,6 +505,7 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 			&i.NextCheckAt,
 			&i.EscalatedAt,
 			&i.CardToken,
+			&i.ManualCapture,
 		); err != nil {
 			return nil, err
 		}
@@ -511,7 +518,7 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 }
 
 const listPayments = `-- name: ListPayments :many
-SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id FROM payments
+SELECT id, merchant_id, quote_id, status, method, amount, currency, reference, created_at, updated_at, version, expiry_check_at, paid_at, settlement_id, captured_quote_id FROM payments
 WHERE merchant_id = $1
   AND ($2::uuid IS NULL OR id < $2)
   AND ($3::text IS NULL OR status = $3)
@@ -557,6 +564,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 			&i.ExpiryCheckAt,
 			&i.PaidAt,
 			&i.SettlementID,
+			&i.CapturedQuoteID,
 		); err != nil {
 			return nil, err
 		}
@@ -612,7 +620,7 @@ func (q *Queries) ListSettlements(ctx context.Context, arg ListSettlementsParams
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token FROM payment_attempts WHERE id = $1 FOR UPDATE
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -631,6 +639,46 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 		&i.NextCheckAt,
 		&i.EscalatedAt,
 		&i.CardToken,
+		&i.ManualCapture,
+	)
+	return i, err
+}
+
+const lockCapturablePayment = `-- name: LockCapturablePayment :one
+SELECT id, merchant_id, status, method, amount, currency, quote_id, captured_quote_id FROM payments
+WHERE merchant_id = $1 AND id = $2
+FOR NO KEY UPDATE
+`
+
+type LockCapturablePaymentParams struct {
+	MerchantID pgtype.UUID
+	ID         pgtype.UUID
+}
+
+type LockCapturablePaymentRow struct {
+	ID              pgtype.UUID
+	MerchantID      pgtype.UUID
+	Status          string
+	Method          string
+	Amount          int64
+	Currency        string
+	QuoteID         pgtype.UUID
+	CapturedQuoteID pgtype.UUID
+}
+
+// The capture's lock, the same one a confirmation and a refund take first.
+func (q *Queries) LockCapturablePayment(ctx context.Context, arg LockCapturablePaymentParams) (LockCapturablePaymentRow, error) {
+	row := q.db.QueryRow(ctx, lockCapturablePayment, arg.MerchantID, arg.ID)
+	var i LockCapturablePaymentRow
+	err := row.Scan(
+		&i.ID,
+		&i.MerchantID,
+		&i.Status,
+		&i.Method,
+		&i.Amount,
+		&i.Currency,
+		&i.QuoteID,
+		&i.CapturedQuoteID,
 	)
 	return i, err
 }
@@ -699,11 +747,11 @@ func (q *Queries) LockPayment(ctx context.Context, id pgtype.UUID) (LockPaymentR
 }
 
 const lockPaymentOfAttempt = `-- name: LockPaymentOfAttempt :one
-SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id,
-    q.payer_amount, q.quote_currency
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency,
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
-JOIN quotes AS q ON q.id = p.quote_id
+JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 WHERE a.id = $1
 FOR NO KEY UPDATE OF p
 `
@@ -724,7 +772,8 @@ type LockPaymentOfAttemptRow struct {
 // an attempt takes this lock first, then the attempt's, then the ledger's accounts, so
 // no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
 // update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
-// key check holds on the payment.
+// key check holds on the payment. quote_id is the quote the money is posted with: what
+// a capture took, once there is one.
 func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (LockPaymentOfAttemptRow, error) {
 	row := q.db.QueryRow(ctx, lockPaymentOfAttempt, id)
 	var i LockPaymentOfAttemptRow
@@ -743,7 +792,8 @@ func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (Loc
 }
 
 const lockPaymentOfRefund = `-- name: LockPaymentOfRefund :one
-SELECT p.id, p.merchant_id, p.status, p.version, p.amount, p.currency, p.quote_id
+SELECT p.id, p.merchant_id, p.status, p.version, p.amount, p.currency,
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id
 FROM refunds AS r
 JOIN payments AS p ON p.id = r.payment_id
 WHERE r.id = $1
@@ -805,7 +855,9 @@ func (q *Queries) LockRefund(ctx context.Context, id pgtype.UUID) (Refund, error
 }
 
 const lockRefundablePayment = `-- name: LockRefundablePayment :one
-SELECT id, merchant_id, status, version, amount, currency, quote_id FROM payments
+SELECT id, merchant_id, status, version, amount, currency,
+    coalesce(captured_quote_id, quote_id)::uuid AS quote_id
+FROM payments
 WHERE merchant_id = $1 AND id = $2
 FOR NO KEY UPDATE
 `
@@ -918,7 +970,7 @@ func (q *Queries) NewEventID(ctx context.Context) (pgtype.UUID, error) {
 const pendingNet = `-- name: PendingNet :one
 SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
 FROM payments AS p
-JOIN quotes AS q ON q.id = p.quote_id
+JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 CROSS JOIN LATERAL (
     SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
     WHERE payment_id = p.id AND status <> 'rejected'
@@ -987,6 +1039,20 @@ func (q *Queries) RescheduleRefund(ctx context.Context, arg RescheduleRefundPara
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setCapturedQuote = `-- name: SetCapturedQuote :exec
+UPDATE payments SET captured_quote_id = $1 WHERE id = $2
+`
+
+type SetCapturedQuoteParams struct {
+	CapturedQuoteID pgtype.UUID
+	ID              pgtype.UUID
+}
+
+func (q *Queries) SetCapturedQuote(ctx context.Context, arg SetCapturedQuoteParams) error {
+	_, err := q.db.Exec(ctx, setCapturedQuote, arg.CapturedQuoteID, arg.ID)
+	return err
 }
 
 const setPaidAt = `-- name: SetPaidAt :exec
@@ -1072,7 +1138,7 @@ func (q *Queries) SettlementPayments(ctx context.Context, settlementIds []pgtype
 }
 
 const succeededAttempt = `-- name: SucceededAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token FROM payment_attempts WHERE payment_id = $1 AND status = 'succeeded'
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE payment_id = $1 AND status = 'succeeded'
 `
 
 // At most one: a payment has one live attempt at a time.
@@ -1092,6 +1158,7 @@ func (q *Queries) SucceededAttempt(ctx context.Context, paymentID pgtype.UUID) (
 		&i.NextCheckAt,
 		&i.EscalatedAt,
 		&i.CardToken,
+		&i.ManualCapture,
 	)
 	return i, err
 }

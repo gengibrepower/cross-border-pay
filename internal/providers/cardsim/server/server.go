@@ -60,6 +60,7 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/authorizations", s.authorize)
 	mux.HandleFunc("GET /v1/authorizations/by-key/{key}", s.get)
 	mux.HandleFunc("POST /v1/authorizations/{id}/capture", s.capture)
+	mux.HandleFunc("POST /v1/authorizations/{id}/void", s.void)
 	mux.HandleFunc("POST /v1/authorizations/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
 	mux.HandleFunc("POST /control/faults", s.faults.InjectFault)
@@ -212,6 +213,47 @@ func (s *Simulator) doCapture(id string, amount money.Money) (a cardsim.Authoriz
 	now := s.clock.Now()
 	rec.auth.Status, rec.auth.Captured, rec.auth.CapturedAt = cardsim.Captured, amount, &now
 	return rec.auth, true, ""
+}
+
+// void releases a live authorization; a voided one is returned as it is, so a retry
+// after a lost answer gets the same answer, and any other status is refused.
+func (s *Simulator) void(w http.ResponseWriter, r *http.Request) {
+	fault := s.faults.Next(cardsim.OpVoid)
+	if !simkit.Before(w, r, &fault) {
+		return
+	}
+	a, found, refusal := s.doVoid(r.PathValue("id"))
+	simkit.After(r, &fault)
+	switch {
+	case !found:
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, cardsim.CodeNotFound, "no authorization with this ID"))
+	case refusal != "":
+		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusConflict, cardsim.CodeNotVoidable, refusal))
+	default:
+		simkit.WriteJSON(w, http.StatusOK, a)
+	}
+}
+
+func (s *Simulator) doVoid(id string) (a cardsim.Authorization, found bool, refusal string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, ok := s.keyByID[id]
+	if !ok {
+		return cardsim.Authorization{}, false, ""
+	}
+	rec := s.byKey[key]
+	a = s.current(rec)
+	switch a.Status {
+	case cardsim.Voided:
+		return a, true, ""
+	case cardsim.Authorized:
+		rec.auth.Status = cardsim.Voided
+		return rec.auth, true, ""
+	case cardsim.Captured, cardsim.Declined, cardsim.Expired:
+		return a, true, fmt.Sprintf("the authorization is %s", a.Status)
+	default:
+		return a, true, fmt.Sprintf("the authorization is %s", a.Status)
+	}
 }
 
 func (s *Simulator) refund(w http.ResponseWriter, r *http.Request) {

@@ -83,6 +83,9 @@ var attemptTransitions = map[attemptEdge]AttemptStatus{
 	{AttemptUnknown, Succeed}: AttemptSucceeded,
 
 	{AttemptAccepted, Succeed}: AttemptSucceeded,
+	// A capture of an authorized card whose answer was lost: it may have charged, so
+	// the attempt waits in unknown for GetAttempt, as a create would.
+	{AttemptAccepted, Ambiguous}: AttemptUnknown,
 }
 
 // attemptReflected lists duplicates: a retried send, a lookup that times out again, a
