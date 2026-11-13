@@ -14,6 +14,11 @@ linters:
     - sqlclosecheck
     - wrapcheck
   settings:
+    wrapcheck:
+      # O simkit é o miolo de cada simulador e já põe o nome dele no erro; embrulhar
+      # de novo só repetiria "pixsim: pixsim: ...".
+      ignore-package-globs:
+        - github.com/gengibrepower/cross-border-pay/internal/providers/simkit
     exhaustive:
       default-signifies-exhaustive: false
     gocritic:
