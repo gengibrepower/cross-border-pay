@@ -25,15 +25,20 @@ var expectedRefund = map[domain.RefundStatus]map[domain.RefundEvent]refundWant{
 		domain.RejectRefund:    {moves, domain.RefundRejected},
 	},
 	domain.RefundUnknown: {
+		domain.SendRefund:      {duplicate, domain.RefundUnknown},
 		domain.RefundAmbiguous: {duplicate, domain.RefundUnknown},
 		domain.SucceedRefund:   {moves, domain.RefundSucceeded},
 		domain.RejectRefund:    {moves, domain.RefundRejected},
 	},
 	domain.RefundSucceeded: {
-		domain.SucceedRefund: {duplicate, domain.RefundSucceeded},
+		domain.SendRefund:      {duplicate, domain.RefundSucceeded},
+		domain.RefundAmbiguous: {duplicate, domain.RefundSucceeded},
+		domain.SucceedRefund:   {duplicate, domain.RefundSucceeded},
 	},
 	domain.RefundRejected: {
-		domain.RejectRefund: {duplicate, domain.RefundRejected},
+		domain.SendRefund:      {duplicate, domain.RefundRejected},
+		domain.RefundAmbiguous: {duplicate, domain.RefundRejected},
+		domain.RejectRefund:    {duplicate, domain.RefundRejected},
 	},
 }
 

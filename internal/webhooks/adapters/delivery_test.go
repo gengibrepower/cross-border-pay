@@ -73,12 +73,31 @@ func (e *env) at(t time.Time) { e.clock.Advance(t.Sub(e.clock.Now())) }
 
 func (e *env) deliverer() *app.Deliverer {
 	e.t.Helper()
-	d, err := app.NewDeliverer(e.deliveries, merchantsadapters.NewPostgres(e.pool), adapters.NewHTTPSender(dev, timeout),
+	return e.delivererWith(adapters.NewHTTPSender(dev, timeout))
+}
+
+func (e *env) delivererWith(sender app.Sender) *app.Deliverer {
+	e.t.Helper()
+	d, err := app.NewDeliverer(e.deliveries, merchantsadapters.NewPostgres(e.pool), sender,
 		[]byte(signingKey), e.clock, ceilingJitter, timeout, slog.New(slog.DiscardHandler))
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	return d
+}
+
+// answerCounter counts the answers the worker has read, whatever their status.
+type answerCounter struct {
+	app.Sender
+	answered atomic.Int64
+}
+
+func (s *answerCounter) Send(ctx context.Context, url, signature string, body []byte) (int, error) {
+	code, err := s.Sender.Send(ctx, url, signature, body)
+	if err == nil {
+		s.answered.Add(1)
+	}
+	return code, err
 }
 
 func (e *env) merchant() merchants.MerchantID {
@@ -558,17 +577,21 @@ func TestWorkerKilledMidRoundDeliversEveryEventAfterRestart(t *testing.T) {
 
 	ctx, kill := context.WithCancel(t.Context())
 	stopped := make(chan struct{})
+	// The merchant answering is not the worker reading the answer: killing it before
+	// it has read all held of them would cut off more posts than the ones held.
+	sender := &answerCounter{Sender: adapters.NewHTTPSender(dev, timeout)}
 	go func() {
 		defer close(stopped)
-		d := e.deliverer()
+		d := e.delivererWith(sender)
 		for ctx.Err() == nil {
 			_, _ = d.Deliver(ctx, app.DeliverBatch)
 		}
 	}()
 	deadline := time.Now().Add(10 * time.Second)
-	for srv.held.Load() < round/2 {
+	for srv.held.Load() < round/2 || sender.answered.Load() < held {
 		if time.Now().After(deadline) {
-			t.Fatalf("%d posts held after 10 s, want %d", srv.held.Load(), round/2)
+			t.Fatalf("%d posts held and %d answers read after 10 s, want %d and %d",
+				srv.held.Load(), sender.answered.Load(), round/2, held)
 		}
 		time.Sleep(time.Millisecond)
 	}

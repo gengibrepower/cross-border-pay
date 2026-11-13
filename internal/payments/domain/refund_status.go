@@ -78,9 +78,20 @@ var refundTransitions = map[refundEdge]RefundStatus{
 	{RefundUnknown, RejectRefund}:  RefundRejected,
 }
 
+// refundReflected lists duplicates. A retried request and the resolver each read the
+// refund before locking it, so one of them can arrive with a send or an ambiguous
+// answer the other has already gone past: that knows less than what is stored, and is
+// not a contradiction. Only succeeded against rejected is.
 var refundReflected = map[refundEdge]bool{
-	{RefundSent, SendRefund}:         true,
-	{RefundUnknown, RefundAmbiguous}: true,
+	{RefundSent, SendRefund}:      true,
+	{RefundUnknown, SendRefund}:   true,
+	{RefundSucceeded, SendRefund}: true,
+	{RefundRejected, SendRefund}:  true,
+
+	{RefundUnknown, RefundAmbiguous}:   true,
+	{RefundSucceeded, RefundAmbiguous}: true,
+	{RefundRejected, RefundAmbiguous}:  true,
+
 	{RefundSucceeded, SucceedRefund}: true,
 	{RefundRejected, RejectRefund}:   true,
 }
