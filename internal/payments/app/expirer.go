@@ -29,14 +29,14 @@ type ExpiryQueue interface {
 // money paid late is posted as a divergence before the payment expires.
 type Expirer struct {
 	queue           ExpiryQueue
-	provider        Provider
+	providers       *Providers
 	clock           Clock
 	logger          *slog.Logger
 	providerTimeout time.Duration
 }
 
-func NewExpirer(queue ExpiryQueue, provider Provider, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Expirer {
-	return &Expirer{queue: queue, provider: provider, clock: clock, logger: logger, providerTimeout: providerTimeout}
+func NewExpirer(queue ExpiryQueue, providers *Providers, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Expirer {
+	return &Expirer{queue: queue, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
 // Expire checks one batch of due payments and returns how many it claimed. One payment
@@ -67,7 +67,7 @@ func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 		return fmt.Errorf("latest attempt: %w", err)
 	}
 	if ok && a.Status() != domain.AttemptRejected {
-		if err := applyIfPaid(ctx, x.provider, x.providerTimeout, x.queue, x.clock, &a); err != nil {
+		if err := applyIfPaid(ctx, x.providers, x.providerTimeout, x.queue, x.clock, &a); err != nil {
 			return err
 		}
 	}
@@ -90,7 +90,11 @@ type attemptApplier interface {
 // so, which either confirms it or posts the money as a divergence. Every path that
 // closes a pending payment runs it first, so a payer who paid on time is never turned
 // away because the news was slow.
-func applyIfPaid(ctx context.Context, provider Provider, timeout time.Duration, applier attemptApplier, clock Clock, a *domain.PaymentAttempt) error {
+func applyIfPaid(ctx context.Context, providers *Providers, timeout time.Duration, applier attemptApplier, clock Clock, a *domain.PaymentAttempt) error {
+	provider, err := providers.Named(a.Provider())
+	if err != nil {
+		return fmt.Errorf("lookup attempt %s: %w", a.ID(), err)
+	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	result, err := provider.GetAttempt(callCtx, a.ID())
 	cancel()

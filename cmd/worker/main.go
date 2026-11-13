@@ -92,16 +92,22 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: PIXSIM_URL: %w", err)
 	}
-	store, provider := paymentsadapters.NewPostgres(pool, paymentSinks()), paymentsadapters.NewPixSim(pixsimClient)
-	resolver := paymentsapp.NewResolver(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
-	expirer := paymentsapp.NewExpirer(store, provider, clock.System{}, logger, cfg.ProviderTimeout)
+	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
+		paymentsdomain.Pix: paymentsadapters.NewPixSim(pixsimClient),
+	})
+	if err != nil {
+		return fmt.Errorf("providers: %w", err)
+	}
+	store := paymentsadapters.NewPostgres(pool, paymentSinks())
+	resolver := paymentsapp.NewResolver(store, providers, clock.System{}, logger, cfg.ProviderTimeout)
+	expirer := paymentsapp.NewExpirer(store, providers, clock.System{}, logger, cfg.ProviderTimeout)
 	policy, err := paymentsdomain.DefaultSettlementPolicy()
 	if err != nil {
 		return fmt.Errorf("settlement: %w", err)
 	}
 	settler := paymentsapp.NewSettler(store, policy, clock.System{}, logger)
 	refunds := paymentsapp.NewRefundResolver(
-		paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, provider, clock.System{}, logger, cfg.ProviderTimeout), store)
+		paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, providers, clock.System{}, logger, cfg.ProviderTimeout), store)
 	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks()}, clock.System{}, logger)
 	deliverer, err := webhooksapp.NewDeliverer(
 		eventsadapters.NewDeliveries(pool), merchantsadapters.NewPostgres(pool),

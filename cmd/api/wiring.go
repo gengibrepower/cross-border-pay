@@ -47,11 +47,11 @@ type api struct {
 }
 
 // deps are what the API needs from outside the database: the base rate, the clock and
-// the provider, which tests replace.
+// the providers, which tests replace.
 type deps struct {
 	usdbrl          string
 	clock           moduleClock
-	provider        paymentsapp.Provider
+	providers       *paymentsapp.Providers
 	providerTimeout time.Duration
 	webhookSecret   string
 	signingKey      []byte
@@ -89,8 +89,8 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
-			paymentsapp.NewRefunder(rates, paymentsStore, d.provider, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewService(quoter, paymentsStore, d.providers, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewRefunder(rates, paymentsStore, d.providers, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewPayouts(paymentsStore, policy, d.clock),
 			merchantFrom,
 			logger,

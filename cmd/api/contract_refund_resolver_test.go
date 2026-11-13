@@ -26,7 +26,7 @@ func (c *contract) refundResolver() *paymentsapp.RefundResolver {
 		c.t.Fatal(err)
 	}
 	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
-	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.provider, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
+	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.deps.providers, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
 	return paymentsapp.NewRefundResolver(refunder, store)
 }
 
@@ -284,7 +284,7 @@ func TestRefundSentByAnotherPathIsNotSentAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &sentFirst{Postgres: paymentsadapters.NewPostgres(c.pool, paymentSinks())}
-	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.provider, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
+	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.deps.providers, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
 	if n := c.resolveRefunds(paymentsapp.NewRefundResolver(refunder, store.Postgres)); n != 1 {
 		t.Fatalf("claimed %d refunds, want 1", n)
 	}

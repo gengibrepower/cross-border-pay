@@ -46,7 +46,7 @@ func newExpiryEnv(t *testing.T) *expiryEnv {
 	provider := &countingGets{Provider: pix}
 	return &expiryEnv{
 		t: t, pool: pool, store: store, sim: sim, clock: c, provider: provider,
-		expirer: app.NewExpirer(store, provider, c, slog.New(slog.DiscardHandler), 200*time.Millisecond),
+		expirer: app.NewExpirer(store, pixOnly(t, provider), c, slog.New(slog.DiscardHandler), 200*time.Millisecond),
 	}
 }
 

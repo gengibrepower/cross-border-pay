@@ -14,6 +14,8 @@ import (
 	"time"
 
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
+	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
+	paymentsdomain "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/config"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
@@ -55,10 +57,16 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: PIXSIM_URL: %w", err)
 	}
+	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
+		paymentsdomain.Pix: paymentsadapters.NewPixSim(pixsimClient),
+	})
+	if err != nil {
+		return fmt.Errorf("providers: %w", err)
+	}
 	api, err := newAPI(pool, logger, &deps{
 		usdbrl:          cfg.USDBRLRate,
 		clock:           clock.System{},
-		provider:        paymentsadapters.NewPixSim(pixsimClient),
+		providers:       providers,
 		providerTimeout: cfg.ProviderTimeout,
 		webhookSecret:   cfg.PixSimWebhookSecret,
 		signingKey:      []byte(cfg.WebhookSigningKey),

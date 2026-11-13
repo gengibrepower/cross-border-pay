@@ -86,8 +86,12 @@ func (r *RefundResolver) check(ctx context.Context, d *DueRefund, rate fx.Rate) 
 		return nil
 	}
 
+	provider, err := f.providers.Named(refund.Provider())
+	if err != nil {
+		return err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, f.providerTimeout)
-	result, err := f.provider.GetRefund(callCtx, refund.ID())
+	result, err := provider.GetRefund(callCtx, refund.ID())
 	cancel()
 	now = f.clock.Now()
 	switch {

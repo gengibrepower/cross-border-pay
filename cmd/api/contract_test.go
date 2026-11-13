@@ -26,6 +26,7 @@ import (
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
+	paymentsdomain "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
@@ -132,8 +133,12 @@ func newContract(t *testing.T) *contract {
 	t.Cleanup(hook.Close)
 	c.sim = startPixSim(t, fake, hook.URL+"/v1/providers/pixsim/events")
 	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
+	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{paymentsdomain.Pix: c.provider})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.deps = &deps{
-		usdbrl: "5.0000", clock: fake, provider: c.provider, providerTimeout: providerTimeout, webhookSecret: webhookSecret,
+		usdbrl: "5.0000", clock: fake, providers: providers, providerTimeout: providerTimeout, webhookSecret: webhookSecret,
 		signingKey: []byte(signingKey), webhooks: ssrf.Policy{},
 	}
 	a, err := newAPI(pool, logger, c.deps)

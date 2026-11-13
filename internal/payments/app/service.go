@@ -82,14 +82,14 @@ type Store interface {
 type Service struct {
 	quoter          Quoter
 	store           Store
-	provider        Provider
+	providers       *Providers
 	clock           Clock
 	logger          *slog.Logger
 	providerTimeout time.Duration
 }
 
-func NewService(quoter Quoter, store Store, provider Provider, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Service {
-	return &Service{quoter: quoter, store: store, provider: provider, clock: clock, logger: logger, providerTimeout: providerTimeout}
+func NewService(quoter Quoter, store Store, providers *Providers, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Service {
+	return &Service{quoter: quoter, store: store, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
 // Create prices the payment, stores it with its attempt and asks the provider for the
@@ -167,7 +167,7 @@ func (s *Service) Cancel(ctx context.Context, merchant domain.MerchantID, id dom
 	}
 	if p.Payment.Status() == domain.Pending && p.Attempt != nil && p.Attempt.Status() != domain.AttemptRejected {
 		// A payment found at the provider is applied whatever the client does meanwhile.
-		err := applyIfPaid(context.WithoutCancel(ctx), s.provider, s.providerTimeout, s.store, s.clock, p.Attempt)
+		err := applyIfPaid(context.WithoutCancel(ctx), s.providers, s.providerTimeout, s.store, s.clock, p.Attempt)
 		if err != nil {
 			s.logger.WarnContext(ctx, "cancel: provider lookup failed", "payment", id.String(), "error", err)
 			return Priced{}, fmt.Errorf("payments: cancel %s: %w: %w", id, ErrProviderUnavailable, err)

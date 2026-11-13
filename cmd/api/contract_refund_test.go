@@ -383,7 +383,7 @@ func (c *contract) crashedRefund(merchantKey, paymentID, idempotencyKey string, 
 		c.t.Fatal(err)
 	}
 	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
-	r, err := store.CreateRefund(ctx, acquired.Held, payments.MerchantID(principal.MerchantID), id, money.New(cents, money.USD), c.provider.Name(), c.clock.Now())
+	r, err := store.CreateRefund(ctx, acquired.Held, payments.MerchantID(principal.MerchantID), id, money.New(cents, money.USD), c.clock.Now())
 	if err != nil {
 		c.t.Fatal(err)
 	}
