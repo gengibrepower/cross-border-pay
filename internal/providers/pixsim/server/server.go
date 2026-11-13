@@ -3,39 +3,27 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/gengibrepower/cross-border-pay/internal/brcode"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
 // HangLimit bounds a TimeoutAfter fault, in case the caller never gives up.
-const HangLimit = time.Minute
+const HangLimit = simkit.HangLimit
 
 // DeliveryTimeout bounds one webhook delivery.
-const DeliveryTimeout = 5 * time.Second
+const DeliveryTimeout = simkit.DeliveryTimeout
 
-const (
-	maxKeyLength   = 255
-	maxFaultCount  = 1000
-	maxDelay       = time.Minute
-	idLength       = 20
-	maxRequestBody = 1 << 16
-)
+const idLength = 20
 
 type Config struct {
 	Seed uint64
@@ -50,9 +38,7 @@ type Config struct {
 	WebhookSecret []byte
 }
 
-type Clock interface {
-	Now() time.Time
-}
+type Clock = simkit.Clock
 
 type record struct {
 	req    pixsim.CreateCharge
@@ -67,18 +53,17 @@ type refundRecord struct {
 }
 
 type Simulator struct {
-	cfg    Config
-	clock  Clock
-	logger *slog.Logger
-	http   *http.Client
+	cfg     Config
+	seed    simkit.Seed
+	clock   Clock
+	logger  *slog.Logger
+	faults  *simkit.Faults
+	webhook *simkit.Webhook
 
 	mu      sync.Mutex
 	byKey   map[string]*record
 	keyByID map[string]string
-	faults  []pixsim.Fault
 	refunds map[string]*refundRecord
-	// events holds each event already encoded, so a redelivery sends the same bytes.
-	events map[string][]byte
 }
 
 func New(cfg *Config, clock Clock, logger *slog.Logger) (*Simulator, error) {
@@ -86,13 +71,14 @@ func New(cfg *Config, clock Clock, logger *slog.Logger) (*Simulator, error) {
 	if _, err := brcode.Encode(&probe); err != nil {
 		return nil, fmt.Errorf("pixsim: receiver: %w", err)
 	}
-	if cfg.WebhookURL != "" && len(cfg.WebhookSecret) == 0 {
-		return nil, errors.New("pixsim: a webhook URL needs a webhook secret")
+	webhook, err := simkit.NewWebhook(cfg.WebhookURL, cfg.WebhookSecret, pixsim.SignatureHeader, clock)
+	if err != nil {
+		return nil, fmt.Errorf("pixsim: %w", err)
 	}
 	return &Simulator{
-		cfg: *cfg, clock: clock, logger: logger, http: &http.Client{Timeout: DeliveryTimeout},
-		byKey: map[string]*record{}, keyByID: map[string]string{}, events: map[string][]byte{},
-		refunds: map[string]*refundRecord{},
+		cfg: *cfg, seed: simkit.Seed(cfg.Seed), clock: clock, logger: logger,
+		faults: simkit.NewFaults(pixsim.Ops, pixsim.Rejectable), webhook: webhook,
+		byKey: map[string]*record{}, keyByID: map[string]string{}, refunds: map[string]*refundRecord{},
 	}, nil
 }
 
@@ -102,54 +88,49 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/charges/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
 	mux.HandleFunc("POST /control/charges/{id}/pay", s.pay)
-	mux.HandleFunc("POST /control/faults", s.injectFault)
-	mux.HandleFunc("POST /control/events/{id}/deliver", s.redeliver)
+	mux.HandleFunc("POST /control/faults", s.faults.InjectFault)
+	mux.HandleFunc("POST /control/events/{id}/deliver", s.webhook.Redeliver)
 }
 
 func (s *Simulator) create(w http.ResponseWriter, r *http.Request) {
-	key := r.Header.Get("Idempotency-Key")
-	if !validKey(key) {
-		invalid(w, r, "Idempotency-Key must have 1 to 255 printable ASCII characters")
+	key, ok := simkit.IdempotencyKey(w, r)
+	if !ok {
 		return
 	}
 	var req pixsim.CreateCharge
-	if err := decode(w, r, &req); err != nil {
-		invalid(w, r, err.Error())
+	if err := simkit.Decode(w, r, &req); err != nil {
+		simkit.Invalid(w, r, err.Error())
 		return
 	}
 	if err := validateCharge(&req); err != nil {
-		invalid(w, r, err.Error())
+		simkit.Invalid(w, r, err.Error())
 		return
 	}
 
-	fault, _ := s.nextFault(pixsim.OpCreate)
-	if !s.before(w, r, fault) {
+	fault := s.faults.Next(pixsim.OpCreate)
+	if !simkit.Before(w, r, &fault) {
 		return
 	}
 	ch, err := s.store(key, &req, fault.Kind == pixsim.Reject)
-	if fault.Kind == pixsim.TimeoutAfter {
-		hang(r)
-	}
+	simkit.After(r, &fault)
 	switch {
 	case errors.Is(err, pixsim.ErrKeyReused):
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeKeyReused, err.Error()))
 	case err != nil:
-		invalid(w, r, err.Error())
+		simkit.Invalid(w, r, err.Error())
 	case ch.Status == pixsim.Rejected:
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeRejected, "the charge was refused"))
 	default:
-		writeJSON(w, http.StatusCreated, ch)
+		simkit.WriteJSON(w, http.StatusCreated, ch)
 	}
 }
 
 func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
-	fault, _ := s.nextFault(pixsim.OpGet)
-	if !s.before(w, r, fault) {
+	fault := s.faults.Next(pixsim.OpGet)
+	if !simkit.Before(w, r, &fault) {
 		return
 	}
-	if fault.Kind == pixsim.TimeoutAfter {
-		hang(r)
-	}
+	simkit.After(r, &fault)
 	s.mu.Lock()
 	rec, ok := s.byKey[r.PathValue("key")]
 	var ch pixsim.Charge
@@ -161,55 +142,50 @@ func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeNotFound, "no charge with this idempotency key"))
 		return
 	}
-	writeJSON(w, http.StatusOK, ch)
+	simkit.WriteJSON(w, http.StatusOK, ch)
 }
 
 func (s *Simulator) refund(w http.ResponseWriter, r *http.Request) {
-	key := r.Header.Get("Idempotency-Key")
-	if !validKey(key) {
-		invalid(w, r, "Idempotency-Key must have 1 to 255 printable ASCII characters")
+	key, ok := simkit.IdempotencyKey(w, r)
+	if !ok {
 		return
 	}
 	var req pixsim.CreateRefund
-	if err := decode(w, r, &req); err != nil {
-		invalid(w, r, err.Error())
+	if err := simkit.Decode(w, r, &req); err != nil {
+		simkit.Invalid(w, r, err.Error())
 		return
 	}
 	if req.Amount.Amount() <= 0 {
-		invalid(w, r, fmt.Sprintf("amount must be positive, got %s", req.Amount))
+		simkit.Invalid(w, r, fmt.Sprintf("amount must be positive, got %s", req.Amount))
 		return
 	}
 
-	fault, _ := s.nextFault(pixsim.OpRefund)
-	if !s.before(w, r, fault) {
+	fault := s.faults.Next(pixsim.OpRefund)
+	if !simkit.Before(w, r, &fault) {
 		return
 	}
 	rf, err := s.storeRefund(key, r.PathValue("id"), &req, fault.Kind == pixsim.Reject)
-	if fault.Kind == pixsim.TimeoutAfter {
-		hang(r)
-	}
+	simkit.After(r, &fault)
 	switch {
 	case errors.Is(err, pixsim.ErrKeyReused):
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeKeyReused, err.Error()))
 	case errors.Is(err, pixsim.ErrNotFound):
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeNotFound, "no charge with this ID"))
 	case err != nil:
-		invalid(w, r, err.Error())
+		simkit.Invalid(w, r, err.Error())
 	case rf.Status == pixsim.RefundRejected:
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusUnprocessableEntity, pixsim.CodeRefundRejected, rf.Reason))
 	default:
-		writeJSON(w, http.StatusCreated, rf)
+		simkit.WriteJSON(w, http.StatusCreated, rf)
 	}
 }
 
 func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
-	fault, _ := s.nextFault(pixsim.OpGetRefund)
-	if !s.before(w, r, fault) {
+	fault := s.faults.Next(pixsim.OpGetRefund)
+	if !simkit.Before(w, r, &fault) {
 		return
 	}
-	if fault.Kind == pixsim.TimeoutAfter {
-		hang(r)
-	}
+	simkit.After(r, &fault)
 	s.mu.Lock()
 	rec, ok := s.refunds[r.PathValue("key")]
 	var rf pixsim.Refund
@@ -221,7 +197,7 @@ func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeRefundNotFound, "no refund with this idempotency key"))
 		return
 	}
-	writeJSON(w, http.StatusOK, rf)
+	simkit.WriteJSON(w, http.StatusOK, rf)
 }
 
 // storeRefund decides the refund once per key and keeps it, rejected too, so a caller
@@ -243,7 +219,7 @@ func (s *Simulator) storeRefund(key, chargeID string, req *pixsim.CreateRefund, 
 	charge := s.byKey[chargeKey]
 
 	rf := pixsim.Refund{
-		ID:             "rfd_" + text(s.rng("refund\x00"+key), idLength),
+		ID:             "rfd_" + simkit.Text(s.seed.RNG("refund\x00"+key), idLength),
 		IdempotencyKey: key,
 		ChargeID:       chargeID,
 		Status:         pixsim.RefundRejected,
@@ -281,10 +257,11 @@ func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 			paidAt := s.clock.Now()
 			rec.charge.Status = pixsim.Paid
 			rec.charge.PaidAt = &paidAt
-			event = s.record(&pixsim.Event{
-				ID: "evt_" + text(s.rng(string(pixsim.ChargePaid)+"\x00"+key), idLength), Type: pixsim.ChargePaid,
+			e := pixsim.Event{
+				ID: "evt_" + simkit.Text(s.seed.RNG(string(pixsim.ChargePaid)+"\x00"+key), idLength), Type: pixsim.ChargePaid,
 				CreatedAt: paidAt, Charge: rec.charge,
-			})
+			}
+			event = s.webhook.Record(e.ID, &e)
 		}
 		ch = rec.charge
 	}
@@ -292,7 +269,7 @@ func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 
 	if event != nil {
 		// The payer is done once paid; a client that gives up must not cut the delivery.
-		if err := s.deliver(context.WithoutCancel(r.Context()), event); err != nil {
+		if err := s.webhook.Deliver(context.WithoutCancel(r.Context()), event); err != nil {
 			s.logger.Warn("event delivery failed", "charge", ch.ID, "error", err)
 		}
 	}
@@ -302,126 +279,8 @@ func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	case ch.Status == pixsim.Rejected:
 		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusConflict, pixsim.CodeNotPayable, "a rejected charge cannot be paid"))
 	default:
-		writeJSON(w, http.StatusOK, ch)
+		simkit.WriteJSON(w, http.StatusOK, ch)
 	}
-}
-
-func (s *Simulator) redeliver(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	event, ok := s.events[r.PathValue("id")]
-	s.mu.Unlock()
-	if !ok {
-		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusNotFound, pixsim.CodeEventNotFound, "no event with this ID"))
-		return
-	}
-	if err := s.deliver(r.Context(), event); err != nil {
-		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusBadGateway, pixsim.CodeDeliveryFailed, err.Error()))
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// record encodes and keeps e; the caller holds s.mu. It returns nil when no webhook
-// is configured, so nothing is sent.
-func (s *Simulator) record(e *pixsim.Event) []byte {
-	if s.cfg.WebhookURL == "" {
-		return nil
-	}
-	body, err := json.Marshal(e)
-	if err != nil {
-		panic(fmt.Sprintf("pixsim: encode event: %v", err)) // only plain fields: cannot fail
-	}
-	s.events[e.ID] = body
-	return body
-}
-
-// deliver posts body to the webhook, signed at the current time. Any 2xx counts.
-func (s *Simulator) deliver(ctx context.Context, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.WebhookURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("webhook request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(pixsim.SignatureHeader, pixsim.Sign(s.cfg.WebhookSecret, s.clock.Now(), body))
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("webhook: %w", err)
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRequestBody))
-	_ = resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("webhook answered %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func (s *Simulator) injectFault(w http.ResponseWriter, r *http.Request) {
-	var f pixsim.Fault
-	if err := decode(w, r, &f); err != nil {
-		invalid(w, r, err.Error())
-		return
-	}
-	if err := validateFault(&f); err != nil {
-		invalid(w, r, err.Error())
-		return
-	}
-	s.mu.Lock()
-	s.faults = append(s.faults, f)
-	s.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// nextFault takes one use of the oldest fault scheduled for op.
-func (s *Simulator) nextFault(op pixsim.Op) (pixsim.Fault, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.faults {
-		if s.faults[i].Op != op {
-			continue
-		}
-		f := s.faults[i]
-		s.faults[i].Count--
-		if s.faults[i].Count == 0 {
-			s.faults = append(s.faults[:i], s.faults[i+1:]...)
-		}
-		return f, true
-	}
-	return pixsim.Fault{}, false
-}
-
-// before runs the part of a fault that happens before any work. It reports whether
-// the handler should go on.
-func (s *Simulator) before(w http.ResponseWriter, r *http.Request, f pixsim.Fault) bool {
-	switch f.Kind {
-	case pixsim.FailBefore:
-		httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusInternalServerError, pixsim.CodeFailedFault, "injected failure"))
-		return false
-	case pixsim.Delay:
-		t := time.NewTimer(time.Duration(f.DelayMS) * time.Millisecond)
-		defer t.Stop()
-		select {
-		case <-r.Context().Done():
-			return false
-		case <-t.C:
-			return true
-		}
-	case pixsim.Reject, pixsim.TimeoutAfter:
-		return true
-	default:
-		return true
-	}
-}
-
-// hang never answers: it waits for the caller to give up, or HangLimit, and then
-// drops the connection. net/http treats ErrAbortHandler as a deliberate abort.
-func hang(r *http.Request) {
-	t := time.NewTimer(HangLimit)
-	defer t.Stop()
-	select {
-	case <-r.Context().Done():
-	case <-t.C:
-	}
-	panic(http.ErrAbortHandler)
 }
 
 // store creates the charge once per key. Every random choice comes from a generator
@@ -437,10 +296,10 @@ func (s *Simulator) store(key string, req *pixsim.CreateCharge, reject bool) (pi
 		return rec.charge, nil
 	}
 
-	rng := s.rng(key)
-	id := "chg_" + text(rng, idLength)
+	rng := s.seed.RNG(key)
+	id := "chg_" + simkit.Text(rng, idLength)
 	for s.keyByID[id] != "" {
-		id = "chg_" + text(rng, idLength)
+		id = "chg_" + simkit.Text(rng, idLength)
 	}
 	ch := pixsim.Charge{
 		ID:             id,
@@ -452,7 +311,7 @@ func (s *Simulator) store(key string, req *pixsim.CreateCharge, reject bool) (pi
 	}
 	if !reject {
 		ch.Status = pixsim.Active
-		ch.TxID = text(rng, brcode.MaxTxID)
+		ch.TxID = simkit.Text(rng, brcode.MaxTxID)
 		code := brcode.Code{
 			Key: s.cfg.PixKey, Amount: req.Amount, TxID: ch.TxID,
 			MerchantName: s.cfg.MerchantName, MerchantCity: s.cfg.MerchantCity,
@@ -468,33 +327,6 @@ func (s *Simulator) store(key string, req *pixsim.CreateCharge, reject bool) (pi
 	return ch, nil
 }
 
-func (s *Simulator) rng(key string) *rand.Rand {
-	sum := sha256.Sum256([]byte(key))
-	return rand.New(rand.NewPCG(s.cfg.Seed, binary.BigEndian.Uint64(sum[:8]))) //nolint:gosec // G404: determinism from the seed is the point; nothing here is a secret.
-}
-
-const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-func text(rng *rand.Rand, n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = alphabet[rng.IntN(len(alphabet))]
-	}
-	return string(b)
-}
-
-func validKey(key string) bool {
-	if key == "" || len(key) > maxKeyLength {
-		return false
-	}
-	for i := range len(key) {
-		if key[i] < 0x20 || key[i] > 0x7e {
-			return false
-		}
-	}
-	return true
-}
-
 func validateCharge(req *pixsim.CreateCharge) error {
 	switch {
 	case req.Amount.Currency() != money.BRL:
@@ -505,51 +337,4 @@ func validateCharge(req *pixsim.CreateCharge) error {
 		return errors.New("expires_at is required")
 	}
 	return nil
-}
-
-func validateFault(f *pixsim.Fault) error {
-	switch f.Op {
-	case pixsim.OpCreate, pixsim.OpGet, pixsim.OpRefund, pixsim.OpGetRefund:
-	default:
-		return fmt.Errorf("op must be create, get, refund or get_refund, got %q", f.Op)
-	}
-	switch f.Kind {
-	case pixsim.Reject:
-		if f.Op != pixsim.OpCreate && f.Op != pixsim.OpRefund {
-			return errors.New("only a create or a refund can be rejected")
-		}
-	case pixsim.Delay:
-		if d := time.Duration(f.DelayMS) * time.Millisecond; d <= 0 || d > maxDelay {
-			return fmt.Errorf("delay_ms must be between 1 and %d", maxDelay.Milliseconds())
-		}
-	case pixsim.FailBefore, pixsim.TimeoutAfter:
-	default:
-		return fmt.Errorf("unknown fault %q", f.Kind)
-	}
-	if f.Kind != pixsim.Delay && f.DelayMS != 0 {
-		return errors.New("delay_ms only applies to the delay fault")
-	}
-	if f.Count < 1 || f.Count > maxFaultCount {
-		return fmt.Errorf("count must be between 1 and %d", maxFaultCount)
-	}
-	return nil
-}
-
-func decode(w http.ResponseWriter, r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("invalid JSON body: %w", err)
-	}
-	return nil
-}
-
-func invalid(w http.ResponseWriter, r *http.Request, detail string) {
-	httpapi.WriteProblem(w, r, httpapi.NewProblem(http.StatusBadRequest, pixsim.CodeInvalid, detail))
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }

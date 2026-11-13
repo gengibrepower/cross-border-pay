@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
 type CreateCharge struct {
@@ -57,7 +58,7 @@ type Refund struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type Op string
+type Op = simkit.Op
 
 const (
 	OpCreate    Op = "create"
@@ -66,39 +67,34 @@ const (
 	OpGetRefund Op = "get_refund"
 )
 
-type FaultKind string
-
-const (
-	// Reject refuses the create or the refund for good, as a provider that says no.
-	Reject FaultKind = "reject"
-	// FailBefore answers 500 without doing anything.
-	FailBefore FaultKind = "fail_before"
-	// TimeoutAfter does the work and then never answers: the ambiguous case of
-	// section 4.3, where the provider acted and the caller cannot know it.
-	TimeoutAfter FaultKind = "timeout_after"
-	// Delay waits DelayMS before doing the work and answering normally.
-	Delay FaultKind = "delay"
+// Ops are the operations a fault can target; Rejectable those that can be refused.
+var (
+	Ops        = []Op{OpCreate, OpGet, OpRefund, OpGetRefund}
+	Rejectable = []Op{OpCreate, OpRefund}
 )
 
-// Fault makes the next Count requests of Op fail as Kind, in the order the faults
-// were added.
-type Fault struct {
-	Op      Op        `json:"op"`
-	Kind    FaultKind `json:"fault"`
-	Count   int       `json:"count"`
-	DelayMS int64     `json:"delay_ms,omitempty"`
-}
+type (
+	FaultKind = simkit.FaultKind
+	Fault     = simkit.Fault
+)
+
+const (
+	Reject       = simkit.Reject
+	FailBefore   = simkit.FailBefore
+	TimeoutAfter = simkit.TimeoutAfter
+	Delay        = simkit.Delay
+)
 
 // Problem codes the simulator answers with.
 const (
 	CodeRejected       = "charge_rejected"
 	CodeRefundRejected = "refund_rejected"
 	CodeRefundNotFound = "refund_not_found"
-	CodeKeyReused      = "idempotency_key_reused"
 	CodeNotFound       = "charge_not_found"
-	CodeInvalid        = "invalid_request"
 	CodeNotPayable     = "charge_not_payable"
-	CodeFailedFault    = "internal_error"
-	CodeEventNotFound  = "event_not_found"
-	CodeDeliveryFailed = "event_delivery_failed"
+	CodeKeyReused      = simkit.CodeKeyReused
+	CodeInvalid        = simkit.CodeInvalid
+	CodeFailedFault    = simkit.CodeFailedFault
+	CodeEventNotFound  = simkit.CodeEventNotFound
+	CodeDeliveryFailed = simkit.CodeDeliveryFailed
 )
