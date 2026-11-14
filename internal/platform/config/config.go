@@ -12,7 +12,9 @@ import (
 var (
 	ErrMissingDatabaseURL   = errors.New("DATABASE_URL is required")
 	ErrMissingWebhookSecret = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
-	ErrWeakSigningKey       = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
+	// ErrMissingBoletoSimSecret is ErrMissingWebhookSecret for the boleto simulator.
+	ErrMissingBoletoSimSecret = errors.New("BOLETOSIM_WEBHOOK_SECRET is required: it verifies the boleto simulator's events")
+	ErrWeakSigningKey         = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
 )
 
 // minSigningKeyBytes is the merchants domain's MinSigningKeyBytes, repeated so that
@@ -30,13 +32,17 @@ type Config struct {
 	// PixSimURL is where the PIX simulator answers; every key mode uses it until a
 	// real provider arrives in F9.
 	PixSimURL string
-	// CardSimURL is where the card simulator answers, as PixSimURL for cards.
-	CardSimURL string
+	// CardSimURL and BoletoSimURL are where the card and boleto simulators answer, as
+	// PixSimURL for PIX.
+	CardSimURL   string
+	BoletoSimURL string
 	// ProviderTimeout bounds each call to a provider, below the server's write timeout
 	// so that the answer can still be stored and sent.
 	ProviderTimeout time.Duration
-	// PixSimWebhookSecret verifies the signature of the simulator's events.
-	PixSimWebhookSecret string
+	// PixSimWebhookSecret and BoletoSimWebhookSecret verify the signatures of each
+	// simulator's events.
+	PixSimWebhookSecret    string
+	BoletoSimWebhookSecret string
 	// WebhookSigningKey derives the merchants' webhook secrets; it never enters the
 	// database.
 	WebhookSigningKey string
@@ -55,6 +61,7 @@ func Load(getenv func(string) string) (Config, error) {
 		USDBRLRate:      "5.0000",
 		PixSimURL:       "http://localhost:8090",
 		CardSimURL:      "http://localhost:8091",
+		BoletoSimURL:    "http://localhost:8092",
 		ProviderTimeout: 5 * time.Second,
 		WebhookTimeout:  5 * time.Second,
 	}
@@ -97,8 +104,12 @@ func Load(getenv func(string) string) (Config, error) {
 	if v := getenv("CARDSIM_URL"); v != "" {
 		cfg.CardSimURL = v
 	}
+	if v := getenv("BOLETOSIM_URL"); v != "" {
+		cfg.BoletoSimURL = v
+	}
 
 	cfg.PixSimWebhookSecret = getenv("PIXSIM_WEBHOOK_SECRET")
+	cfg.BoletoSimWebhookSecret = getenv("BOLETOSIM_WEBHOOK_SECRET")
 	cfg.WebhookSigningKey = getenv("WEBHOOK_SIGNING_KEY")
 
 	if v := getenv("WEBHOOK_ALLOW_PRIVATE"); v != "" {
@@ -139,11 +150,17 @@ func Load(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
+// RequireWebhookSecret asks for every simulator's secret: an empty one would verify an
+// event signed with an empty key.
 func (c *Config) RequireWebhookSecret() error {
+	var errs []error
 	if c.PixSimWebhookSecret == "" {
-		return ErrMissingWebhookSecret
+		errs = append(errs, ErrMissingWebhookSecret)
 	}
-	return nil
+	if c.BoletoSimWebhookSecret == "" {
+		errs = append(errs, ErrMissingBoletoSimSecret)
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Config) RequireSigningKey() error {

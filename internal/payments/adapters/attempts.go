@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
+	"github.com/gengibrepower/cross-border-pay/internal/cpf"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -24,19 +26,24 @@ const (
 // CreateAttempt stores the intention to call the provider, in created. It returns
 // app.ErrLiveAttempt while the payment has an attempt that was not rejected.
 func (p *Postgres) CreateAttempt(ctx context.Context, payment domain.PaymentID, provider domain.ProviderName, now time.Time) (domain.PaymentAttempt, error) {
-	row, err := insertAttempt(ctx, paymentsdb.New(p.pool), payment, provider, domain.CardInput{}, now)
+	row, err := insertAttempt(ctx, paymentsdb.New(p.pool), payment, provider, domain.CardInput{}, domain.BoletoInput{}, now)
 	if err != nil {
 		return domain.PaymentAttempt{}, err
 	}
 	return restoreAttempt(&row)
 }
 
-func insertAttempt(ctx context.Context, q *paymentsdb.Queries, payment domain.PaymentID, provider domain.ProviderName, card domain.CardInput, now time.Time) (paymentsdb.PaymentAttempt, error) {
+func insertAttempt(ctx context.Context, q *paymentsdb.Queries, payment domain.PaymentID, provider domain.ProviderName, card domain.CardInput, boleto domain.BoletoInput, now time.Time) (paymentsdb.PaymentAttempt, error) {
+	payer, isBoleto := &boleto.Payer, !boleto.Due.IsZero()
 	row, err := q.InsertAttempt(ctx, paymentsdb.InsertAttemptParams{
 		PaymentID:     pgtype.UUID{Bytes: payment, Valid: true},
 		Provider:      string(provider),
 		CardToken:     pgtype.Text{String: card.Token, Valid: card.Token != ""},
 		ManualCapture: card.ManualCapture,
+		PayerName:     pgtype.Text{String: payer.Name, Valid: isBoleto},
+		PayerDocument: pgtype.Text{String: payer.Document.Digits(), Valid: isBoleto},
+		PayerEmail:    pgtype.Text{String: payer.Email, Valid: isBoleto && payer.Email != ""},
+		DueDate:       dateParam(boleto.Due),
 		CreatedAt:     pgtype.Timestamptz{Time: now, Valid: true},
 	})
 	var pgErr *pgconn.PgError
@@ -135,6 +142,7 @@ func applyLocked(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.L
 		Status:      string(attempt.Status()),
 		ExternalID:  pgtype.Text{String: attempt.ExternalID(), Valid: attempt.ExternalID() != ""},
 		BrCode:      pgtype.Text{String: attempt.BRCode(), Valid: attempt.BRCode() != ""},
+		Barcode:     pgtype.Text{String: attempt.Barcode(), Valid: attempt.Barcode() != ""},
 		UpdatedAt:   pgtype.Timestamptz{Time: attempt.UpdatedAt(), Valid: true},
 		Checks:      checks,
 		NextCheckAt: next,
@@ -199,7 +207,42 @@ func restoreAttempt(row *paymentsdb.PaymentAttempt) (domain.PaymentAttempt, erro
 	if err != nil {
 		return domain.PaymentAttempt{}, fmt.Errorf("payments: stored attempt %x: %w", row.ID.Bytes, err)
 	}
-	return domain.RestoreAttempt(row.ID.Bytes, row.PaymentID.Bytes, domain.ProviderName(row.Provider), status,
+	a := domain.RestoreAttempt(row.ID.Bytes, row.PaymentID.Bytes, domain.ProviderName(row.Provider), status,
 		row.ExternalID.String, row.BrCode.String,
-		domain.CardInput{Token: row.CardToken.String, ManualCapture: row.ManualCapture}, row.CreatedAt.Time.UTC(), row.UpdatedAt.Time.UTC()), nil
+		domain.CardInput{Token: row.CardToken.String, ManualCapture: row.ManualCapture}, row.CreatedAt.Time.UTC(), row.UpdatedAt.Time.UTC())
+	if row.DueDate.Valid {
+		in, err := restoreBoleto(row)
+		if err != nil {
+			return domain.PaymentAttempt{}, fmt.Errorf("payments: stored attempt %x: %w", row.ID.Bytes, err)
+		}
+		a.RestoreBoleto(in, row.Barcode.String)
+	}
+	return a, nil
+}
+
+// restoreBoleto reads what a boleto attempt stored; the CHECKs of migration 00023 keep
+// payer and due date together.
+func restoreBoleto(row *paymentsdb.PaymentAttempt) (domain.BoletoInput, error) {
+	doc, err := cpf.Parse(row.PayerDocument.String)
+	if err != nil {
+		return domain.BoletoInput{}, fmt.Errorf("payer document: %w", err)
+	}
+	y, m, d := row.DueDate.Time.Date()
+	due, err := calendar.NewDate(y, m, d)
+	if err != nil {
+		return domain.BoletoInput{}, fmt.Errorf("due date: %w", err)
+	}
+	return domain.BoletoInput{
+		Payer: domain.Payer{Name: row.PayerName.String, Document: doc, Email: row.PayerEmail.String},
+		Due:   due,
+	}, nil
+}
+
+// dateParam is a calendar date as Postgres's date: midnight UTC, which pgx sends as the
+// day alone.
+func dateParam(d calendar.Date) pgtype.Date {
+	if d.IsZero() {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: d.StartIn(time.UTC), Valid: true}
 }

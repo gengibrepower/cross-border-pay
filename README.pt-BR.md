@@ -352,6 +352,33 @@ Um adquirente sobre HTTP de verdade, com autorizações em memória e as falhas 
 </details>
 
 <details>
+<summary><b>Boleto</b> · 3 testes</summary>
+
+**Código de barras, linha digitável e calendário (`internal/boleto`, `internal/calendar`, decisão 21)**
+
+O código de barras de 44 posições e a linha digitável de 47 do layout Febraban, com o DV módulo 10 de cada campo e o módulo 11 geral, e o fator de vencimento reiniciado em 1000 em 22/02/2025: uma contagem só a partir de 03/07/2000, de 9.000 em 9.000 dias, e a leitura escolhe a data mais perto de hoje. O calendário é uma tabela versionada no código (`BR-2024`, com o 20 de novembro nacional da Lei 14.759/2023), com Carnaval, Sexta-feira Santa e Corpus Christi calculados pela Páscoa e 31/12 sem expediente; um `Date` sem hora nem fuso, e o dia que conta é o de `America/Sao_Paulo`. O CPF do pagador é validado pelos dois dígitos e nunca impresso inteiro: `String` e `slog` mostram `***.982.247-**`.
+
+**Resultado:** o exemplo publicado do Banco do Brasil (R$ 1,00, fator 3737) bate dígito a dígito nos dois sentidos; toda troca de um dígito da linha digitável é pega; 100 boletos aleatórios por rodada vão e voltam pela linha; os dias úteis conferidos por propriedade em 100 anos e a Páscoa em 11 anos publicados, de 1961 a 2285. O teste de propriedade do CPF achou que o módulo 11 da Receita deixa passar alguns erros de um dígito na base, porque os restos 0 e 1 dão o mesmo 0, e o teste passou a afirmar só o que o algoritmo garante. 5 mutantes mortos: pesos do módulo 10, fator contado um dia depois, segundo DV do CPF ignorado, Corpus Christi esquecido e o vencimento num feriado sem ir para o dia útil seguinte.
+
+---
+
+**Simulador de boleto (`cmd/boletosim`)**
+
+Um banco sobre HTTP de verdade com o `simkit` dos outros dois: registra o boleto uma vez por key, com o pagador e o vencimento, e devolve o código de barras e a linha digitável que ele mesmo gera (banco `999`, que não existe, e o nosso número tirado da seed). Recebe até o fim do primeiro dia útil a partir do vencimento e recusa depois (decisão 53): um boleto que vence no sábado é pago na segunda e recusado na terça, e um vencido aparece `expired` para quem ler primeiro. Pagar envia `boleto.paid` assinado em `Boletosim-Signature`, sem o pagador no corpo; os estornos voltam por transferência, nunca acima do pago.
+
+**Resultado:** 8 testes do cliente contra o servidor e 3 do comando: o código devolvido lido de volta pelo `internal/boleto` com o valor, o vencimento e o campo livre certos; a mesma seed dá os mesmos boletos e outra seed dá outros; o sábado, a terça e o feriado de 20/11; 7 pedidos inválidos recusados; um `fail_before` que não deixa boleto e um `reject` guardado; estornos parando no pago; e um evento só para um pagamento. 20/20 rodadas com `-race`. 1 mutante morto: recusar no próprio vencimento em vez do dia útil seguinte.
+
+---
+
+**Cobrança por boleto (`POST /v1/payments`, decisões 44, 53 e 54)**
+
+`method: boleto` com `payer` (nome, CPF e e-mail opcional) sai `201` pendente com `boleto.status: ready`, o código de barras, a linha digitável formatada e `due_date` três dias corridos depois em São Paulo; a cotação vale até o fim do último dia em que o banco recebe. O pagador e o vencimento ficam com a tentativa (migração 00023, com `CHECK`s que os mantêm juntos e longe do cartão), para que a repetição registre o mesmo boleto, e o código de barras devolvido também, para o `GET` mostrar o boleto que o pagador talvez já imprimiu; a linha digitável é derivada dele. O CPF não volta em resposta nenhuma. O `boleto.paid` chega ao inbox em `POST /v1/providers/boletosim/events` e o worker confirma a cobrança como qualquer outra, mas só numa tentativa do próprio `boletosim`: um evento que nomeie uma tentativa de outro provedor falha. Um boleto vencido é recusado pelo banco e a cobrança expira pelo job de expiração; uma resposta perdida fica `processing` até o resolvedor achar o boleto pela key.
+
+**Resultado:** 5 testes de contrato contra Postgres real e o simulador, mais 1 do worker e 2 de domínio: o boleto pronto, igual no `GET`, com o pagador gravado e o CPF ausente da resposta; pago no banco, confirmado pelo evento com os lançamentos da GameStore e estornado pela metade de volta pelo banco; recusado depois do vencimento e expirado sem lançamento; uma resposta perdida resolvida com 1 registro no banco; 7 pedidos recusados sem chamar o banco; e um `boleto.paid` que nomeia uma tentativa PIX deixado `failed`. Vencimento no sábado, num feriado e às 23h30 de sexta em São Paulo. 20/20 rodadas com `-race`. 8 mutantes mortos: CPF mascarado mandado ao banco, vencimento ou código de barras não gravados, pagador aceito no PIX, um evento que troca o código de barras aceito, o worker sem o handler do boleto, a API sem o verificador dele e o evento aplicado à tentativa de outro provedor (esta última uma falha de verdade, achada ao escrever o teste: com um provedor só ela não aparecia).
+
+</details>
+
+<details>
 <summary><b>Ponta a ponta</b> · 1 teste</summary>
 
 **Roteiro GameStore ponta a ponta (`e2e/`, seção 4.1)**
@@ -493,12 +520,12 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Paginação:** Keyset por `(merchant_id, id)`, da mais nova para a mais antiga, com cursor opaco em `next_cursor` (`null` na última página); `limit` de 1 a 100, padrão 20.<br>*Descartado:* `OFFSET`: fica mais lento a cada página e pula ou repete linhas quando chega cobrança nova. `starting_after=pay_…`: funciona, mas trava o formato do cursor no ID.
 
-- **Resposta da criação:** Sempre `201` quando a cobrança existe, com `pix.status` `ready` (com o BR Code), `processing` ou `failed`; os estados internos da tentativa não vazam.<br>*Descartado:* `5xx` enquanto `unknown`: o cliente repetiria um request que já fez o trabalho. `422` na recusa: esconderia uma cobrança que existe.
+- **Resposta da criação:** Sempre `201` quando a cobrança existe, com `pix.status` `ready` (com o BR Code), `processing` ou `failed`, e o `boleto.status` com os mesmos três; os estados internos da tentativa não vazam.<br>*Descartado:* `5xx` enquanto `unknown`: o cliente repetiria um request que já fez o trabalho. `422` na recusa: esconderia uma cobrança que existe.
 
 </details>
 
 <details>
-<summary><b>Provedores, PIX e cartão</b> · 17 decisões</summary>
+<summary><b>Provedores, PIX, cartão e boleto</b> · 22 decisões</summary>
 
 - **Escolha do provedor:** Pelo meio, numa cobrança nova; depois, pelo nome gravado com a tentativa ou o estorno, para o dinheiro voltar por onde entrou.<br>*Descartado:* Um provedor para tudo: sem cartão nem boleto. Rotear toda chamada pelo meio: uma rota mudada num deploy mandaria um estorno a um provedor que nunca teve o dinheiro.
 
@@ -513,6 +540,16 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 - **Captura parcial:** A parte capturada recotada com a taxa travada, gravada como cotação própria, que os lançamentos, os estornos e o saldo leem.<br>*Descartado:* Escalar as linhas da cotação original pela fração capturada: taxa e spread que não saem mais da própria fórmula, e um valor do pagador que pode diferir em um centavo do adquirente. Recotar com a taxa de hoje: o pagador pagaria uma taxa que nunca viu.
 
 - **Idempotência da captura:** Nenhuma chave: uma autorização é capturada uma vez, então a mesma captura responde como está e outro valor é `409`, mesmo depois de uma captura que o adquirente talvez não tenha recebido.<br>*Descartado:* Idempotency-Key: uma segunda chave com outro valor poderia capturar duas vezes.
+
+- **Confirmação do boleto:** O `boleto.paid` assinado do simulador, pelo mesmo inbox do PIX; o retorno CNAB 240 chega na F9 como evidência da conciliação.<br>*Descartado:* Esperar o CNAB: o boleto da F8 dependeria do parser da F9, e um banco real avisa a liquidação de qualquer jeito antes do arquivo do dia seguinte.
+
+- **Vencimento do boleto:** Três dias corridos em `America/Sao_Paulo` (decisão 44), recebido até o fim do primeiro dia útil a partir dele; a cotação dura até lá, e a data fica gravada com a tentativa.<br>*Descartado:* Recalcular o vencimento a cada chamada: uma criação retomada depois da meia-noite pediria outro boleto com a mesma key. Três dias úteis: a decisão 44 diz corridos, e o dia útil já entra no último dia de recebimento.
+
+- **Boleto vencido:** O simulador o mostra `expired` e o adapter o lê como `accepted`: ninguém pagou, e a cobrança expira pela própria cotação depois que o job pergunta ao banco.<br>*Descartado:* `rejected`: a máquina de estados não sai de `accepted` por recusa, e uma recusa liberaria a cobrança para uma segunda tentativa.
+
+- **Dados do pagador:** Só no boleto, como o token só no cartão; CPF validado pelos dígitos, guardado cru porque o banco precisa dele, e mascarado em `String`, `slog` e respostas, de onde nunca volta.<br>*Descartado:* Pagador em toda cobrança: dado pessoal sem uso no PIX e no cartão. Ecoar o pagador na resposta: o lojista já o tem, e o CPF apareceria em cada log de resposta.
+
+- **Evento de outro provedor:** Um evento só confirma uma tentativa do provedor que o enviou, conferido sob o lock da cobrança.<br>*Descartado:* Confiar no ID da tentativa: com dois simuladores, um evento autêntico de um poderia confirmar uma tentativa do outro.
 
 - **Resultado ambíguo do provedor:** A tentativa vai para `unknown` e é resolvida consultando o provedor ativamente (`GetAttempt` com backoff), com eventos e conciliação como rede de segurança.<br>*Descartado:* Tratar timeout como falha: o provedor pode ter cobrado o pagador.
 
@@ -685,6 +722,7 @@ mise run migrate      # aplica as migrations embutidas
 go run ./cmd/admin merchant create -name GameStore -mode test
 mise run pixsim       # simulador PIX em :8090
 mise run cardsim      # simulador de cartão em :8091
+mise run boletosim    # simulador de boleto em :8092
 go run ./cmd/api      # API em :8080
 go run ./cmd/worker   # jobs em segundo plano
 ```
@@ -697,9 +735,11 @@ O worker aplica os eventos do inbox, resolve tentativas e estornos `unknown`, ex
 | `FX_USD_BRL_RATE` | `5.0000` | Taxa base (API, worker) |
 | `PIXSIM_URL` | `http://localhost:8090` | Onde está o simulador PIX |
 | `CARDSIM_URL` | `http://localhost:8091` | Onde está o simulador de cartão |
-| `PIXSIM_SEED`, `CARDSIM_SEED` | `1` | Seed de toda escolha aleatória de cada simulador |
+| `BOLETOSIM_URL` | `http://localhost:8092` | Onde está o simulador de boleto |
+| `PIXSIM_SEED`, `CARDSIM_SEED`, `BOLETOSIM_SEED` | `1` | Seed de toda escolha aleatória de cada simulador |
 | `PIXSIM_WEBHOOK_URL` | definida pelo mise | Para onde o simulador manda os eventos: o inbox da API |
 | `PIXSIM_WEBHOOK_SECRET` | definida pelo mise | Assina os eventos do simulador; a API os verifica |
+| `BOLETOSIM_WEBHOOK_URL`, `BOLETOSIM_WEBHOOK_SECRET` | definidas pelo mise | O mesmo para o simulador de boleto; a API exige o segredo |
 | `WEBHOOK_SIGNING_KEY` | definida pelo mise | 32 bytes ou mais; deriva o segredo de webhook de cada lojista |
 | `WEBHOOK_TIMEOUT` | `5s` | Timeout de cada post de webhook |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` (mise: `true`) | Deixa webhooks irem a `http` e redes privadas, nunca a metadados de cloud |
@@ -742,6 +782,19 @@ curl -s -X POST $API/v1/payments/pay_.../capture \
 # 200 paga, card.captured: R$ 76,12, taxa 45, líquido 1455
 # Sem corpo captura tudo; sem capture_method a captura é na
 # criação e o 201 já vem pago.
+```
+
+Um boleto para a mesma GameStore (precisa do `mise run boletosim`):
+
+```sh
+curl -s $API/v1/payments -H "Authorization: Bearer $KEY" \
+  -H "Idempotency-Key: order-125" \
+  -d '{"amount": {"value": 2000, "currency": "USD"},
+       "method": "boleto", "reference": "order-125",
+       "payer": {"name": "Maria Silva", "document": "529.982.247-25"}}'
+# 201 pendente, boleto.status "ready", barcode de 44 dígitos,
+# digitable_line "99990.00129 ...", due_date três dias depois;
+# a cotação vale até o fim do último dia em que o banco recebe.
 ```
 
 Saldo e repasses:
@@ -793,9 +846,13 @@ cmd/
   admin/      tarefas de operação: criar lojista e API key, revogar chave
   pixsim/     simulador PIX: seed, falhas, "pagar agora", eventos
   cardsim/    simulador de cartão: tokens, autorização, captura
+  boletosim/  simulador de boleto: registro, vencimento, "pagar agora"
 internal/
   money/      Money e Currency em minor units
   brcode/     BR Code do PIX: TLV EMV e CRC16, gerador e leitor
+  boleto/     código de barras e linha digitável Febraban, DV e fator de vencimento
+  calendar/   datas e dias úteis bancários, feriados móveis pela Páscoa
+  cpf/        validação e máscara do CPF
   fx/         taxas, conversão, cotações
   ledger/     transações de partidas dobradas, invariantes, adapter Postgres
   merchants/  lojistas, API keys, endpoints de webhook
@@ -803,7 +860,7 @@ internal/
   events/     inbox do provedor e outbox
   webhooks/   entrega de webhooks aos lojistas
   reconciliation/ casos de revisão
-  providers/  simuladores (pixsim, cardsim) e o que eles dividem (simkit)
+  providers/  simuladores (pixsim, cardsim, boletosim) e o que eles dividem (simkit)
   idempotency/ keys de idempotência: lock, lease, pontos de retomada
   platform/   config, logs, relógio, Postgres, HTTP, SSRF, IDs públicos
 api/          openapi.yaml, o contrato escrito à mão
@@ -828,7 +885,7 @@ Não é parecer jurídico. Processar dinheiro de terceiros no Brasil exige autor
 
 **Felipe Gegembauer**, estudante de Bacharelado em Engenharia de Software na PUCPR (Curitiba).
 
-[GitHub](https://github.com/gengibrepower) · TODO: LinkedIn
+[GitHub](https://github.com/gengibrepower) · [LinkedIn](https://www.linkedin.com/in/felipe-gegembauer/)
 
 ## Licença
 

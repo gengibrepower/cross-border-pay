@@ -22,8 +22,10 @@ paths:
         `paid` with `card.status: captured`, or pending with `declined`. With
         `card.capture_method: manual` it is only authorized: pending with
         `authorized`, its quote valid for the authorization's 7 days, until
-        `POST /v1/payments/{id}/capture`. Boleto is not available yet: `422
-        unsupported_method`.
+        `POST /v1/payments/{id}/capture`. A boleto payment needs `payer` and comes
+        back pending with its barcode and linha digitável, due three days later; it
+        is received until the end of the first banking day on or after the due date
+        in São Paulo, and the quote lasts until then (decisions 44 and 53).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -44,6 +46,12 @@ paths:
                   method: card
                   reference: order-124
                   card: { token: tok_approved }
+              boleto:
+                value:
+                  amount: { value: 2000, currency: USD }
+                  method: boleto
+                  reference: order-125
+                  payer: { name: Maria Silva, document: 529.982.247-25, email: maria@example.com }
       responses:
         "201":
           description: The payment, pending until the payer pays.
@@ -740,7 +748,7 @@ components:
         method:
           type: string
           enum: [pix, boleto, card]
-          description: pix and card are available; boleto answers 422 `unsupported_method`.
+          description: Each method takes its own field, `card` or `payer`, and refuses the other's.
         reference:
           type: string
           minLength: 1
@@ -748,6 +756,32 @@ components:
           description: The merchant's own reference, such as an order ID.
         card:
           $ref: "#/components/schemas/CardInput"
+        payer:
+          $ref: "#/components/schemas/PayerInput"
+
+    PayerInput:
+      type: object
+      additionalProperties: false
+      required: [name, document]
+      description: >
+        Whom a boleto is registered to (decision 54). Required for `method: boleto`,
+        refused for any other (`payer_required`, `payer_not_allowed`). The CPF is
+        checked by its digits (`invalid_payer_document`) and never shown back, in a
+        response or a log.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Maria Silva
+        document:
+          type: string
+          description: The payer's CPF, 11 digits, bare or as 123.456.789-09.
+          example: 529.982.247-25
+        email:
+          type: string
+          maxLength: 254
+          example: maria@example.com
 
     CardInput:
       type: object
@@ -1052,9 +1086,39 @@ components:
           $ref: "#/components/schemas/Pix"
         card:
           $ref: "#/components/schemas/Card"
+        boleto:
+          $ref: "#/components/schemas/Boleto"
         created_at:
           type: string
           format: date-time
+
+    Boleto:
+      type: object
+      additionalProperties: false
+      required: [status, due_date]
+      description: >
+        The boleto for the payer, as `pix` is for PIX. `ready` carries the barcode and
+        the linha digitável to print or copy. `processing` means the bank's answer is
+        not known yet: fetch the payment again later. `failed` means the bank refused
+        to register it; create a new payment. The bank receives it until the end of the
+        first banking day on or after `due_date` and refuses it after.
+      properties:
+        status:
+          type: string
+          enum: [ready, processing, failed]
+        due_date:
+          type: string
+          format: date
+          example: "2026-11-17"
+        barcode:
+          type: string
+          pattern: "^[0-9]{44}$"
+          description: The 44 digits of the barcode (Febraban), present when status is ready.
+        digitable_line:
+          type: string
+          pattern: "^[0-9]{5}\\.[0-9]{5} [0-9]{5}\\.[0-9]{6} [0-9]{5}\\.[0-9]{6} [0-9] [0-9]{14}$"
+          description: The linha digitável, 47 digits as a boleto prints them, present when status is ready.
+          example: 99990.00129 34555.160448 59793.093283 6 16300000000100
 
     Pix:
       type: object

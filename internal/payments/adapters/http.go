@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/boleto"
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
 	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
@@ -63,10 +65,18 @@ func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handle
 }
 
 type createRequest struct {
-	Amount    *money.Money `json:"amount"`
-	Method    string       `json:"method"`
-	Reference string       `json:"reference"`
-	Card      *cardRequest `json:"card"`
+	Amount    *money.Money  `json:"amount"`
+	Method    string        `json:"method"`
+	Reference string        `json:"reference"`
+	Card      *cardRequest  `json:"card"`
+	Payer     *payerRequest `json:"payer"`
+}
+
+// payerRequest is whom a boleto is registered to (decision 54).
+type payerRequest struct {
+	Name     string `json:"name"`
+	Document string `json:"document"`
+	Email    string `json:"email"`
 }
 
 // cardRequest carries only a token: a card number is refused before it is read.
@@ -89,15 +99,46 @@ type quoteResponse struct {
 }
 
 type paymentResponse struct {
-	ID        string        `json:"id"`
-	Status    domain.Status `json:"status"`
-	Method    domain.Method `json:"method"`
-	Amount    money.Money   `json:"amount"`
-	Reference string        `json:"reference"`
-	Quote     quoteResponse `json:"quote"`
-	Pix       *pixResponse  `json:"pix,omitempty"`
-	Card      *cardResponse `json:"card,omitempty"`
-	CreatedAt time.Time     `json:"created_at"`
+	ID        string          `json:"id"`
+	Status    domain.Status   `json:"status"`
+	Method    domain.Method   `json:"method"`
+	Amount    money.Money     `json:"amount"`
+	Reference string          `json:"reference"`
+	Quote     quoteResponse   `json:"quote"`
+	Pix       *pixResponse    `json:"pix,omitempty"`
+	Card      *cardResponse   `json:"card,omitempty"`
+	Boleto    *boletoResponse `json:"boleto,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+// boletoResponse is the boleto to show the payer, without the attempt's internal
+// statuses, as pixResponse is for PIX: ready with its barcode and linha digitável,
+// processing while the bank's answer is not known, failed when the bank refused it.
+// The payer is not echoed: the merchant sent it, and the CPF is shown nowhere.
+type boletoResponse struct {
+	Status        pixStatus     `json:"status"`
+	DueDate       calendar.Date `json:"due_date"`
+	Barcode       string        `json:"barcode,omitempty"`
+	DigitableLine string        `json:"digitable_line,omitempty"`
+}
+
+func newBoletoResponse(a *domain.PaymentAttempt) *boletoResponse {
+	if a == nil || a.Boleto().Due.IsZero() {
+		return nil
+	}
+	resp := &boletoResponse{Status: pixProcessing, DueDate: a.Boleto().Due}
+	switch a.Status() {
+	case domain.AttemptAccepted, domain.AttemptSucceeded:
+		line, err := boleto.Line(a.Barcode())
+		if err != nil {
+			return resp
+		}
+		resp.Status, resp.Barcode, resp.DigitableLine = pixReady, a.Barcode(), boleto.FormatLine(line)
+	case domain.AttemptRejected:
+		resp.Status = pixFailed
+	case domain.AttemptCreated, domain.AttemptSent, domain.AttemptUnknown:
+	}
+	return resp
 }
 
 // pixResponse shows the attempt without its internal statuses: a merchant only needs
@@ -241,6 +282,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			create.Card.ManualCapture = true
 		default:
 			writeProblem(w, r, http.StatusBadRequest, "invalid_request", "card.capture_method must be automatic or manual")
+			return
+		}
+	}
+	if req.Payer != nil {
+		create.Payer = domain.PayerInput{Name: req.Payer.Name, Document: req.Payer.Document, Email: req.Payer.Email}
+		if create.Payer == (domain.PayerInput{}) {
+			writeProblem(w, r, http.StatusBadRequest, "invalid_request", "payer needs name and document")
 			return
 		}
 	}
@@ -459,6 +507,7 @@ func newPaymentResponse(priced *app.Priced) paymentResponse {
 	case domain.Card:
 		resp.Card = newCardResponse(priced)
 	case domain.Boleto:
+		resp.Boleto = newBoletoResponse(priced.Attempt)
 	}
 	return resp
 }
@@ -487,6 +536,16 @@ func (h *Handler) createError(w http.ResponseWriter, r *http.Request, err error)
 		writeProblem(w, r, http.StatusUnprocessableEntity, "card_not_allowed", "only a card payment takes a card")
 	case errors.Is(err, domain.ErrInvalidCardToken):
 		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_card_token", "card.token must be a token such as tok_approved; card numbers are never accepted")
+	case errors.Is(err, domain.ErrPayerRequired):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "payer_required", "a boleto payment needs payer.name and payer.document")
+	case errors.Is(err, domain.ErrPayerNotAllowed):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "payer_not_allowed", "only a boleto payment takes a payer")
+	case errors.Is(err, domain.ErrInvalidPayerName):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_payer_name", "payer.name must have 1 to 100 characters")
+	case errors.Is(err, domain.ErrInvalidPayerCPF):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_payer_document", "payer.document must be a valid CPF, with or without its dots and dash")
+	case errors.Is(err, domain.ErrInvalidEmail):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_payer_email", "payer.email must be a valid e-mail address of at most 254 characters")
 	case errors.Is(err, domain.ErrUnknownMethod):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_method", "method must be pix, boleto or card")
 	case errors.Is(err, domain.ErrUnsupportedCurrency):

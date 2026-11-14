@@ -17,8 +17,10 @@ ORDER BY id DESC
 LIMIT @max_rows::bigint;
 
 -- name: InsertAttempt :one
-INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture, created_at, updated_at)
-VALUES (@payment_id, @provider, 'created', sqlc.narg('card_token'), @manual_capture, @created_at, @created_at)
+INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture,
+    payer_name, payer_document, payer_email, due_date, created_at, updated_at)
+VALUES (@payment_id, @provider, 'created', sqlc.narg('card_token'), @manual_capture,
+    sqlc.narg('payer_name'), sqlc.narg('payer_document'), sqlc.narg('payer_email'), sqlc.narg('due_date'), @created_at, @created_at)
 RETURNING *;
 
 -- name: GetAttempt :one
@@ -29,7 +31,8 @@ SELECT * FROM payment_attempts WHERE id = @id FOR UPDATE;
 
 -- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = @status, external_id = sqlc.narg(external_id), br_code = sqlc.narg(br_code), updated_at = @updated_at,
+SET status = @status, external_id = sqlc.narg(external_id), br_code = sqlc.narg(br_code),
+    barcode = sqlc.narg(barcode), updated_at = @updated_at,
     checks = @checks, next_check_at = sqlc.narg(next_check_at)
 WHERE id = @id;
 
@@ -66,9 +69,11 @@ WHERE id = @id AND status IN ('sent', 'unknown');
 -- no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
 -- update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
 -- key check holds on the payment. quote_id is the quote the money is posted with: what
--- a capture took, once there is one.
+-- a capture took, once there is one. attempt_provider lets an event be checked against
+-- the provider that holds the attempt.
 SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency,
-    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency,
+    a.provider AS attempt_provider
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)

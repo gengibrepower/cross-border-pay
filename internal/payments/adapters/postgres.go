@@ -72,7 +72,7 @@ func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain
 		if err != nil {
 			return fmt.Errorf("insert payment: %w", err)
 		}
-		attempt, err = insertAttempt(ctx, queries, id.Bytes, provider, d.Card(), q.CreatedAt())
+		attempt, err = insertAttempt(ctx, queries, id.Bytes, provider, d.Card(), d.Boleto(), q.CreatedAt())
 		if err != nil {
 			return err
 		}

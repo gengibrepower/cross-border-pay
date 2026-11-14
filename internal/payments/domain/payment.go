@@ -7,9 +7,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
-
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
 )
 
 var (
@@ -97,16 +97,22 @@ type Draft struct {
 	amount    money.Money
 	reference string
 	card      CardInput
+	payer     Payer
+	due       calendar.Date
 }
 
 // NewDraft validates a payment request. card is required for a card payment and
-// refused for any other.
-func NewDraft(merchant MerchantID, method string, amount money.Money, reference string, card CardInput) (Draft, error) {
+// refused for any other, and payer likewise for a boleto.
+func NewDraft(merchant MerchantID, method string, amount money.Money, reference string, card CardInput, payer PayerInput) (Draft, error) {
 	m, err := ParseMethod(method)
 	if err != nil {
 		return Draft{}, err
 	}
 	if err := checkCard(m, card); err != nil {
+		return Draft{}, err
+	}
+	p, err := checkPayer(m, payer)
+	if err != nil {
 		return Draft{}, err
 	}
 	if amount.Currency() != ChargeCurrency {
@@ -118,7 +124,19 @@ func NewDraft(merchant MerchantID, method string, amount money.Money, reference 
 	if n := utf8.RuneCountInString(reference); n < 1 || n > 100 {
 		return Draft{}, fmt.Errorf("%w: got %d", ErrInvalidReference, n)
 	}
-	return Draft{merchant: merchant, method: m, amount: amount, reference: reference, card: card}, nil
+	return Draft{merchant: merchant, method: m, amount: amount, reference: reference, card: card, payer: p}, nil
+}
+
+func checkPayer(m Method, in PayerInput) (Payer, error) {
+	switch {
+	case m != Boleto && in != (PayerInput{}):
+		return Payer{}, ErrPayerNotAllowed
+	case m != Boleto:
+		return Payer{}, nil
+	case in == (PayerInput{}):
+		return Payer{}, ErrPayerRequired
+	}
+	return NewPayer(in)
 }
 
 func checkCard(m Method, card CardInput) error {
@@ -161,10 +179,20 @@ func (d *Draft) Reference() string { return d.reference }
 // Card is the zero value unless the method is card.
 func (d *Draft) Card() CardInput { return d.card }
 
-// QuoteValidity is how long the payment may wait for its payer: for a card captured
-// separately, as long as the authorization lasts.
-func (d *Draft) QuoteValidity() time.Duration {
+// Boleto is the zero value unless the method is boleto; its due date is set by
+// Schedule.
+func (d *Draft) Boleto() BoletoInput { return BoletoInput{Payer: d.payer, Due: d.due} }
+
+// Schedule fixes the payment's terms as it is created at now and returns how long it
+// may wait for its payer: for a card captured separately, as long as the authorization
+// lasts; for a boleto, until the end of its last day to be received, with the due date
+// set on the draft.
+func (d *Draft) Schedule(cal *calendar.Calendar, now time.Time) time.Duration {
 	switch {
+	case d.method == Boleto:
+		due, until := BoletoTerms(cal, now)
+		d.due = due
+		return until.Sub(now)
 	case d.method == Card && d.card.ManualCapture:
 		return CardAuthorizationValidity
 	case d.method == Card:

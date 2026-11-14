@@ -352,6 +352,33 @@ An acquirer over real HTTP, with authorizations in memory and the faults of `int
 </details>
 
 <details>
+<summary><b>Boleto</b> · 3 tests</summary>
+
+**Barcode, linha digitável and calendar (`internal/boleto`, `internal/calendar`, decision 21)**
+
+The 44-digit barcode and 47-digit linha digitável of Febraban's layout, with each field's modulo 10 check digit and the general modulo 11, and the due date factor restarted at 1000 on 22 February 2025: one count from 3 July 2000, repeating every 9,000 days, read as the date nearest today. The calendar is a table versioned in the code (`BR-2024`, with 20 November national under Lei 14.759/2023), with Carnival, Good Friday and Corpus Christi computed from Easter and 31 December without banking; a `Date` has no time or zone, and the day that counts is `America/Sao_Paulo`'s. The payer's CPF is checked by its two digits and never printed whole: `String` and `slog` show `***.982.247-**`.
+
+**Result:** Banco do Brasil's published example (R$ 1.00, factor 3737) matches digit for digit both ways; every one-digit change of the linha digitável is caught; 100 random boletos a round go through the line and back; business days checked by property over 100 years and Easter against 11 published years from 1961 to 2285. The CPF property test found that the Receita's modulo 11 lets a few one-digit errors in the base through, since remainders 0 and 1 both give 0, so the test now claims only what the algorithm guarantees. 5 mutants killed: the modulo 10 weights, the factor counted a day late, the CPF's second digit ignored, Corpus Christi forgotten, and a due date on a holiday not moved to the next banking day.
+
+---
+
+**Boleto simulator (`cmd/boletosim`)**
+
+A bank over real HTTP with the other two's `simkit`: it registers a boleto once per key, with its payer and due date, and returns the barcode and linha digitável it builds (bank `999`, which does not exist, and a nosso número drawn from the seed). It receives a boleto until the end of the first banking day on or after the due date and refuses it after (decision 53): one due on a Saturday is paid on Monday and refused on Tuesday, and a lapsed one reads `expired` to whoever asks first. Paying sends `boleto.paid` signed in `Boletosim-Signature`, with no payer in the body; refunds go back by transfer, never above what was paid.
+
+**Result:** 8 client tests against the server and 3 for the command: the returned code read back by `internal/boleto` with the right amount, due date and free field; the same seed gives the same boletos and another seed others; the Saturday, the Tuesday and the 20 November holiday; 7 invalid requests refused; a `fail_before` that leaves no boleto and a stored `reject`; refunds stopping at what was paid; and one event per payment. 20/20 runs with `-race`. 1 mutant killed: refusing on the due date itself instead of the next banking day.
+
+---
+
+**Boleto payment (`POST /v1/payments`, decisions 44, 53 and 54)**
+
+`method: boleto` with `payer` (name, CPF and an optional e-mail) comes back `201` pending with `boleto.status: ready`, the barcode, the printed linha digitável and a `due_date` three calendar days later in São Paulo; the quote lasts until the end of the bank's last day to receive it. The payer and the due date are stored with the attempt (migration 00023, with `CHECK`s that keep them together and apart from the card), so a retry registers the same boleto, and so is the returned barcode, so the `GET` shows the boleto the payer may already have printed; the linha digitável is derived from it. The CPF is in no response. `boleto.paid` reaches the inbox at `POST /v1/providers/boletosim/events` and the worker confirms the payment as any other, but only on an attempt `boletosim` holds: an event naming another provider's attempt fails. A lapsed boleto is refused by the bank and the payment expires through the expiry job; a lost answer stays `processing` until the resolver finds the boleto by its key.
+
+**Result:** 5 contract tests against a real Postgres and the simulator, plus 1 worker test and 2 domain ones: the boleto ready, the same on `GET`, with the payer stored and the CPF absent from the response; paid at the bank, confirmed by the event with the GameStore's books and half refunded back through the bank; refused after its due date and expired with nothing posted; a lost answer resolved with 1 registration at the bank; 7 refused requests that never call the bank; and a `boleto.paid` naming a PIX attempt left `failed`. Due dates on a Saturday, on a holiday and at 23:30 on a Friday in São Paulo. 20/20 runs with `-race`. 8 mutants killed: a masked CPF sent to the bank, the due date or the barcode not stored, a payer accepted on PIX, an event changing the barcode accepted, the worker without the boleto handler, the API without its verifier, and an event applied to another provider's attempt (that last one a real flaw, found while writing the test: with a single provider it never showed).
+
+</details>
+
+<details>
 <summary><b>End to end</b> · 1 test</summary>
 
 **GameStore walkthrough end to end (`e2e/`, section 4.1)**
@@ -493,12 +520,12 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Pagination:** Keyset on `(merchant_id, id)`, newest first, with an opaque cursor in `next_cursor` (`null` on the last page); `limit` from 1 to 100, default 20.<br>*Discarded:* `OFFSET`: slower with every page, and skips or repeats rows when new payments arrive. `starting_after=pay_…`: works, but ties the cursor format to the ID.
 
-- **Create response:** Always `201` once the payment exists, with `pix.status` `ready` (with the BR Code), `processing` or `failed`; internal attempt statuses never leak.<br>*Discarded:* A `5xx` while `unknown`: clients would retry a request that already did its work. A `422` on refusal: it would hide a payment that exists.
+- **Create response:** Always `201` once the payment exists, with `pix.status` `ready` (with the BR Code), `processing` or `failed`, and `boleto.status` with the same three; internal attempt statuses never leak.<br>*Discarded:* A `5xx` while `unknown`: clients would retry a request that already did its work. A `422` on refusal: it would hide a payment that exists.
 
 </details>
 
 <details>
-<summary><b>Providers, PIX and card</b> · 17 decisions</summary>
+<summary><b>Providers, PIX, card and boleto</b> · 22 decisions</summary>
 
 - **Choosing the provider:** By method for a new payment; by the name stored with the attempt or refund afterwards, so money goes back where it came in.<br>*Discarded:* One provider for everything: no card or boleto. Routing every call by method: a route changed in a deploy would send a refund to a provider that never had the money.
 
@@ -513,6 +540,16 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 - **Partial capture:** The captured part priced again at the locked rate, stored as its own quote that the books, refunds and balance read.<br>*Discarded:* Scaling the original quote's lines by the captured share: a fee and a spread that no longer come from their own formula, and a payer amount that may differ by a cent from the acquirer's. Repricing at today's rate: the payer would pay a rate never shown.
 
 - **Capture idempotency:** None needed: an authorization is captured once, so the same capture is answered as it is and another amount is a `409`, even after a capture the acquirer may not have received.<br>*Discarded:* An Idempotency-Key: a second key with another amount could capture twice.
+
+- **Boleto confirmation:** The simulator's signed `boleto.paid`, through the same inbox as PIX; the CNAB 240 return file arrives in F9 as the reconciliation's evidence.<br>*Discarded:* Waiting for CNAB: F8's boleto would depend on F9's parser, and a real bank announces the payment before the next day's file anyway.
+
+- **Boleto due date:** Three calendar days in `America/Sao_Paulo` (decision 44), received until the end of the first banking day on or after it; the quote lasts until then, and the date is stored with the attempt.<br>*Discarded:* Computing the due date on every call: a create resumed after midnight would ask for another boleto with the same key. Three business days: decision 44 says calendar days, and the banking day already enters the last day to receive.
+
+- **Lapsed boleto:** The simulator shows it `expired` and the adapter reads it as `accepted`: nobody paid, and the payment expires by its own quote once the job has asked the bank.<br>*Discarded:* `rejected`: the state machine does not leave `accepted` on a refusal, and a refusal would free the payment for a second attempt.
+
+- **Payer data:** On a boleto only, as the token is on a card only; the CPF checked by its digits, stored bare because the bank needs it, and masked in `String`, `slog` and responses, none of which ever shows it back.<br>*Discarded:* A payer on every payment: personal data with no use for PIX or card. Echoing the payer in the response: the merchant already has it, and the CPF would be in every response log.
+
+- **Another provider's event:** An event confirms only an attempt of the provider that sent it, checked under the payment's lock.<br>*Discarded:* Trusting the attempt ID: with two simulators, an authentic event of one could confirm an attempt of the other.
 
 - **Ambiguous provider result:** Attempt goes to `unknown` and is resolved by actively polling the provider (`GetAttempt` with backoff), with events and reconciliation as a safety net.<br>*Discarded:* Treating timeouts as failures: the provider may have charged the payer.
 
@@ -685,6 +722,7 @@ mise run migrate      # apply embedded migrations
 go run ./cmd/admin merchant create -name GameStore -mode test
 mise run pixsim       # PIX simulator on :8090
 mise run cardsim      # card simulator on :8091
+mise run boletosim    # boleto simulator on :8092
 go run ./cmd/api      # API on :8080
 go run ./cmd/worker   # background jobs
 ```
@@ -697,9 +735,11 @@ The worker applies inbox events, resolves `unknown` attempts and refunds, expire
 | `FX_USD_BRL_RATE` | `5.0000` | Base rate (API, worker) |
 | `PIXSIM_URL` | `http://localhost:8090` | Where the PIX simulator is |
 | `CARDSIM_URL` | `http://localhost:8091` | Where the card simulator is |
-| `PIXSIM_SEED`, `CARDSIM_SEED` | `1` | Seed of every random choice of each simulator |
+| `BOLETOSIM_URL` | `http://localhost:8092` | Where the boleto simulator is |
+| `PIXSIM_SEED`, `CARDSIM_SEED`, `BOLETOSIM_SEED` | `1` | Seed of every random choice of each simulator |
 | `PIXSIM_WEBHOOK_URL` | set by mise | Where the simulator posts its events: the API's inbox |
 | `PIXSIM_WEBHOOK_SECRET` | set by mise | Signs the simulator's events; the API verifies them |
+| `BOLETOSIM_WEBHOOK_URL`, `BOLETOSIM_WEBHOOK_SECRET` | set by mise | The same for the boleto simulator; the API requires the secret |
 | `WEBHOOK_SIGNING_KEY` | set by mise | 32 bytes or more; derives each merchant's webhook secret |
 | `WEBHOOK_TIMEOUT` | `5s` | Timeout of each webhook post |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` (mise: `true`) | Lets webhooks reach `http` and private networks, never cloud metadata |
@@ -742,6 +782,19 @@ curl -s -X POST $API/v1/payments/pay_.../capture \
 # 200 paid, card.captured: R$ 76.12, fee 45, net 1455
 # No body captures it all; without capture_method it is
 # captured on create and the 201 is already paid.
+```
+
+A boleto for the same GameStore (needs `mise run boletosim`):
+
+```sh
+curl -s $API/v1/payments -H "Authorization: Bearer $KEY" \
+  -H "Idempotency-Key: order-125" \
+  -d '{"amount": {"value": 2000, "currency": "USD"},
+       "method": "boleto", "reference": "order-125",
+       "payer": {"name": "Maria Silva", "document": "529.982.247-25"}}'
+# 201 pending, boleto.status "ready", a 44-digit barcode,
+# digitable_line "99990.00129 ...", due_date three days on;
+# the quote lasts until the end of the bank's last day.
 ```
 
 Balance and payouts:
@@ -793,9 +846,13 @@ cmd/
   admin/      operator tasks: create a merchant and its API key, revoke a key
   pixsim/     PIX simulator: seed, faults, "pay now", events
   cardsim/    card simulator: tokens, authorization, capture
+  boletosim/  boleto simulator: registration, due date, "pay now"
 internal/
   money/      Money and Currency in minor units
   brcode/     PIX BR Code: EMV TLV and CRC16, encoder and parser
+  boleto/     Febraban barcode and linha digitável, check digits, due date factor
+  calendar/   dates and banking days, movable holidays from Easter
+  cpf/        CPF validation and masking
   fx/         rates, conversion, quotes
   ledger/     double-entry transactions, invariants, Postgres adapter
   merchants/  merchants, API keys, webhook endpoints
@@ -803,7 +860,7 @@ internal/
   events/     provider inbox and the outbox
   webhooks/   webhook delivery to merchants
   reconciliation/ review cases
-  providers/  simulators (pixsim, cardsim) and what they share (simkit)
+  providers/  simulators (pixsim, cardsim, boletosim) and what they share (simkit)
   idempotency/ idempotency keys: lock, lease, recovery points
   platform/   config, logs, clock, Postgres, HTTP, SSRF, public IDs
 api/          openapi.yaml, the hand-written contract
@@ -828,7 +885,7 @@ Not legal advice. Processing third-party money in Brazil requires Central Bank a
 
 **Felipe Gegembauer**, Bachelor of Software Engineering student at PUCPR (Curitiba, Brazil).
 
-[GitHub](https://github.com/gengibrepower) · TODO: LinkedIn
+[GitHub](https://github.com/gengibrepower) · [LinkedIn](https://www.linkedin.com/in/felipe-gegembauer/)
 
 ## License
 

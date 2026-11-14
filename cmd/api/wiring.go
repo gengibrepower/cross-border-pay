@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
 	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
 	events "github.com/gengibrepower/cross-border-pay/internal/events/domain"
@@ -28,6 +29,7 @@ import (
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
@@ -51,9 +53,11 @@ type api struct {
 type deps struct {
 	usdbrl          string
 	clock           moduleClock
+	calendar        *calendar.Calendar
 	providers       *paymentsapp.Providers
 	providerTimeout time.Duration
 	webhookSecret   string
+	boletoSecret    string
 	signingKey      []byte
 	webhooks        ssrf.Policy
 }
@@ -89,7 +93,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 
 	return &api{
 		payments: paymentsadapters.NewHandler(
-			paymentsapp.NewService(quoter, paymentsStore, d.providers, d.clock, logger, d.providerTimeout),
+			paymentsapp.NewService(quoter, paymentsStore, d.providers, d.calendar, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewRefunder(rates, paymentsStore, d.providers, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewPayouts(paymentsStore, policy, d.clock),
 			merchantFrom,
@@ -97,7 +101,8 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 		),
 		events: eventsadapters.NewHandler(
 			eventsapp.NewInbox(eventsadapters.NewPostgres(pool), map[string]eventsapp.Verifier{
-				string(paymentsadapters.PixSimName): pixsimVerifier{secret: []byte(d.webhookSecret)},
+				string(paymentsadapters.PixSimName):    pixsimVerifier{secret: []byte(d.webhookSecret)},
+				string(paymentsadapters.BoletoSimName): boletosimVerifier{secret: []byte(d.boletoSecret)},
 			}, d.clock, logger),
 			logger,
 		),
@@ -132,6 +137,26 @@ func (v pixsimVerifier) Verify(header func(string) string, body []byte, now time
 	e, err := pixsim.VerifyEvent(v.secret, sig, body, now)
 	switch {
 	case errors.Is(err, pixsim.ErrBadEvent):
+		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrMalformedEvent, err)
+	case err != nil:
+		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrUnauthenticated, err)
+	}
+	return events.Incoming{ExternalID: e.ID, Type: string(e.Type), Payload: body, Signature: sig}, nil
+}
+
+// boletosimVerifier is pixsimVerifier for the boleto simulator.
+type boletosimVerifier struct {
+	secret []byte
+}
+
+func (v boletosimVerifier) Verify(header func(string) string, body []byte, now time.Time) (events.Incoming, error) {
+	if len(v.secret) == 0 {
+		return events.Incoming{}, fmt.Errorf("%w: no secret configured for boletosim", eventsapp.ErrUnauthenticated)
+	}
+	sig := header(boletosim.SignatureHeader)
+	e, err := boletosim.VerifyEvent(v.secret, sig, body, now)
+	switch {
+	case errors.Is(err, boletosim.ErrBadEvent):
 		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrMalformedEvent, err)
 	case err != nil:
 		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrUnauthenticated, err)

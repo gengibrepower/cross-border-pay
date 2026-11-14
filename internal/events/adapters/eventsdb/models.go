@@ -126,6 +126,11 @@ type PaymentAttempt struct {
 	EscalatedAt   pgtype.Timestamptz
 	CardToken     pgtype.Text
 	ManualCapture bool
+	PayerName     pgtype.Text
+	PayerDocument pgtype.Text
+	PayerEmail    pgtype.Text
+	DueDate       pgtype.Date
+	Barcode       pgtype.Text
 }
 
 type Quote struct {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
 	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
 	events "github.com/gengibrepower/cross-border-pay/internal/events/domain"
@@ -21,6 +22,7 @@ import (
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	pixsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/pixsim/server"
 )
@@ -256,5 +258,33 @@ func TestWorkerHoldsALatePaymentForReview(t *testing.T) {
 		reference != payments.DivergenceReference(paymentsadapters.PixSimName, charge.ID) {
 		t.Errorf("payment %s, case %s for %s, %d held (%v); want expired, late_payment and %d held",
 			status, kind, reference, held, err, amount.Amount())
+	}
+}
+
+// The worker hands the boleto simulator's events to the boleto handler, which only
+// applies them to an attempt the boleto simulator holds: a boleto.paid naming a PIX
+// attempt fails instead of confirming it.
+func TestWorkerRoutesBoletoEventsToTheirOwnAttempts(t *testing.T) {
+	e := newInboxEnv(t)
+	id, amount := e.attempt()
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Send})
+	e.apply(id, &payments.AttemptUpdate{Event: payments.Accept, ExternalID: "chg_1", BRCode: "000201"})
+	due, err := calendar.ParseDate("2026-11-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(boletosim.Event{
+		ID: "evt_b1", Type: boletosim.BoletoPaid, CreatedAt: t0,
+		Boleto: boletosim.Boleto{ID: "bol_1", IdempotencyKey: id.String(), Status: boletosim.Paid, Amount: amount, DueDate: due, PaidAt: &t0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.receive("boletosim", payload)
+	e.process()
+
+	a, err := e.payments.GetAttempt(t.Context(), id)
+	if status, subject := e.event(); err != nil || a.Status() != payments.AttemptAccepted || status != "failed" || subject != id.String() {
+		t.Errorf("attempt %s (%v), event %s for %q; want the PIX attempt untouched and the event failed", a.Status(), err, status, subject)
 	}
 }
