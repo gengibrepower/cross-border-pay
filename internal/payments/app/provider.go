@@ -96,6 +96,8 @@ type AttemptRequest struct {
 	ExpiresAt time.Time
 	// Card is the payer's card, set for a card attempt.
 	Card domain.CardInput
+	// Boleto is the payer and the due date, set for a boleto attempt.
+	Boleto domain.BoletoInput
 }
 
 type Outcome int
@@ -109,9 +111,11 @@ const (
 type AttemptResult struct {
 	Outcome    Outcome
 	ExternalID string
-	// Pix is set when an accepted PIX attempt returns its BR Code. A card attempt
-	// needs no instructions: the payer already gave the card.
-	Pix *PixInstructions
+	// Pix is set when an accepted PIX attempt returns its BR Code, and Boleto when a
+	// boleto attempt returns its barcode. A card attempt needs no instructions: the
+	// payer already gave the card.
+	Pix    *PixInstructions
+	Boleto *BoletoInstructions
 	// PaidAt and Amount are when and how much the payer paid, for Succeeded.
 	PaidAt time.Time
 	Amount money.Money
@@ -121,11 +125,20 @@ type PixInstructions struct {
 	BRCode string
 }
 
+// BoletoInstructions is the barcode the payer pays; its linha digitável is derived
+// from it.
+type BoletoInstructions struct {
+	Barcode string
+}
+
 // Update is the result as a change to the attempt.
 func (r *AttemptResult) Update() domain.AttemptUpdate {
 	u := domain.AttemptUpdate{Event: r.Event(), ExternalID: r.ExternalID, PaidAt: r.PaidAt, Amount: r.Amount}
 	if r.Pix != nil {
 		u.BRCode = r.Pix.BRCode
+	}
+	if r.Boleto != nil {
+		u.Barcode = r.Boleto.Barcode
 	}
 	return u
 }

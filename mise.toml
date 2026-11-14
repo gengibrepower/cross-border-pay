@@ -10,6 +10,9 @@ DATABASE_URL = "postgres://cbp:cbp@localhost:5432/cbp?sslmode=disable"
 PIXSIM_WEBHOOK_SECRET = "dev-pixsim-webhook-secret"
 # Where the simulator posts its events: the local API's webhook.
 PIXSIM_WEBHOOK_URL = "http://localhost:8080/v1/providers/pixsim/events"
+# Dev only: signs the boleto simulator's events, as PIXSIM_WEBHOOK_SECRET.
+BOLETOSIM_WEBHOOK_SECRET = "dev-boletosim-webhook-secret"
+BOLETOSIM_WEBHOOK_URL = "http://localhost:8080/v1/providers/boletosim/events"
 # Dev only: derives the merchants' webhook secrets. A real deployment sets its own.
 WEBHOOK_SIGNING_KEY = "dev-webhook-signing-key-0123456789abcdef"
 # Dev only: lets webhooks reach a local fake merchant over http.
@@ -78,3 +81,7 @@ run = "go run ./cmd/pixsim"
 [tasks.cardsim]
 description = "Sobe o simulador de cartão (CARDSIM_ADDR, padrão :8091; CARDSIM_SEED, padrão 1)"
 run = "go run ./cmd/cardsim"
+
+[tasks.boletosim]
+description = "Sobe o simulador de boleto (BOLETOSIM_ADDR, padrão :8092; BOLETOSIM_SEED, padrão 1; eventos para BOLETOSIM_WEBHOOK_URL)"
+run = "go run ./cmd/boletosim"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -25,10 +26,16 @@ type paymentEvents struct {
 }
 
 func (h paymentEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (eventsapp.Result, error) {
-	if e.Provider != string(paymentsadapters.PixSimName) {
+	var handle func(context.Context, pgx.Tx, *paymentsadapters.Sinks, []byte, time.Time) (string, error)
+	switch e.Provider {
+	case string(paymentsadapters.PixSimName):
+		handle = paymentsadapters.HandlePixSimEvent
+	case string(paymentsadapters.BoletoSimName):
+		handle = paymentsadapters.HandleBoletoSimEvent
+	default:
 		return eventsapp.Result{Outcome: events.Ignored, Reason: "no handler for provider " + e.Provider}, nil
 	}
-	subject, err := paymentsadapters.HandlePixSimEvent(ctx, tx, &h.sinks, e.Payload, h.clock.Now())
+	subject, err := handle(ctx, tx, &h.sinks, e.Payload, h.clock.Now())
 	r := eventsapp.Result{Subject: subject}
 	switch {
 	case err == nil:

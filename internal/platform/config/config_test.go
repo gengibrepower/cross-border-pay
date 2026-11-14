@@ -21,43 +21,47 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			vars: nil,
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelInfo, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", BoletoSimURL: "http://localhost:8092", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 		{
 			name: "all set",
 			vars: map[string]string{
-				"HTTP_ADDR":             "127.0.0.1:9000",
-				"LOG_LEVEL":             "debug",
-				"SHUTDOWN_TIMEOUT":      "30s",
-				"DATABASE_URL":          "postgres://localhost/cbp",
-				"FX_USD_BRL_RATE":       "5.4321",
-				"PIXSIM_URL":            "http://pixsim:8090",
-				"CARDSIM_URL":           "http://cardsim:8091",
-				"PROVIDER_TIMEOUT":      "2s",
-				"PIXSIM_WEBHOOK_SECRET": "s3cret",
-				"WEBHOOK_SIGNING_KEY":   "0123456789abcdef0123456789abcdef",
-				"WEBHOOK_ALLOW_PRIVATE": "true",
-				"WEBHOOK_TIMEOUT":       "3s",
+				"HTTP_ADDR":                "127.0.0.1:9000",
+				"LOG_LEVEL":                "debug",
+				"SHUTDOWN_TIMEOUT":         "30s",
+				"DATABASE_URL":             "postgres://localhost/cbp",
+				"FX_USD_BRL_RATE":          "5.4321",
+				"PIXSIM_URL":               "http://pixsim:8090",
+				"CARDSIM_URL":              "http://cardsim:8091",
+				"BOLETOSIM_URL":            "http://boletosim:8092",
+				"BOLETOSIM_WEBHOOK_SECRET": "b0leto",
+				"PROVIDER_TIMEOUT":         "2s",
+				"PIXSIM_WEBHOOK_SECRET":    "s3cret",
+				"WEBHOOK_SIGNING_KEY":      "0123456789abcdef0123456789abcdef",
+				"WEBHOOK_ALLOW_PRIVATE":    "true",
+				"WEBHOOK_TIMEOUT":          "3s",
 			},
 			want: Config{
-				HTTPAddr:            "127.0.0.1:9000",
-				LogLevel:            slog.LevelDebug,
-				ShutdownTimeout:     30 * time.Second,
-				DatabaseURL:         "postgres://localhost/cbp",
-				USDBRLRate:          "5.4321",
-				PixSimURL:           "http://pixsim:8090",
-				CardSimURL:          "http://cardsim:8091",
-				ProviderTimeout:     2 * time.Second,
-				PixSimWebhookSecret: "s3cret",
-				WebhookSigningKey:   "0123456789abcdef0123456789abcdef",
-				WebhookAllowPrivate: true,
-				WebhookTimeout:      3 * time.Second,
+				HTTPAddr:               "127.0.0.1:9000",
+				LogLevel:               slog.LevelDebug,
+				ShutdownTimeout:        30 * time.Second,
+				DatabaseURL:            "postgres://localhost/cbp",
+				USDBRLRate:             "5.4321",
+				PixSimURL:              "http://pixsim:8090",
+				CardSimURL:             "http://cardsim:8091",
+				BoletoSimURL:           "http://boletosim:8092",
+				BoletoSimWebhookSecret: "b0leto",
+				ProviderTimeout:        2 * time.Second,
+				PixSimWebhookSecret:    "s3cret",
+				WebhookSigningKey:      "0123456789abcdef0123456789abcdef",
+				WebhookAllowPrivate:    true,
+				WebhookTimeout:         3 * time.Second,
 			},
 		},
 		{
 			name: "level is case insensitive",
 			vars: map[string]string{"LOG_LEVEL": "WARN"},
-			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
+			want: Config{HTTPAddr: ":8080", LogLevel: slog.LevelWarn, ShutdownTimeout: 10 * time.Second, USDBRLRate: "5.0000", PixSimURL: "http://localhost:8090", CardSimURL: "http://localhost:8091", BoletoSimURL: "http://localhost:8092", ProviderTimeout: 5 * time.Second, WebhookTimeout: 5 * time.Second},
 		},
 	}
 	for _, tt := range tests {
@@ -118,8 +122,11 @@ func TestRequireWebhookSecret(t *testing.T) {
 	if err := (&Config{}).RequireWebhookSecret(); !errors.Is(err, ErrMissingWebhookSecret) {
 		t.Errorf("RequireWebhookSecret() without secret = %v, want %v", err, ErrMissingWebhookSecret)
 	}
-	if err := (&Config{PixSimWebhookSecret: "s3cret"}).RequireWebhookSecret(); err != nil {
-		t.Errorf("RequireWebhookSecret() with secret = %v", err)
+	if err := (&Config{PixSimWebhookSecret: "s3cret"}).RequireWebhookSecret(); !errors.Is(err, ErrMissingBoletoSimSecret) {
+		t.Errorf("RequireWebhookSecret() without the boleto secret = %v, want %v", err, ErrMissingBoletoSimSecret)
+	}
+	if err := (&Config{PixSimWebhookSecret: "s3cret", BoletoSimWebhookSecret: "b0leto"}).RequireWebhookSecret(); err != nil {
+		t.Errorf("RequireWebhookSecret() with both secrets = %v", err)
 	}
 }
 

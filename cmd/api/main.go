@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	paymentsdomain "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -22,6 +23,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/logging"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
@@ -62,19 +64,30 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: CARDSIM_URL: %w", err)
 	}
+	boletosimClient, err := boletosim.NewClient(cfg.BoletoSimURL, &http.Client{Timeout: cfg.ProviderTimeout})
+	if err != nil {
+		return fmt.Errorf("config: BOLETOSIM_URL: %w", err)
+	}
 	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
-		paymentsdomain.Pix:  paymentsadapters.NewPixSim(pixsimClient),
-		paymentsdomain.Card: paymentsadapters.NewCardSim(cardsimClient),
+		paymentsdomain.Pix:    paymentsadapters.NewPixSim(pixsimClient),
+		paymentsdomain.Card:   paymentsadapters.NewCardSim(cardsimClient),
+		paymentsdomain.Boleto: paymentsadapters.NewBoletoSim(boletosimClient),
 	})
 	if err != nil {
 		return fmt.Errorf("providers: %w", err)
 	}
+	cal, err := calendar.Brazil()
+	if err != nil {
+		return fmt.Errorf("calendar: %w", err)
+	}
 	api, err := newAPI(pool, logger, &deps{
 		usdbrl:          cfg.USDBRLRate,
 		clock:           clock.System{},
+		calendar:        &cal,
 		providers:       providers,
 		providerTimeout: cfg.ProviderTimeout,
 		webhookSecret:   cfg.PixSimWebhookSecret,
+		boletoSecret:    cfg.BoletoSimWebhookSecret,
 		signingKey:      []byte(cfg.WebhookSigningKey),
 		webhooks:        ssrf.Policy{AllowPrivate: cfg.WebhookAllowPrivate},
 	})

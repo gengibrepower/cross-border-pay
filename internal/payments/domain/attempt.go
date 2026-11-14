@@ -44,6 +44,8 @@ type PaymentAttempt struct {
 	externalID string
 	brCode     string
 	card       CardInput
+	boleto     BoletoInput
+	barcode    string
 	createdAt  time.Time
 	updatedAt  time.Time
 }
@@ -54,6 +56,12 @@ func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, stat
 		id: id, payment: payment, provider: provider, status: status,
 		externalID: externalID, brCode: brCode, card: card, createdAt: createdAt, updatedAt: updatedAt,
 	}
+}
+
+// RestoreBoleto adds what a boleto attempt stored to one RestoreAttempt rebuilt; only
+// adapters call it.
+func (a *PaymentAttempt) RestoreBoleto(in BoletoInput, barcode string) {
+	a.boleto, a.barcode = in, barcode
 }
 
 func (a *PaymentAttempt) ID() AttemptID { return a.id }
@@ -74,16 +82,24 @@ func (a *PaymentAttempt) BRCode() string { return a.brCode }
 // before calling the provider can still be completed the same way.
 func (a *PaymentAttempt) Card() CardInput { return a.card }
 
+// Boleto is what a boleto attempt asked the bank to register.
+func (a *PaymentAttempt) Boleto() BoletoInput { return a.boleto }
+
+// Barcode is the boleto's 44 digits, empty until the bank returns them. The linha
+// digitável is derived from it.
+func (a *PaymentAttempt) Barcode() string { return a.barcode }
+
 func (a *PaymentAttempt) CreatedAt() time.Time { return a.createdAt }
 
 func (a *PaymentAttempt) UpdatedAt() time.Time { return a.updatedAt }
 
-// AttemptUpdate is what one answer or event says about an attempt. ExternalID and
-// BRCode are empty when it does not carry them.
+// AttemptUpdate is what one answer or event says about an attempt. ExternalID, BRCode
+// and Barcode are empty when it does not carry them.
 type AttemptUpdate struct {
 	Event      AttemptEvent
 	ExternalID string
 	BRCode     string
+	Barcode    string
 	// PaidAt and Amount are when and how much the provider says the payer paid, set
 	// with Succeed. PaidAt decides whether the payment was on time, not when the news
 	// reached us.
@@ -93,7 +109,8 @@ type AttemptUpdate struct {
 
 // Apply moves the attempt by the update's event and records what the provider named
 // for the first time. A value the attempt already has with another content is refused:
-// the provider cannot rename an attempt or change the code a payer may have scanned.
+// the provider cannot rename an attempt or change the code a payer may have scanned or
+// the boleto a payer may have printed.
 // changed is false when there is nothing new to store, so a duplicate that first
 // reveals the external ID still counts as a change.
 func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, err error) {
@@ -109,7 +126,11 @@ func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, e
 	if err != nil {
 		return false, fmt.Errorf("attempt %s: %w", a.id, err)
 	}
-	if !moved && !learnedID && !learnedCode {
+	learnedBarcode, err := learn(a.barcode, u.Barcode, ErrBarcodeMismatch)
+	if err != nil {
+		return false, fmt.Errorf("attempt %s: %w", a.id, err)
+	}
+	if !moved && !learnedID && !learnedCode && !learnedBarcode {
 		return false, nil
 	}
 	a.status = to
@@ -118,6 +139,9 @@ func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, e
 	}
 	if learnedCode {
 		a.brCode = u.BRCode
+	}
+	if learnedBarcode {
+		a.barcode = u.Barcode
 	}
 	a.updatedAt = now
 	return true, nil

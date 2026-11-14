@@ -20,7 +20,7 @@ WHERE id IN (
     LIMIT $3::bigint
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode
 `
 
 type ClaimDueAttemptsParams struct {
@@ -55,6 +55,11 @@ func (q *Queries) ClaimDueAttempts(ctx context.Context, arg ClaimDueAttemptsPara
 			&i.EscalatedAt,
 			&i.CardToken,
 			&i.ManualCapture,
+			&i.PayerName,
+			&i.PayerDocument,
+			&i.PayerEmail,
+			&i.DueDate,
+			&i.Barcode,
 		); err != nil {
 			return nil, err
 		}
@@ -222,7 +227,7 @@ func (q *Queries) EscalateRefund(ctx context.Context, arg EscalateRefundParams) 
 }
 
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE id = $1
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode FROM payment_attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -242,6 +247,11 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 		&i.EscalatedAt,
 		&i.CardToken,
 		&i.ManualCapture,
+		&i.PayerName,
+		&i.PayerDocument,
+		&i.PayerEmail,
+		&i.DueDate,
+		&i.Barcode,
 	)
 	return i, err
 }
@@ -314,9 +324,11 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 }
 
 const insertAttempt = `-- name: InsertAttempt :one
-INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture, created_at, updated_at)
-VALUES ($1, $2, 'created', $3, $4, $5, $5)
-RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture
+INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture,
+    payer_name, payer_document, payer_email, due_date, created_at, updated_at)
+VALUES ($1, $2, 'created', $3, $4,
+    $5, $6, $7, $8, $9, $9)
+RETURNING id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode
 `
 
 type InsertAttemptParams struct {
@@ -324,6 +336,10 @@ type InsertAttemptParams struct {
 	Provider      string
 	CardToken     pgtype.Text
 	ManualCapture bool
+	PayerName     pgtype.Text
+	PayerDocument pgtype.Text
+	PayerEmail    pgtype.Text
+	DueDate       pgtype.Date
 	CreatedAt     pgtype.Timestamptz
 }
 
@@ -333,6 +349,10 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		arg.Provider,
 		arg.CardToken,
 		arg.ManualCapture,
+		arg.PayerName,
+		arg.PayerDocument,
+		arg.PayerEmail,
+		arg.DueDate,
 		arg.CreatedAt,
 	)
 	var i PaymentAttempt
@@ -350,6 +370,11 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		&i.EscalatedAt,
 		&i.CardToken,
 		&i.ManualCapture,
+		&i.PayerName,
+		&i.PayerDocument,
+		&i.PayerEmail,
+		&i.DueDate,
+		&i.Barcode,
 	)
 	return i, err
 }
@@ -478,7 +503,7 @@ func (q *Queries) InsertSettlement(ctx context.Context, arg InsertSettlementPara
 }
 
 const latestAttempts = `-- name: LatestAttempts :many
-SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts
+SELECT DISTINCT ON (payment_id) id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode FROM payment_attempts
 WHERE payment_id = ANY($1::uuid[])
 ORDER BY payment_id, id DESC
 `
@@ -506,6 +531,11 @@ func (q *Queries) LatestAttempts(ctx context.Context, paymentIds []pgtype.UUID) 
 			&i.EscalatedAt,
 			&i.CardToken,
 			&i.ManualCapture,
+			&i.PayerName,
+			&i.PayerDocument,
+			&i.PayerEmail,
+			&i.DueDate,
+			&i.Barcode,
 		); err != nil {
 			return nil, err
 		}
@@ -620,7 +650,7 @@ func (q *Queries) ListSettlements(ctx context.Context, arg ListSettlementsParams
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE id = $1 FOR UPDATE
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode FROM payment_attempts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttempt, error) {
@@ -640,6 +670,11 @@ func (q *Queries) LockAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttem
 		&i.EscalatedAt,
 		&i.CardToken,
 		&i.ManualCapture,
+		&i.PayerName,
+		&i.PayerDocument,
+		&i.PayerEmail,
+		&i.DueDate,
+		&i.Barcode,
 	)
 	return i, err
 }
@@ -748,7 +783,8 @@ func (q *Queries) LockPayment(ctx context.Context, id pgtype.UUID) (LockPaymentR
 
 const lockPaymentOfAttempt = `-- name: LockPaymentOfAttempt :one
 SELECT p.id AS payment_id, p.merchant_id, p.status, p.version, p.amount, p.currency,
-    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency
+    coalesce(p.captured_quote_id, p.quote_id)::uuid AS quote_id, q.payer_amount, q.quote_currency,
+    a.provider AS attempt_provider
 FROM payment_attempts AS a
 JOIN payments AS p ON p.id = a.payment_id
 JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
@@ -757,15 +793,16 @@ FOR NO KEY UPDATE OF p
 `
 
 type LockPaymentOfAttemptRow struct {
-	PaymentID     pgtype.UUID
-	MerchantID    pgtype.UUID
-	Status        string
-	Version       int32
-	Amount        int64
-	Currency      string
-	QuoteID       pgtype.UUID
-	PayerAmount   int64
-	QuoteCurrency string
+	PaymentID       pgtype.UUID
+	MerchantID      pgtype.UUID
+	Status          string
+	Version         int32
+	Amount          int64
+	Currency        string
+	QuoteID         pgtype.UUID
+	PayerAmount     int64
+	QuoteCurrency   string
+	AttemptProvider string
 }
 
 // Section 4.4: events of one payment are applied one at a time. Every path that changes
@@ -773,7 +810,8 @@ type LockPaymentOfAttemptRow struct {
 // no two paths wait on each other in opposite orders. NO KEY UPDATE is the lock an
 // update takes; unlike FOR UPDATE, it does not wait for the KEY SHARE that a foreign
 // key check holds on the payment. quote_id is the quote the money is posted with: what
-// a capture took, once there is one.
+// a capture took, once there is one. attempt_provider lets an event be checked against
+// the provider that holds the attempt.
 func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (LockPaymentOfAttemptRow, error) {
 	row := q.db.QueryRow(ctx, lockPaymentOfAttempt, id)
 	var i LockPaymentOfAttemptRow
@@ -787,6 +825,7 @@ func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (Loc
 		&i.QuoteID,
 		&i.PayerAmount,
 		&i.QuoteCurrency,
+		&i.AttemptProvider,
 	)
 	return i, err
 }
@@ -1138,7 +1177,7 @@ func (q *Queries) SettlementPayments(ctx context.Context, settlementIds []pgtype
 }
 
 const succeededAttempt = `-- name: SucceededAttempt :one
-SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture FROM payment_attempts WHERE payment_id = $1 AND status = 'succeeded'
+SELECT id, payment_id, provider, status, external_id, created_at, updated_at, br_code, checks, next_check_at, escalated_at, card_token, manual_capture, payer_name, payer_document, payer_email, due_date, barcode FROM payment_attempts WHERE payment_id = $1 AND status = 'succeeded'
 `
 
 // At most one: a payment has one live attempt at a time.
@@ -1159,6 +1198,11 @@ func (q *Queries) SucceededAttempt(ctx context.Context, paymentID pgtype.UUID) (
 		&i.EscalatedAt,
 		&i.CardToken,
 		&i.ManualCapture,
+		&i.PayerName,
+		&i.PayerDocument,
+		&i.PayerEmail,
+		&i.DueDate,
+		&i.Barcode,
 	)
 	return i, err
 }
@@ -1176,15 +1220,17 @@ func (q *Queries) SucceededRefunds(ctx context.Context, paymentID pgtype.UUID) (
 
 const updateAttempt = `-- name: UpdateAttempt :exec
 UPDATE payment_attempts
-SET status = $1, external_id = $2, br_code = $3, updated_at = $4,
-    checks = $5, next_check_at = $6
-WHERE id = $7
+SET status = $1, external_id = $2, br_code = $3,
+    barcode = $4, updated_at = $5,
+    checks = $6, next_check_at = $7
+WHERE id = $8
 `
 
 type UpdateAttemptParams struct {
 	Status      string
 	ExternalID  pgtype.Text
 	BrCode      pgtype.Text
+	Barcode     pgtype.Text
 	UpdatedAt   pgtype.Timestamptz
 	Checks      int32
 	NextCheckAt pgtype.Timestamptz
@@ -1196,6 +1242,7 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 		arg.Status,
 		arg.ExternalID,
 		arg.BrCode,
+		arg.Barcode,
 		arg.UpdatedAt,
 		arg.Checks,
 		arg.NextCheckAt,

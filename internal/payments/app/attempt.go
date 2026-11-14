@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, req *CreateRequest) (Priced, error) {
-	draft, err := domain.NewDraft(merchant, req.Method, req.Amount, req.Reference, req.Card)
+	draft, err := domain.NewDraft(merchant, req.Method, req.Amount, req.Reference, req.Card, req.Payer)
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
@@ -18,7 +18,7 @@ func (s *Service) createPayment(ctx context.Context, held *idempotency.Held, mer
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
-	quote, err := s.quoter.Quote(ctx, draft.Amount(), money.BRL, draft.QuoteValidity())
+	quote, err := s.quoter.Quote(ctx, draft.Amount(), money.BRL, draft.Schedule(s.calendar, s.clock.Now()))
 	if err != nil {
 		return Priced{}, fmt.Errorf("payments: create: %w", err)
 	}
@@ -70,6 +70,7 @@ func (s *Service) call(ctx context.Context, provider Provider, p *Priced, a *dom
 		Amount:    p.Quote.PayerAmount(),
 		ExpiresAt: p.Quote.ExpiresAt(),
 		Card:      a.Card(),
+		Boleto:    a.Boleto(),
 	})
 	if err != nil {
 		s.logger.WarnContext(ctx, "provider answer is ambiguous; attempt goes to unknown",

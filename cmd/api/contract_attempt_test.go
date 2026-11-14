@@ -202,12 +202,12 @@ func (c *contract) crashedCreateOf(merchantKey, idempotencyKey, body, method str
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	draft, err := payments.NewDraft(payments.MerchantID(principal.MerchantID), method, money.New(2000, money.USD), "order-123", card)
+	draft, err := payments.NewDraft(payments.MerchantID(principal.MerchantID), method, money.New(2000, money.USD), "order-123", card, payments.PayerInput{})
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	quote, err := fxapp.NewQuoter(fxadapters.NewFixedRates(rate), c.clock, fx.DefaultPricing).
-		Quote(ctx, money.New(2000, money.USD), money.BRL, draft.QuoteValidity())
+		Quote(ctx, money.New(2000, money.USD), money.BRL, draft.Schedule(c.deps.calendar, c.clock.Now()))
 	if err != nil {
 		c.t.Fatal(err)
 	}

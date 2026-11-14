@@ -31,8 +31,10 @@ import (
 )
 
 const (
-	pixsimSecret = "e2e-pixsim-webhook-secret"                //nolint:gosec // G101: exists only between these processes, for this test.
-	signingKey   = "e2e-webhook-signing-key-0123456789abcdef" //nolint:gosec // G101: exists only between these processes, for this test.
+	pixsimSecret = "e2e-pixsim-webhook-secret" //nolint:gosec // G101: exists only between these processes, for this test.
+	// boletosimSecret is required by the API even where no boleto is paid.
+	boletosimSecret = "e2e-boletosim-webhook-secret"             //nolint:gosec // G101: exists only between these processes, for this test.
+	signingKey      = "e2e-webhook-signing-key-0123456789abcdef" //nolint:gosec // G101: exists only between these processes, for this test.
 	// providerTimeout is short so a hung provider call turns unknown quickly.
 	providerTimeout = "1s"
 	webhookTimeout  = "2s"
@@ -218,7 +220,8 @@ func newStack(t *testing.T) *stack {
 
 	common := map[string]string{
 		"DATABASE_URL": s.dbURL, "PIXSIM_URL": s.charges.URL, "PIXSIM_WEBHOOK_SECRET": pixsimSecret,
-		"WEBHOOK_SIGNING_KEY": signingKey, "WEBHOOK_ALLOW_PRIVATE": "true", "WEBHOOK_TIMEOUT": webhookTimeout,
+		"BOLETOSIM_WEBHOOK_SECRET": boletosimSecret,
+		"WEBHOOK_SIGNING_KEY":      signingKey, "WEBHOOK_ALLOW_PRIVATE": "true", "WEBHOOK_TIMEOUT": webhookTimeout,
 		"PROVIDER_TIMEOUT": providerTimeout, "SHUTDOWN_TIMEOUT": "5s", "LOG_LEVEL": "debug",
 	}
 	apiEnv := map[string]string{"HTTP_ADDR": "127.0.0.1:0"}

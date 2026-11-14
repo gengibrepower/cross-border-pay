@@ -21,6 +21,7 @@ import (
 	"github.com/getkin/kin-openapi/routers/legacy"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
 	merchantsapp "github.com/gengibrepower/cross-border-pay/internal/merchants/app"
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
@@ -30,6 +31,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
+	boletosimserver "github.com/gengibrepower/cross-border-pay/internal/providers/boletosim/server"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	cardsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/cardsim/server"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
@@ -55,7 +58,10 @@ type contract struct {
 	// card is the card simulator's client, and cardProvider its counted adapter.
 	card         *cardsim.Client
 	cardProvider *countingProvider
-	deps         *deps
+	// boleto is the boleto simulator's client, and boletoProvider its counted adapter.
+	boleto         *boletosim.Client
+	boletoProvider *countingProvider
+	deps           *deps
 }
 
 // countingProvider counts the calls to create an attempt and can run a hook first,
@@ -135,6 +141,28 @@ func startCardSim(t *testing.T, c *clock.Fake) *cardsim.Client {
 	return client
 }
 
+func startBoletoSim(t *testing.T, c *clock.Fake, cal *calendar.Calendar, webhookURL string) *boletosim.Client {
+	t.Helper()
+	sim, err := boletosimserver.New(&boletosimserver.Config{
+		Seed: 1, Bank: "999", Beneficiary: "00012345", WebhookURL: webhookURL, WebhookSecret: []byte(boletoSecret),
+	}, c, *cal, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	sim.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client, err := boletosim.NewClient(srv.URL, &http.Client{Timeout: pixsim.DefaultTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// boletoSecret signs the boleto simulator's events in these tests.
+const boletoSecret = "test-boleto-secret" //nolint:gosec // G101: exists only in these tests.
+
 func newContract(t *testing.T) *contract {
 	t.Helper()
 	loader := openapi3.NewLoader()
@@ -163,14 +191,21 @@ func newContract(t *testing.T) *contract {
 	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
 	c.card = startCardSim(t, fake)
 	c.cardProvider = &countingProvider{Provider: paymentsadapters.NewCardSim(c.card)}
+	cal, err := calendar.Brazil()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.boleto = startBoletoSim(t, fake, &cal, hook.URL+"/v1/providers/boletosim/events")
+	c.boletoProvider = &countingProvider{Provider: paymentsadapters.NewBoletoSim(c.boleto)}
 	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
-		paymentsdomain.Pix: c.provider, paymentsdomain.Card: c.cardProvider,
+		paymentsdomain.Pix: c.provider, paymentsdomain.Card: c.cardProvider, paymentsdomain.Boleto: c.boletoProvider,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.deps = &deps{
-		usdbrl: "5.0000", clock: fake, providers: providers, providerTimeout: providerTimeout, webhookSecret: webhookSecret,
+		usdbrl: "5.0000", clock: fake, calendar: &cal, providers: providers, providerTimeout: providerTimeout,
+		webhookSecret: webhookSecret, boletoSecret: boletoSecret,
 		signingKey: []byte(signingKey), webhooks: ssrf.Policy{},
 	}
 	a, err := newAPI(pool, logger, c.deps)
@@ -314,7 +349,7 @@ func TestCreatePaymentErrors(t *testing.T) {
 		{"no amount", key, "k", `{"method": "pix", "reference": "o"}`, false, http.StatusBadRequest, "invalid_request"},
 		{"not JSON", key, "k", `amount=2000`, false, http.StatusBadRequest, "invalid_request"},
 		{"unknown method", key, "k", `{"amount": {"value": 2000, "currency": "USD"}, "method": "crypto", "reference": "o"}`, false, http.StatusBadRequest, "invalid_method"},
-		{"boleto not yet", key, "k", `{"amount": {"value": 2000, "currency": "USD"}, "method": "boleto", "reference": "o"}`, true, http.StatusUnprocessableEntity, "unsupported_method"},
+		{"boleto without a payer", key, "k", `{"amount": {"value": 2000, "currency": "USD"}, "method": "boleto", "reference": "o"}`, true, http.StatusUnprocessableEntity, "payer_required"},
 		{"charged in BRL", key, "k", `{"amount": {"value": 2000, "currency": "BRL"}, "method": "pix", "reference": "o"}`, true, http.StatusUnprocessableEntity, "unsupported_currency"},
 		{"zero amount", key, "k", `{"amount": {"value": 0, "currency": "USD"}, "method": "pix", "reference": "o"}`, true, http.StatusUnprocessableEntity, "invalid_amount"},
 		{"empty reference", key, "k", `{"amount": {"value": 2000, "currency": "USD"}, "method": "pix", "reference": ""}`, false, http.StatusUnprocessableEntity, "invalid_reference"},

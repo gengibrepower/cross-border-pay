@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
@@ -57,8 +58,10 @@ type CreateRequest struct {
 	Method    string
 	Amount    money.Money
 	Reference string
-	// Card is the payer's card, for a card payment only.
-	Card domain.CardInput
+	// Card is the payer's card, for a card payment only, and Payer whom a boleto is
+	// registered to, for a boleto only.
+	Card  domain.CardInput
+	Payer domain.PayerInput
 }
 
 type ListQuery struct {
@@ -98,13 +101,15 @@ type Service struct {
 	quoter          Quoter
 	store           Store
 	providers       *Providers
+	calendar        *calendar.Calendar
 	clock           Clock
 	logger          *slog.Logger
 	providerTimeout time.Duration
 }
 
-func NewService(quoter Quoter, store Store, providers *Providers, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Service {
-	return &Service{quoter: quoter, store: store, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
+// NewService takes the calendar a boleto's due date is counted in (decision 21).
+func NewService(quoter Quoter, store Store, providers *Providers, cal *calendar.Calendar, clock Clock, logger *slog.Logger, providerTimeout time.Duration) *Service {
+	return &Service{quoter: quoter, store: store, providers: providers, calendar: cal, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
 // Create prices the payment, stores it with its attempt and asks the provider for the

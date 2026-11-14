@@ -12,6 +12,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
 
@@ -29,26 +30,63 @@ func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []b
 	if e.Type != pixsim.ChargePaid {
 		return "", fmt.Errorf("%w: %q", app.ErrUnknownEventType, e.Type)
 	}
-	id, err := domain.ParseAttemptID(e.Charge.IdempotencyKey)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
-	}
-	subject = id.String()
 	if e.Charge.Status != pixsim.Paid {
-		return subject, fmt.Errorf("%w: charge.paid with status %q", app.ErrEventDivergent, e.Charge.Status)
+		return subjectOf(e.Charge.IdempotencyKey), fmt.Errorf("%w: charge.paid with status %q", app.ErrEventDivergent, e.Charge.Status)
 	}
-
-	row, err := lockPayment(ctx, paymentsdb.New(tx), id)
-	if err != nil {
-		return subject, fmt.Errorf("payments: %s: %w", id, err)
-	}
-
 	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Charge.ID, BRCode: e.Charge.BRCode, Amount: e.Charge.Amount}
 	if e.Charge.PaidAt != nil {
 		u.PaidAt = e.Charge.PaidAt.UTC()
 	}
-	if err := applySaved(ctx, tx, sinks, &row, id, &u, now); errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrBRCodeMismatch) ||
-		errors.Is(err, errUnpostable) {
+	return applyPaid(ctx, tx, sinks, PixSimName, e.Charge.IdempotencyKey, &u, now)
+}
+
+// HandleBoletoSimEvent is HandlePixSimEvent for the boleto simulator's boleto.paid.
+func HandleBoletoSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []byte, now time.Time) (subject string, err error) {
+	var e boletosim.Event
+	if err := json.Unmarshal(payload, &e); err != nil {
+		return "", fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
+	}
+	if e.Type != boletosim.BoletoPaid {
+		return "", fmt.Errorf("%w: %q", app.ErrUnknownEventType, e.Type)
+	}
+	if e.Boleto.Status != boletosim.Paid {
+		return subjectOf(e.Boleto.IdempotencyKey), fmt.Errorf("%w: boleto.paid with status %q", app.ErrEventDivergent, e.Boleto.Status)
+	}
+	u := domain.AttemptUpdate{Event: domain.Succeed, ExternalID: e.Boleto.ID, Barcode: e.Boleto.Barcode, Amount: e.Boleto.Amount}
+	if e.Boleto.PaidAt != nil {
+		u.PaidAt = e.Boleto.PaidAt.UTC()
+	}
+	return applyPaid(ctx, tx, sinks, BoletoSimName, e.Boleto.IdempotencyKey, &u, now)
+}
+
+// subjectOf is the attempt a provider's idempotency key names, or nothing when it
+// names none.
+func subjectOf(key string) string {
+	id, err := domain.ParseAttemptID(key)
+	if err != nil {
+		return ""
+	}
+	return id.String()
+}
+
+// applyPaid applies a payment the provider announced for the attempt whose ID it was
+// given as idempotency key. An attempt another provider holds is not the provider's to
+// confirm, whatever ID its event names.
+func applyPaid(ctx context.Context, tx pgx.Tx, sinks *Sinks, provider domain.ProviderName, key string, u *domain.AttemptUpdate, now time.Time) (subject string, err error) {
+	id, err := domain.ParseAttemptID(key)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
+	}
+	subject = id.String()
+	row, err := lockPayment(ctx, paymentsdb.New(tx), id)
+	if err != nil {
+		return subject, fmt.Errorf("payments: %s: %w", id, err)
+	}
+	if row.AttemptProvider != string(provider) {
+		return subject, fmt.Errorf("%w: attempt %s is held by %s, not %s", app.ErrEventDivergent, id, row.AttemptProvider, provider)
+	}
+	if err := applySaved(ctx, tx, sinks, &row, id, u, now); errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrBRCodeMismatch) ||
+		errors.Is(err, domain.ErrBarcodeMismatch) || errors.Is(err, errUnpostable) {
 		return subject, fmt.Errorf("%w: %w", app.ErrEventDivergent, err)
 	} else if err != nil {
 		return subject, fmt.Errorf("payments: apply event to %s: %w", id, err)
