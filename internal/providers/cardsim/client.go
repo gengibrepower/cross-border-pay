@@ -23,7 +23,14 @@ var (
 	// stored and GetRefund finds it rejected.
 	ErrRefundRejected = errors.New("cardsim: refund rejected")
 	ErrRefundNotFound = errors.New("cardsim: refund not found")
-	ErrBadResponse    = simkit.ErrBadResponse
+	// ErrNotDisputable is a chargeback opened on an authorization not captured, or for
+	// more than is left of the capture.
+	ErrNotDisputable      = errors.New("cardsim: authorization cannot be charged back")
+	ErrChargebackNotFound = errors.New("cardsim: chargeback not found")
+	ErrChargebackClosed   = errors.New("cardsim: chargeback can no longer take this answer")
+	ErrEventNotFound      = errors.New("cardsim: event not found")
+	ErrDeliveryFailed     = errors.New("cardsim: event delivery failed")
+	ErrBadResponse        = simkit.ErrBadResponse
 )
 
 type Client struct {
@@ -83,6 +90,49 @@ func (c *Client) GetRefund(ctx context.Context, key string) (Refund, error) {
 	return r, err
 }
 
+// GetChargeback reads a chargeback by its ID.
+func (c *Client) GetChargeback(ctx context.Context, id string) (Chargeback, error) {
+	var cb Chargeback
+	err := c.c.Do(ctx, http.MethodGet, "/v1/chargebacks/"+url.PathEscape(id), "", nil, http.StatusOK, &cb)
+	return cb, err
+}
+
+// Accept gives up the chargeback: it is lost at once. Accepting again returns it as it
+// is.
+func (c *Client) Accept(ctx context.Context, id string) (Chargeback, error) {
+	var cb Chargeback
+	err := c.c.Do(ctx, http.MethodPost, "/v1/chargebacks/"+url.PathEscape(id)+"/accept", "", nil, http.StatusOK, &cb)
+	return cb, err
+}
+
+// Contest sends the merchant's evidence and leaves the chargeback under review.
+// Contesting again returns it as it is.
+func (c *Client) Contest(ctx context.Context, id string, req Contest) (Chargeback, error) {
+	var cb Chargeback
+	err := c.c.Do(ctx, http.MethodPost, "/v1/chargebacks/"+url.PathEscape(id)+"/contest", "", req, http.StatusOK, &cb)
+	return cb, err
+}
+
+// OpenChargeback is the control endpoint that has the cardholder dispute a capture.
+func (c *Client) OpenChargeback(ctx context.Context, authorization string, req OpenChargeback) (Chargeback, error) {
+	var cb Chargeback
+	err := c.c.Do(ctx, http.MethodPost, "/control/authorizations/"+url.PathEscape(authorization)+"/chargebacks", "", req, http.StatusCreated, &cb)
+	return cb, err
+}
+
+// ResolveChargeback is the control endpoint standing in for the issuer's decision on a
+// contested chargeback; Lost also closes one nobody answered.
+func (c *Client) ResolveChargeback(ctx context.Context, id string, outcome ChargebackStatus) (Chargeback, error) {
+	var cb Chargeback
+	err := c.c.Do(ctx, http.MethodPost, "/control/chargebacks/"+url.PathEscape(id)+"/resolve", "", ResolveChargeback{Outcome: outcome}, http.StatusOK, &cb)
+	return cb, err
+}
+
+// Redeliver posts an event already sent again, with the same bytes.
+func (c *Client) Redeliver(ctx context.Context, id string) error {
+	return c.c.Do(ctx, http.MethodPost, "/control/events/"+url.PathEscape(id)+"/deliver", "", nil, http.StatusNoContent, nil)
+}
+
 // InjectFault is the control endpoint that schedules failures.
 func (c *Client) InjectFault(ctx context.Context, f Fault) error {
 	return c.c.Do(ctx, http.MethodPost, "/control/faults", "", f, http.StatusNoContent, nil)
@@ -102,6 +152,16 @@ func problemError(status int, code string) error {
 		return ErrRefundRejected
 	case status == http.StatusNotFound && code == CodeRefundNotFound:
 		return ErrRefundNotFound
+	case status == http.StatusConflict && code == CodeNotDisputable:
+		return ErrNotDisputable
+	case status == http.StatusNotFound && code == CodeChargebackNotFound:
+		return ErrChargebackNotFound
+	case status == http.StatusConflict && code == CodeChargebackClosed:
+		return ErrChargebackClosed
+	case status == http.StatusNotFound && code == CodeEventNotFound:
+		return ErrEventNotFound
+	case status == http.StatusBadGateway && code == CodeDeliveryFailed:
+		return ErrDeliveryFailed
 	default:
 		return nil
 	}

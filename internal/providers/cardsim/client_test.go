@@ -23,17 +23,35 @@ func brl(n int64) money.Money { return money.New(n, money.BRL) }
 
 func newSim(t *testing.T, seed uint64) (*cardsim.Client, *clock.Fake) {
 	t.Helper()
+	client, c, _ := newSimWithWebhook(t, seed, "")
+	return client, c
+}
+
+// newSimWithWebhook posts the simulator's events to webhookURL, signed with
+// testSecret.
+func newSimWithWebhook(t *testing.T, seed uint64, webhookURL string) (*cardsim.Client, *clock.Fake, *server.Simulator) {
+	t.Helper()
 	c := clock.NewFake(t0)
+	cfg := server.Config{Seed: seed}
+	if webhookURL != "" {
+		cfg.WebhookURL, cfg.WebhookSecret = webhookURL, []byte(testSecret)
+	}
+	sim, err := server.New(&cfg, c, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
-	server.New(&server.Config{Seed: seed}, c, slog.New(slog.DiscardHandler)).Register(mux)
+	sim.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := cardsim.NewClient(srv.URL, &http.Client{Timeout: 300 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client, c
+	return client, c, sim
 }
+
+const testSecret = "test-card-secret" //nolint:gosec // G101: exists only in these tests.
 
 func authorize(t *testing.T, c *cardsim.Client, key, token string, capture bool) cardsim.Authorization {
 	t.Helper()

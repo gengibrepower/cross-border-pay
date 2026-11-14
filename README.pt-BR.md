@@ -246,7 +246,7 @@ Dinheiro confirmado pelo provedor entra sempre no ledger; a dúvida é só para 
 </details>
 
 <details>
-<summary><b>Estornos e liquidação</b> · 5 testes</summary>
+<summary><b>Estornos e liquidação</b> · 6 testes</summary>
 
 **Valores e lançamentos do estorno (`payments`, decisão 13)**
 
@@ -282,9 +282,17 @@ Uma vez por lojista e data de corte em `America/Sao_Paulo`, o disponível vira r
 
 **Saldo e liquidações (`GET /v1/balance`, `GET /v1/settlements`)**
 
-O saldo divide a obrigação do lojista como o job de liquidação faria naquele momento: pendente é o líquido das cobranças ainda não disponíveis menos os estornos delas, disponível é o resto, negativo depois de um estorno de dinheiro liquidado maior do que o que entrou desde então; reservado é zero até a reserva da F8. As duas somas saem de um snapshot `REPEATABLE READ` sem a trava da obrigação, então uma leitura nunca espera uma confirmação nem segura uma liquidação. A lista mostra as liquidações do corte mais novo para o mais antigo, cada uma com suas cobranças, lidas no mesmo snapshot da página; o cursor é a data de corte, única por lojista, sobre o índice `UNIQUE (merchant_id, cutoff_date)`; as cobranças vêm de um novo índice parcial em `payments.settlement_id` (migration 00020)
+O saldo divide a obrigação do lojista como o job de liquidação faria naquele momento: pendente é o líquido das cobranças ainda não disponíveis menos os estornos delas, disponível é o resto, negativo depois de um estorno ou chargeback de dinheiro liquidado maior do que o que entrou desde então; reservado é a reserva rolante abaixo. As duas somas saem de um snapshot `REPEATABLE READ` sem a trava da obrigação, então uma leitura nunca espera uma confirmação nem segura uma liquidação. A lista mostra as liquidações do corte mais novo para o mais antigo, cada uma com suas cobranças, lidas no mesmo snapshot da página; o cursor é a data de corte, única por lojista, sobre o índice `UNIQUE (merchant_id, cutoff_date)`; as cobranças vêm de um novo índice parcial em `payments.settlement_id` (migration 00020)
 
 **Resultado:** Saldo conferido em 9 pontos ao longo de 3 dias de São Paulo, entre eles 23:30 local, quando a data em UTC já virou, sempre somando a obrigação. 3 liquidações em páginas de 1: cada uma vista uma vez, da mais nova para a mais antiga, com o mesmo valor e as mesmas cobranças gravadas, nenhuma de outro lojista liquidado nas mesmas rodadas. 5 parâmetros inválidos e 2 `401`. 20/20 rodadas com `-race -count=20`. 11 mutantes mortos, entre eles disponível sem o pendente, disponibilidade um dia antes ou depois, corte em UTC, cursor com `<=`, lista sem o filtro de lojista, as cobranças de todas as liquidações e erro para lojista ainda sem obrigação.
+
+---
+
+**Reserva rolante e limite de dívida (decisões 26 e 27)**
+
+Cada repasse retém 10% do disponível em `merchant_reserve` por 90 dias, e uma rodada posterior devolve, a mais antiga primeiro; a liquidação grava quanto reteve e até quando (migration 00024). Um disponível que um estorno ou chargeback deixou negativo consome a reserva primeiro e depois espera as próximas cobranças. Um lojista cuja obrigação mais a reserva fica abaixo de −US$ 1.000,00 não recebe cobrança nova (`422 debt_limit_exceeded`). A liquidação trava as cobranças, depois a obrigação e a reserva na ordem das contas, como todo caminho.
+
+**Resultado:** 3 testes de contrato novos e 6 de domínio, e a reserva incluída nos testes de liquidação acima: um disponível negativo coberto pela reserva e o resto esperando; reservas devolvidas depois de 90 dias, a mais antiga primeiro e nenhuma antes; a reserva no modelo de 4 rodadas e na rodada concorrente, em que todos os repasses mais a reserva somam o que entrou; e um lojista acima do limite recusado no PIX e no cartão, a recusa gravada para a nova tentativa, nenhuma cobrança gravada e outro lojista sem efeito, ainda recusado depois de a reserva cobrir o que podia. A devolução conferida por propriedade: o devolvido e o retido sempre somam o que sobrou.
 
 </details>
 
@@ -375,6 +383,25 @@ Um banco sobre HTTP de verdade com o `simkit` dos outros dois: registra o boleto
 `method: boleto` com `payer` (nome, CPF e e-mail opcional) sai `201` pendente com `boleto.status: ready`, o código de barras, a linha digitável formatada e `due_date` três dias corridos depois em São Paulo; a cotação vale até o fim do último dia em que o banco recebe. O pagador e o vencimento ficam com a tentativa (migração 00023, com `CHECK`s que os mantêm juntos e longe do cartão), para que a repetição registre o mesmo boleto, e o código de barras devolvido também, para o `GET` mostrar o boleto que o pagador talvez já imprimiu; a linha digitável é derivada dele. O CPF não volta em resposta nenhuma. O `boleto.paid` chega ao inbox em `POST /v1/providers/boletosim/events` e o worker confirma a cobrança como qualquer outra, mas só numa tentativa do próprio `boletosim`: um evento que nomeie uma tentativa de outro provedor falha. Um boleto vencido é recusado pelo banco e a cobrança expira pelo job de expiração; uma resposta perdida fica `processing` até o resolvedor achar o boleto pela key.
 
 **Resultado:** 5 testes de contrato contra Postgres real e o simulador, mais 1 do worker e 2 de domínio: o boleto pronto, igual no `GET`, com o pagador gravado e o CPF ausente da resposta; pago no banco, confirmado pelo evento com os lançamentos da GameStore e estornado pela metade de volta pelo banco; recusado depois do vencimento e expirado sem lançamento; uma resposta perdida resolvida com 1 registro no banco; 7 pedidos recusados sem chamar o banco; e um `boleto.paid` que nomeia uma tentativa PIX deixado `failed`. Vencimento no sábado, num feriado e às 23h30 de sexta em São Paulo. 20/20 rodadas com `-race`. 8 mutantes mortos: CPF mascarado mandado ao banco, vencimento ou código de barras não gravados, pagador aceito no PIX, um evento que troca o código de barras aceito, o worker sem o handler do boleto, a API sem o verificador dele e o evento aplicado à tentativa de outro provedor (esta última uma falha de verdade, achada ao escrever o teste: com um provedor só ela não aparecia).
+
+</details>
+
+<details>
+<summary><b>Chargebacks</b> · 2 testes</summary>
+
+**Disputas no simulador de cartão (`cmd/cardsim`, seção 4.7)**
+
+A adquirente abre um chargeback sobre uma autorização capturada por endpoint de controle, no lugar do banco do portador, até o capturado e independente dos estornos (decisão 7). O lojista aceita, e perde, ou contesta com evidência, e a decisão do emissor é outra chamada de controle. Abrir e fechar mandam cada um um evento assinado em `Cardsim-Signature` para `CARDSIM_WEBHOOK_URL`, então pedir a mesma coisa de novo não manda nada. Os IDs saem da seed.
+
+**Resultado:** 4 testes do cliente contra o servidor: um chargeback inteiro contestado e ganho com exatamente dois eventos e toda assinatura válida; uma captura estornada sofrendo chargeback em duas metades, uma perdida sem resposta e uma aceita; 5 aberturas recusadas, chargeback desconhecido, evidência vazia e uma falha que deixa o chargeback intocado; a mesma seed dando os mesmos IDs.
+
+---
+
+**Chargebacks (`GET /v1/chargebacks/{id}`, `/accept`, `/contest`, decisões 7, 26 e 27)**
+
+`chargeback.opened` chega à inbox em `POST /v1/providers/cardsim/events`, e o worker leva a cobrança a `charged_back`, grava o chargeback e tira o dinheiro numa transação só: os reais saem do recebível da adquirente, o lojista perde a mesma proporção da cobrança em USD, sem devolver a tarifa, calculada de forma cumulativa como nos estornos, e o resultado cambial do gateway absorve a taxa do dia. O lojista fica sabendo por `chargeback.opened`, com o ID do chargeback. Aceitar e contestar vão primeiro à adquirente, fora da transação, e uma resposta perdida é um `503` que não mudou nada. Uma disputa ganha lança o estorno do débito e manda `chargeback.won`; uma perdida manda `chargeback.lost`. Cada um avança a versão da cobrança. Uma cobrança estornada ainda pode sofrer chargeback, e o dinheiro sai duas vezes até a disputa ser ganha (decisão 7). Um chargeback de captura ainda em confirmação, ou um fechamento antes da abertura, é tentado de novo; a mesma abertura sob outro ID de evento é aplicada uma vez.
+
+**Resultado:** **Critério da F8:** a GameStore paga no cartão, repassada no dia 30 com US$ 1,94 retidos, sofre chargeback: o saldo vai a −US$ 20,00, a rodada seguinte consome a reserva e deixa −US$ 18,06, e a disputa ganha volta a US$ 1,94, com o recebível da adquirente de novo em R$ 101,50 e todo evento batendo com `ChargebackEvent`. 8 testes de contrato, mais 6 de domínio e 1 do worker: o acima; aceito e perdido; estornada e depois chargeback, a obrigação em −US$ 1,20 até ganhar; duas metades de US$ 10,00 cada; dinheiro pendente saindo do pendente; 404s, evidência recusada e um `503` tentado de novo; uma abertura repetida e um fechamento adiantado; um chargeback antes de a captura ser confirmada, aplicado depois. Cálculo e lançamentos por propriedade: chargebacks em quaisquer pedaços somam a cobrança e o spread inteiro, todo lançamento fechando em qualquer taxa. 20/20 rodadas com `-race -count=20`. 5 mutantes mortos, entre eles o pendente sem os chargebacks, o estorno do débito nunca lançado e um chargeback adiantado falhando em vez de esperar. Um era bug de verdade, achado ao escrever o teste: a abertura repetida era calculada antes de ser reconhecida, e um chargeback inteiro visto duas vezes falhava como maior do que a cobrança.
 
 </details>
 
@@ -629,7 +656,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 </details>
 
 <details>
-<summary><b>Estornos e liquidação</b> · 9 decisões</summary>
+<summary><b>Estornos e liquidação</b> · 11 decisões</summary>
 
 - **Quem paga o estorno:** O lojista paga o valor estornado inteiro: a tarifa não volta. O spread devolve sua parcela, já que o pagador recebe de volta os mesmos reais que pagou. O gateway absorve a variação da taxa no resultado cambial.<br>*Descartado:* Devolver a tarifa também: generoso, mas a receita de tarifas poderia ficar negativa. Devolver reais pela taxa do dia: o pagador receberia um valor diferente do que pagou.
 
@@ -643,11 +670,30 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Início da disponibilidade:** Quando a confirmação é lançada (`paid_at`)<br>*Descartado:* A hora de pagamento do provedor: uma notícia atrasada deixaria o dinheiro disponível num corte que já rodou.
 
-- **Disponível negativo:** Não paga e espera o próximo dinheiro; as cobranças disponíveis entram no primeiro repasse positivo.<br>*Descartado:* Repasse negativo: cobrar o lojista é a regra da decisão 27, com reserva e limite de dívida, na F8.
+- **Disponível negativo:** Consome a reserva primeiro, depois não paga e espera o próximo dinheiro (decisão 27); as cobranças disponíveis entram no primeiro repasse positivo.<br>*Descartado:* Repasse negativo: o gateway estaria cobrando a conta bancária do lojista, o que não tem mandato para fazer.
+
+- **Reserva rolante:** 10% de cada repasse, retidos 90 dias por liquidação e devolvidos por uma rodada posterior, a mais antiga primeiro (decisão 26).<br>*Descartado:* Uma reserva fixa por lojista: um lojista novo com pouco volume não teria nada retido, e um grande teria demais. Reter uma parte de cada cobrança: um lançamento a mais por cobrança para o mesmo dinheiro.
+
+- **Limite de dívida:** Obrigação mais reserva abaixo de −US$ 1.000,00 recusa cobranças novas, lido sem a trava da obrigação na criação.<br>*Descartado:* Travar a obrigação: toda criação faria fila atrás das confirmações do lojista, por um limite que uma cobrança em andamento não cruza sozinha.
 
 - **Leitura do saldo:** Um snapshot `REPEATABLE READ`, sem a trava da obrigação: obrigação e pendente batem porque toda mudança no pendente lança na obrigação na mesma transação.<br>*Descartado:* A trava da obrigação, como a liquidação faz: todo `GET /v1/balance` entraria na fila das confirmações e estornos do lojista.
 
 - **Cobranças de uma liquidação:** Os IDs na própria resposta do `GET /v1/settlements`, uma liquidação por dia por lojista, lidos por um índice parcial em `payments.settlement_id`<br>*Descartado:* Um filtro `?settlement=` no `GET /v1/payments` ou um `GET /v1/settlements/{id}`: mais um endpoint, que compensa quando um dia tiver mais cobranças do que uma página deve levar.
+
+</details>
+
+<details>
+<summary><b>Chargebacks</b> · 5 decisões</summary>
+
+- **O que o lojista perde:** A proporção em BRL da cobrança que o banco tomou de volta, em USD, sem devolver a tarifa, calculada de forma cumulativa como nos estornos; o resultado cambial do gateway fica com a taxa do dia.<br>*Descartado:* Converter os reais pela taxa do dia: o lojista ganharia ou perderia no câmbio de uma disputa que não escolheu. Tarifa de chargeback: nenhuma está no escopo, e ela esconderia o movimento sob teste.
+
+- **Quando o dinheiro sai:** Na abertura; uma disputa ganha lança o estorno do débito.<br>*Descartado:* Só quando perde: a adquirente já tomou os reais, e o saldo do lojista contaria dinheiro que já foi.
+
+- **Estornada, depois chargeback:** O dinheiro sai de novo (decisão 7), e o lojista contesta com o estorno como evidência.<br>*Descartado:* Descontar o estorno: a adquirente toma os reais de qualquer jeito, e os livros discordariam do banco até a disputa acabar.
+
+- **Evento antes do que ele cita:** Um chargeback de cobrança ainda pendente, ou um fechamento antes da abertura, é tentado de novo como um evento de tentativa ainda não gravada. A mesma abertura sob outro ID de evento é aplicada uma vez, pelo ID do chargeback na adquirente.<br>*Descartado:* Falhar: a ordem dos webhooks não é garantida, e cada um esperaria uma pessoa.
+
+- **Responder a disputa:** Aceitar e contestar chamam a adquirente primeiro e gravam a resposta dela; a mesma resposta de novo devolve o chargeback como está.<br>*Descartado:* Gravar primeiro e mandar depois: o lojista ouviria que uma contestação passou e a adquirente ainda poderia recusar.
 
 </details>
 
@@ -704,7 +750,7 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F5 | PIX simulado, inbox, confirmação | ✅ pronta |
 | F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | ✅ pronta |
 | F7 | Estornos e liquidação | ✅ pronta |
-| F8 | Cartão, boleto, chargebacks | 🚧 em andamento |
+| F8 | Cartão, boleto, chargebacks | ✅ pronta |
 | F9 | Simulador hostil, conciliação CNAB 240, sandbox Efí | planejada |
 | F10 | Deploy público em produção | planejada |
 
@@ -740,6 +786,7 @@ O worker aplica os eventos do inbox, resolve tentativas e estornos `unknown`, ex
 | `PIXSIM_WEBHOOK_URL` | definida pelo mise | Para onde o simulador manda os eventos: o inbox da API |
 | `PIXSIM_WEBHOOK_SECRET` | definida pelo mise | Assina os eventos do simulador; a API os verifica |
 | `BOLETOSIM_WEBHOOK_URL`, `BOLETOSIM_WEBHOOK_SECRET` | definidas pelo mise | O mesmo para o simulador de boleto; a API exige o segredo |
+| `CARDSIM_WEBHOOK_URL`, `CARDSIM_WEBHOOK_SECRET` | definidas pelo mise | O mesmo para os chargebacks do simulador de cartão; a API exige o segredo |
 | `WEBHOOK_SIGNING_KEY` | definida pelo mise | 32 bytes ou mais; deriva o segredo de webhook de cada lojista |
 | `WEBHOOK_TIMEOUT` | `5s` | Timeout de cada post de webhook |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` (mise: `true`) | Deixa webhooks irem a `http` e redes privadas, nunca a metadados de cloud |
@@ -804,6 +851,18 @@ curl -s $API/v1/balance -H "Authorization: Bearer $KEY"
 # 200 disponível, pendente e reservado, em USD
 curl -s "$API/v1/settlements?limit=20" -H "Authorization: Bearer $KEY"
 # 200 repasses por data de corte, cada um com suas cobranças
+```
+
+Chargebacks, com o ID que veio em `chargeback.opened`:
+
+```sh
+curl -s $API/v1/chargebacks/cbk_... -H "Authorization: Bearer $KEY"
+# 200 needs_response, payer_amount em BRL, amount perdido em USD
+curl -s -X POST $API/v1/chargebacks/cbk_.../contest -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" -d '{"evidence": "delivered: tracking BR123"}'
+# 200 under_review; chargeback.won ou chargeback.lost quando o emissor decidir
+curl -s -X POST $API/v1/chargebacks/cbk_.../accept -H "Authorization: Bearer $KEY"
+# 200 lost na hora; 409 chargeback_closed depois de contestado
 ```
 
 Cadastrando o endpoint de webhook e rotacionando o segredo:

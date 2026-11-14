@@ -85,6 +85,58 @@ type Refund struct {
 	CreatedAt       time.Time    `json:"created_at"`
 }
 
+// ChargebackStatus is where a chargeback is in the card network's dispute: the
+// cardholder's bank took the money back, and the merchant may answer.
+type ChargebackStatus string
+
+const (
+	// NeedsResponse waits for the merchant to accept or contest.
+	NeedsResponse ChargebackStatus = "needs_response"
+	// UnderReview is contested, waiting for the issuer's decision.
+	UnderReview ChargebackStatus = "under_review"
+	// Won gives the money back to the merchant; Lost keeps it with the cardholder,
+	// accepted or decided against.
+	Won  ChargebackStatus = "won"
+	Lost ChargebackStatus = "lost"
+)
+
+// Chargeback is the cardholder's bank taking back Amount of a captured authorization,
+// for Reason. AuthorizationKey is the authorization's idempotency key, so whoever
+// created it finds its own record.
+type Chargeback struct {
+	ID               string           `json:"id"`
+	AuthorizationID  string           `json:"authorization_id"`
+	AuthorizationKey string           `json:"authorization_key"`
+	Status           ChargebackStatus `json:"status"`
+	Amount           money.Money      `json:"amount"`
+	Reason           string           `json:"reason"`
+	CreatedAt        time.Time        `json:"created_at"`
+	ClosedAt         *time.Time       `json:"closed_at,omitempty"`
+}
+
+// OpenChargeback is the control request that makes a cardholder dispute a capture.
+type OpenChargeback struct {
+	Amount money.Money `json:"amount"`
+	Reason string      `json:"reason"`
+}
+
+// Contest answers a chargeback with the merchant's evidence.
+type Contest struct {
+	Evidence string `json:"evidence"`
+}
+
+// ResolveChargeback is the control request standing in for the issuer's decision:
+// Won or Lost.
+type ResolveChargeback struct {
+	Outcome ChargebackStatus `json:"outcome"`
+}
+
+// MaxReason and MaxEvidence bound the texts a chargeback carries.
+const (
+	MaxReason   = 100
+	MaxEvidence = 2000
+)
+
 type (
 	Op        = simkit.Op
 	FaultKind = simkit.FaultKind
@@ -98,13 +150,16 @@ const (
 	OpVoid      Op = "void"
 	OpRefund    Op = "refund"
 	OpGetRefund Op = "get_refund"
+	// OpRespond is accepting or contesting a chargeback.
+	OpRespond       Op = "respond"
+	OpGetChargeback Op = "get_chargeback"
 )
 
 // Ops are the operations a fault can target. A decline is the issuer's answer to an
 // authorization, and a refusal the acquirer's to a refund; a capture of a live
 // authorization is never refused, only cut short.
 var (
-	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpVoid, OpRefund, OpGetRefund}
+	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpVoid, OpRefund, OpGetRefund, OpRespond, OpGetChargeback}
 	Rejectable = []Op{OpAuthorize, OpRefund}
 )
 
@@ -122,6 +177,14 @@ const (
 	CodeNotVoidable    = "authorization_not_voidable"
 	CodeRefundRejected = "refund_rejected"
 	CodeRefundNotFound = "refund_not_found"
-	CodeKeyReused      = simkit.CodeKeyReused
-	CodeInvalid        = simkit.CodeInvalid
+	// CodeNotDisputable is a chargeback of an authorization not captured, or of more
+	// than is left of its capture.
+	CodeNotDisputable      = "authorization_not_disputable"
+	CodeChargebackNotFound = "chargeback_not_found"
+	// CodeChargebackClosed is an answer the chargeback can no longer take.
+	CodeChargebackClosed = "chargeback_closed"
+	CodeEventNotFound    = simkit.CodeEventNotFound
+	CodeDeliveryFailed   = simkit.CodeDeliveryFailed
+	CodeKeyReused        = simkit.CodeKeyReused
+	CodeInvalid          = simkit.CodeInvalid
 )

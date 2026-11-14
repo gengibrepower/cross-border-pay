@@ -30,8 +30,11 @@ type settlementResponse struct {
 	ID         string      `json:"id"`
 	CutoffDate string      `json:"cutoff_date"`
 	Amount     money.Money `json:"amount"`
-	Payments   []string    `json:"payments"`
-	CreatedAt  time.Time   `json:"created_at"`
+	// Reserved is held until ReserveUntil, null when nothing was held (decision 26).
+	Reserved     money.Money `json:"reserved"`
+	ReserveUntil *string     `json:"reserve_until"`
+	Payments     []string    `json:"payments"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 type settlementListResponse struct {
@@ -102,13 +105,19 @@ func newSettlementResponse(s *domain.Settlement) settlementResponse {
 	for i, id := range s.Payments {
 		ids[i] = id.String()
 	}
-	return settlementResponse{
+	resp := settlementResponse{
 		ID:         s.ID.String(),
 		CutoffDate: s.CutoffDate.Format(time.DateOnly),
 		Amount:     s.Amount,
+		Reserved:   s.Reserved,
 		Payments:   ids,
 		CreatedAt:  s.CreatedAt,
 	}
+	if !s.ReserveUntil.IsZero() {
+		until := s.ReserveUntil.Format(time.DateOnly)
+		resp.ReserveUntil = &until
+	}
+	return resp
 }
 
 // The settlements cursor is the last cutoff date of the page, opaque like the payments

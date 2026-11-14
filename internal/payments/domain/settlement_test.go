@@ -2,8 +2,11 @@ package domain_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 
 	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
@@ -70,10 +73,11 @@ func TestAvailableBefore(t *testing.T) {
 }
 
 func TestSettlementPosting(t *testing.T) {
-	var payable, paid ledger.AccountID
-	payable[0], paid[0] = 1, 2
+	var payable, paid, reserve ledger.AccountID
+	payable[0], paid[0], reserve[0] = 1, 2, 3
 	id := domain.SettlementID{7}
-	tx, err := domain.SettlementPosting(id, money.New(1940, money.USD), payable, paid)
+	usd := func(c int64) money.Money { return money.New(c, money.USD) }
+	tx, err := domain.SettlementPosting(id, usd(1746), usd(194), payable, paid, reserve)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,12 +88,97 @@ func TestSettlementPosting(t *testing.T) {
 	for _, e := range tx.Entries() {
 		got[e.Account()] += e.Amount().Amount()
 	}
-	if got[payable] != -1940 || got[paid] != 1940 || len(got) != 2 {
-		t.Errorf("entries = %v, want payable -1940 and settlements paid +1940", got)
+	if got[payable] != -1940 || got[paid] != 1746 || got[reserve] != 194 || len(got) != 3 {
+		t.Errorf("entries = %v, want payable -1940, settlements paid +1746 and reserve +194", got)
 	}
-	for _, amount := range []int64{0, -1} {
-		if _, err := domain.SettlementPosting(id, money.New(amount, money.USD), payable, paid); !errors.Is(err, domain.ErrInvalidAmount) {
-			t.Errorf("SettlementPosting(%d) error = %v, want ErrInvalidAmount", amount, err)
+	// No hold leaves the reserve out: the ledger refuses a zero leg.
+	tx, err = domain.SettlementPosting(id, usd(9), usd(0), payable, paid, reserve)
+	if err != nil || len(tx.Entries()) != 2 {
+		t.Errorf("SettlementPosting(9, 0) = %d entries, %v; want 2, nil", len(tx.Entries()), err)
+	}
+	for _, c := range [][2]int64{{0, 0}, {-1, 0}, {10, -1}} {
+		if _, err := domain.SettlementPosting(id, usd(c[0]), usd(c[1]), payable, paid, reserve); !errors.Is(err, domain.ErrInvalidAmount) {
+			t.Errorf("SettlementPosting(%d, %d) error = %v, want ErrInvalidAmount", c[0], c[1], err)
+		}
+	}
+}
+
+// Decision 26: a tenth held, rounded down so the cent goes out now; nothing held on
+// nothing, and no overflow near the top of int64.
+func TestReserveHold(t *testing.T) {
+	p := policy(t)
+	for _, c := range [][2]int64{
+		{1940, 194},
+		{134, 13},
+		{9, 0},
+		{10, 1},
+		{19_999, 1999},
+		{0, 0},
+		{-500, 0},
+		{math.MaxInt64, math.MaxInt64 / 10},
+	} {
+		if got := p.ReserveHold(c[0]); got != c[1] {
+			t.Errorf("ReserveHold(%d) = %d, want %d", c[0], got, c[1])
+		}
+	}
+	if got := p.ReserveUntil(date(2026, time.November, 2)); !got.Equal(date(2027, time.January, 31)) {
+		t.Errorf("ReserveUntil(2026-11-02) = %v, want 2027-01-31", got)
+	}
+}
+
+func TestReserveRelease(t *testing.T) {
+	for _, c := range []struct{ held, due, balance, want int64 }{
+		{held: 388, due: 194, balance: 388, want: 194}, // nothing used: the due hold whole
+		{held: 388, due: 194, balance: 88, want: 0},    // 300 used: the oldest hold is gone
+		{held: 194, due: 194, balance: 88, want: 88},   // the next one, what the debt left
+		{held: 388, due: 388, balance: 0, want: 0},
+		{held: 388, due: 0, balance: 388, want: 0},
+	} {
+		if got := domain.ReserveRelease(c.held, c.due, c.balance); got != c.want {
+			t.Errorf("ReserveRelease(held %d, due %d, balance %d) = %d, want %d", c.held, c.due, c.balance, got, c.want)
+		}
+	}
+}
+
+// Holds released one cutoff at a time give back exactly what the debt left, oldest
+// holds used first, and never more than the reserve holds.
+func TestReserveReleasesAddUpToWhatIsLeft(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		holds := rapid.SliceOfN(rapid.Int64Range(0, 10_000), 1, 8).Draw(t, "holds")
+		var held int64
+		for _, h := range holds {
+			held += h
+		}
+		used := rapid.Int64Range(0, held).Draw(t, "used")
+		balance := held - used
+		var released int64
+		for _, h := range holds {
+			r := domain.ReserveRelease(held, h, balance)
+			if r < 0 || r > h || r > balance {
+				t.Fatalf("release %d of a hold of %d with %d in the reserve", r, h, balance)
+			}
+			released += r
+			held -= h
+			balance -= r
+		}
+		if balance != 0 || released != sum(holds)-used {
+			t.Fatalf("released %d of holds %v with %d used, want %d", released, holds, used, sum(holds)-used)
+		}
+	})
+}
+
+func sum(xs []int64) int64 {
+	var s int64
+	for _, x := range xs {
+		s += x
+	}
+	return s
+}
+
+func TestReserveCover(t *testing.T) {
+	for _, c := range [][3]int64{{-300, 388, 300}, {-2000, 194, 194}, {0, 100, 0}, {50, 100, 0}, {-10, 0, 0}} {
+		if got := domain.ReserveCover(c[0], c[1]); got != c[2] {
+			t.Errorf("ReserveCover(%d, %d) = %d, want %d", c[0], c[1], got, c[2])
 		}
 	}
 }
@@ -102,5 +191,14 @@ func TestSettlementIDRoundTrip(t *testing.T) {
 	}
 	if _, err := domain.ParseSettlementID("pay_" + id.String()[4:]); !errors.Is(err, domain.ErrInvalidSettlementID) {
 		t.Errorf("a payment ID parsed as a settlement ID: %v", err)
+	}
+}
+
+// Decision 27: owing exactly US$ 1,000.00 still takes payments; a cent more does not.
+func TestOverDebtLimit(t *testing.T) {
+	for position, want := range map[int64]bool{0: false, 500: false, -100_000: false, -100_001: true, math.MinInt64: true} {
+		if got := domain.OverDebtLimit(position); got != want {
+			t.Errorf("OverDebtLimit(%d) = %v, want %v", position, got, want)
+		}
 	}
 }

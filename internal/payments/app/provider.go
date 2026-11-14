@@ -21,6 +21,10 @@ var (
 	// ErrEventDivergent is a provider event that contradicts what payments knows, such
 	// as another amount or a payment for a rejected attempt: it can never be applied.
 	ErrEventDivergent = errors.New("payments: event diverges from the payment")
+	// ErrEventEarly is a provider event about something the gateway has not stored
+	// yet, such as a chargeback of a capture still being confirmed, or the close of a
+	// chargeback whose opening is still in the inbox: retried, as ErrAttemptNotFound.
+	ErrEventEarly = errors.New("payments: event arrived before what it is about")
 )
 
 // Provider is the port of section 4.3.

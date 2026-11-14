@@ -14,7 +14,9 @@ var (
 	ErrMissingWebhookSecret = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
 	// ErrMissingBoletoSimSecret is ErrMissingWebhookSecret for the boleto simulator.
 	ErrMissingBoletoSimSecret = errors.New("BOLETOSIM_WEBHOOK_SECRET is required: it verifies the boleto simulator's events")
-	ErrWeakSigningKey         = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
+	// ErrMissingCardSimSecret is ErrMissingWebhookSecret for the card simulator.
+	ErrMissingCardSimSecret = errors.New("CARDSIM_WEBHOOK_SECRET is required: it verifies the card simulator's chargeback events")
+	ErrWeakSigningKey       = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
 )
 
 // minSigningKeyBytes is the merchants domain's MinSigningKeyBytes, repeated so that
@@ -39,9 +41,10 @@ type Config struct {
 	// ProviderTimeout bounds each call to a provider, below the server's write timeout
 	// so that the answer can still be stored and sent.
 	ProviderTimeout time.Duration
-	// PixSimWebhookSecret and BoletoSimWebhookSecret verify the signatures of each
-	// simulator's events.
+	// PixSimWebhookSecret, CardSimWebhookSecret and BoletoSimWebhookSecret verify the
+	// signatures of each simulator's events.
 	PixSimWebhookSecret    string
+	CardSimWebhookSecret   string
 	BoletoSimWebhookSecret string
 	// WebhookSigningKey derives the merchants' webhook secrets; it never enters the
 	// database.
@@ -109,6 +112,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cfg.PixSimWebhookSecret = getenv("PIXSIM_WEBHOOK_SECRET")
+	cfg.CardSimWebhookSecret = getenv("CARDSIM_WEBHOOK_SECRET")
 	cfg.BoletoSimWebhookSecret = getenv("BOLETOSIM_WEBHOOK_SECRET")
 	cfg.WebhookSigningKey = getenv("WEBHOOK_SIGNING_KEY")
 
@@ -156,6 +160,9 @@ func (c *Config) RequireWebhookSecret() error {
 	var errs []error
 	if c.PixSimWebhookSecret == "" {
 		errs = append(errs, ErrMissingWebhookSecret)
+	}
+	if c.CardSimWebhookSecret == "" {
+		errs = append(errs, ErrMissingCardSimSecret)
 	}
 	if c.BoletoSimWebhookSecret == "" {
 		errs = append(errs, ErrMissingBoletoSimSecret)

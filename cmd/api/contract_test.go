@@ -128,10 +128,14 @@ func startPixSim(t *testing.T, c *clock.Fake, webhookURL string) *pixsim.Client 
 	return client
 }
 
-func startCardSim(t *testing.T, c *clock.Fake) *cardsim.Client {
+func startCardSim(t *testing.T, c *clock.Fake, webhookURL string) *cardsim.Client {
 	t.Helper()
+	sim, err := cardsimserver.New(&cardsimserver.Config{Seed: 1, WebhookURL: webhookURL, WebhookSecret: []byte(cardSecret)}, c, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
-	cardsimserver.New(&cardsimserver.Config{Seed: 1}, c, slog.New(slog.DiscardHandler)).Register(mux)
+	sim.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client, err := cardsim.NewClient(srv.URL, &http.Client{Timeout: pixsim.DefaultTimeout})
@@ -159,6 +163,9 @@ func startBoletoSim(t *testing.T, c *clock.Fake, cal *calendar.Calendar, webhook
 	}
 	return client
 }
+
+// cardSecret signs the card simulator's events in these tests.
+const cardSecret = "test-card-secret" //nolint:gosec // G101: exists only in these tests.
 
 // boletoSecret signs the boleto simulator's events in these tests.
 const boletoSecret = "test-boleto-secret" //nolint:gosec // G101: exists only in these tests.
@@ -189,7 +196,7 @@ func newContract(t *testing.T) *contract {
 	t.Cleanup(hook.Close)
 	c.sim = startPixSim(t, fake, hook.URL+"/v1/providers/pixsim/events")
 	c.provider = &countingProvider{Provider: paymentsadapters.NewPixSim(c.sim)}
-	c.card = startCardSim(t, fake)
+	c.card = startCardSim(t, fake, hook.URL+"/v1/providers/cardsim/events")
 	c.cardProvider = &countingProvider{Provider: paymentsadapters.NewCardSim(c.card)}
 	cal, err := calendar.Brazil()
 	if err != nil {
@@ -205,7 +212,8 @@ func newContract(t *testing.T) *contract {
 	}
 	c.deps = &deps{
 		usdbrl: "5.0000", clock: fake, calendar: &cal, providers: providers, providerTimeout: providerTimeout,
-		webhookSecret: webhookSecret, boletoSecret: boletoSecret,
+		disputers:     map[paymentsdomain.ProviderName]paymentsapp.Disputer{paymentsadapters.CardSimName: paymentsadapters.NewCardSim(c.card)},
+		webhookSecret: webhookSecret, boletoSecret: boletoSecret, cardSecret: cardSecret,
 		signingKey: []byte(signingKey), webhooks: ssrf.Policy{},
 	}
 	a, err := newAPI(pool, logger, c.deps)

@@ -119,3 +119,36 @@ func cardRefundResult(rf *cardsim.Refund) (app.RefundResult, error) {
 	}
 	return r, nil
 }
+
+// AcceptChargeback is app.Disputer's accept.
+func (p *CardSim) AcceptChargeback(ctx context.Context, externalID string) (domain.ChargebackStatus, error) {
+	cb, err := p.client.Accept(ctx, externalID)
+	return chargebackStatus(externalID, &cb, err)
+}
+
+// ContestChargeback is app.Disputer's contest.
+func (p *CardSim) ContestChargeback(ctx context.Context, externalID, evidence string) (domain.ChargebackStatus, error) {
+	cb, err := p.client.Contest(ctx, externalID, cardsim.Contest{Evidence: evidence})
+	return chargebackStatus(externalID, &cb, err)
+}
+
+func chargebackStatus(id string, cb *cardsim.Chargeback, err error) (domain.ChargebackStatus, error) {
+	if errors.Is(err, cardsim.ErrChargebackClosed) {
+		return "", fmt.Errorf("cardsim: chargeback %s: %w: %w", id, domain.ErrChargebackClosed, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("cardsim: chargeback %s: %w", id, err)
+	}
+	switch cb.Status {
+	case cardsim.NeedsResponse:
+		return domain.NeedsResponse, nil
+	case cardsim.UnderReview:
+		return domain.UnderReview, nil
+	case cardsim.Won:
+		return domain.Won, nil
+	case cardsim.Lost:
+		return domain.Lost, nil
+	default:
+		return "", fmt.Errorf("cardsim: chargeback %s has unknown status %q", id, cb.Status)
+	}
+}

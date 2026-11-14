@@ -32,6 +32,8 @@ func (h paymentEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (
 		handle = paymentsadapters.HandlePixSimEvent
 	case string(paymentsadapters.BoletoSimName):
 		handle = paymentsadapters.HandleBoletoSimEvent
+	case string(paymentsadapters.CardSimName):
+		handle = paymentsadapters.HandleCardSimEvent
 	default:
 		return eventsapp.Result{Outcome: events.Ignored, Reason: "no handler for provider " + e.Provider}, nil
 	}
@@ -42,7 +44,7 @@ func (h paymentEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (
 		r.Outcome = events.Processed
 	case errors.Is(err, paymentsapp.ErrUnknownEventType):
 		r.Outcome, r.Reason = events.Ignored, err.Error()
-	case errors.Is(err, paymentsapp.ErrAttemptNotFound):
+	case errors.Is(err, paymentsapp.ErrAttemptNotFound), errors.Is(err, paymentsapp.ErrEventEarly):
 		r.Outcome, r.Reason = events.Retry, err.Error()
 	case errors.Is(err, paymentsapp.ErrEventDivergent):
 		r.Outcome, r.Reason = events.Failed, err.Error()
@@ -88,6 +90,7 @@ func (r reviewQueue) Open(ctx context.Context, tx pgx.Tx, c *payments.ReviewCase
 	return opened, nil
 }
 
-func paymentSinks() paymentsadapters.Sinks {
-	return paymentsadapters.Sinks{Outbox: merchantOutbox{}, Reviews: reviewQueue{}}
+// paymentSinks takes the base rate a chargeback's money is bought back at.
+func paymentSinks(rates paymentsapp.RateSource) paymentsadapters.Sinks {
+	return paymentsadapters.Sinks{Outbox: merchantOutbox{}, Reviews: reviewQueue{}, Rates: rates}
 }

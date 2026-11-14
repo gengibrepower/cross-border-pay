@@ -13,6 +13,8 @@ import (
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
 	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
+	ledgeradapters "github.com/gengibrepower/cross-border-pay/internal/ledger/adapters"
+	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/app"
@@ -37,6 +39,9 @@ type Reviews interface {
 type Sinks struct {
 	Outbox  Outbox
 	Reviews Reviews
+	// Rates is the base rate a chargeback's money is bought back and sold at
+	// (decision 13); only the worker's event handler needs it.
+	Rates app.RateSource
 }
 
 type Postgres struct {
@@ -52,6 +57,9 @@ func (p *Postgres) Create(ctx context.Context, held *idempotency.Held, d *domain
 	var attempt paymentsdb.PaymentAttempt
 	var id pgtype.UUID
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
+		if err := checkDebtLimit(ctx, tx, d.Merchant()); err != nil {
+			return err
+		}
 		quoteID, err := fxadapters.SaveQuote(ctx, tx, q)
 		if err != nil {
 			return fmt.Errorf("quote: %w", err)
@@ -191,4 +199,42 @@ func restorePayment(row *paymentsdb.Payment) (domain.Payment, error) {
 	method := domain.Method(row.Method)
 	return domain.Restore(row.ID.Bytes, row.MerchantID.Bytes, status, method,
 		money.New(row.Amount, currency), row.Reference, row.CreatedAt.Time.UTC()), nil
+}
+
+// checkDebtLimit refuses the payment when the merchant's payable and reserve together
+// are below the debt limit (decision 27). It reads without locking either: a limit
+// crossed by a refund committing at the same time lets one more payment in, which only
+// brings money towards the merchant.
+func checkDebtLimit(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID) error {
+	position, err := merchantPosition(ctx, tx, merchant)
+	if err != nil {
+		return err
+	}
+	if domain.OverDebtLimit(position) {
+		return fmt.Errorf("%w: it holds %d", domain.ErrDebtLimit, position)
+	}
+	return nil
+}
+
+// merchantPosition is the merchant's payable and reserve together, each zero before it
+// exists: the payable comes with the first confirmation, the reserve with the first
+// settlement.
+func merchantPosition(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID) (int64, error) {
+	l := ledgeradapters.Ledger{}
+	var position int64
+	for _, code := range []string{payableCode(merchant, domain.ChargeCurrency), reserveCode(merchant, domain.ChargeCurrency)} {
+		accounts, err := l.AccountsByCode(ctx, tx, code)
+		if errors.Is(err, ledger.ErrUnknownAccount) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("merchant position: %w", err)
+		}
+		b, err := l.Balance(ctx, tx, accounts[code].ID())
+		if err != nil {
+			return 0, fmt.Errorf("merchant position: %w", err)
+		}
+		position += b.Amount()
+	}
+	return position, nil
 }

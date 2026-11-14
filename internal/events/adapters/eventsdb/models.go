@@ -18,6 +18,25 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz
 }
 
+type Chargeback struct {
+	ID            pgtype.UUID
+	PaymentID     pgtype.UUID
+	MerchantID    pgtype.UUID
+	Provider      string
+	ExternalID    string
+	Reason        string
+	Status        string
+	PayerAmount   int64
+	PayerCurrency string
+	Amount        int64
+	Spread        int64
+	Currency      string
+	Evidence      pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	ClosedAt      pgtype.Timestamptz
+}
+
 type IdempotencyKey struct {
 	MerchantID      pgtype.UUID
 	Key             string
@@ -187,12 +206,15 @@ type ReviewCase struct {
 }
 
 type Settlement struct {
-	ID         pgtype.UUID
-	MerchantID pgtype.UUID
-	CutoffDate pgtype.Date
-	Amount     int64
-	Currency   string
-	CreatedAt  pgtype.Timestamptz
+	ID                pgtype.UUID
+	MerchantID        pgtype.UUID
+	CutoffDate        pgtype.Date
+	Amount            int64
+	Currency          string
+	CreatedAt         pgtype.Timestamptz
+	Reserved          int64
+	ReserveUntil      pgtype.Date
+	ReserveReleasedOn pgtype.Date
 }
 
 type WebhookEndpoint struct {

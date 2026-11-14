@@ -51,19 +51,23 @@ type storedSettlement struct {
 	id       pgtype.UUID
 	cutoff   time.Time
 	amount   int64
+	reserved int64
 	payments []string
 }
 
+// available is what the cutoff had to pay: the payout and its hold.
+func (s *storedSettlement) available() int64 { return s.amount + s.reserved }
+
 func (c *contract) settlements() []storedSettlement {
 	c.t.Helper()
-	rows, err := c.pool.Query(c.t.Context(), "SELECT id, cutoff_date, amount FROM settlements ORDER BY cutoff_date")
+	rows, err := c.pool.Query(c.t.Context(), "SELECT id, cutoff_date, amount, reserved FROM settlements ORDER BY cutoff_date")
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	var out []storedSettlement
 	for rows.Next() {
 		var s storedSettlement
-		if err := rows.Scan(&s.id, &s.cutoff, &s.amount); err != nil {
+		if err := rows.Scan(&s.id, &s.cutoff, &s.amount, &s.reserved); err != nil {
 			c.t.Fatal(err)
 		}
 		out = append(out, s)
@@ -144,15 +148,18 @@ func TestSettlementPaysWhatIsAvailableOnce(t *testing.T) {
 	}
 
 	got := c.settlements()
-	if len(got) != 1 || got[0].amount != 1940 || !got[0].cutoff.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)) ||
-		!slices.Equal(got[0].payments, []string{id}) {
-		t.Fatalf("settlements = %+v, want one of 1940 on the 2nd with %s", got, id)
+	if len(got) != 1 || got[0].amount != 1746 || got[0].reserved != 194 ||
+		!got[0].cutoff.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)) || !slices.Equal(got[0].payments, []string{id}) {
+		t.Fatalf("settlements = %+v, want one of 1746 and 194 held on the 2nd with %s", got, id)
 	}
 	if b := c.balance("merchant_payable:"); b != 0 {
 		t.Errorf("merchant payable = %d, want 0", b)
 	}
-	if b := c.balance("settlements_paid:"); b != 1940 {
-		t.Errorf("settlements paid = %d, want 1940", b)
+	if b := c.balance("settlements_paid:"); b != 1746 {
+		t.Errorf("settlements paid = %d, want 1746", b)
+	}
+	if b := c.balance("merchant_reserve:"); b != 194 {
+		t.Errorf("merchant reserve = %d, want 194", b)
 	}
 }
 
@@ -186,7 +193,7 @@ func TestConcurrentSettlementsPayOnce(t *testing.T) {
 		t.Errorf("%d settlements reported, want 1", paid)
 	}
 	got := c.settlements()
-	if len(got) != 1 || got[0].amount != 3*1940 || !slices.Equal(got[0].payments, sorted(ids...)) {
+	if len(got) != 1 || got[0].available() != 3*1940 || !slices.Equal(got[0].payments, sorted(ids...)) {
 		t.Fatalf("settlements = %+v, want one of %d with %v", got, 3*1940, sorted(ids...))
 	}
 	if b := c.balance("merchant_payable:"); b != 0 {
@@ -219,8 +226,8 @@ func TestRefundsComeOutOfTheRightSettlement(t *testing.T) {
 	c.settle(s)
 
 	got := c.settlements()
-	if len(got) != 2 || got[0].amount != 1440 || !slices.Equal(got[0].payments, []string{a}) ||
-		got[1].amount != 940 || !slices.Equal(got[1].payments, []string{b}) {
+	if len(got) != 2 || got[0].available() != 1440 || !slices.Equal(got[0].payments, []string{a}) ||
+		got[1].available() != 940 || !slices.Equal(got[1].payments, []string{b}) {
 		t.Fatalf("settlements = %+v, want 1440 with A on the 2nd and 940 with B on the 3rd", got)
 	}
 	if bal := c.balance("merchant_payable:"); bal != 0 {
@@ -254,50 +261,131 @@ func TestPendingPaymentsAndTheirRefundsWait(t *testing.T) {
 	c.toLocalDay(3)
 	c.settle(s)
 	got := c.settlements()
-	if len(got) != 2 || got[0].amount != 1940 || !slices.Equal(got[0].payments, []string{a}) ||
-		got[1].amount != 940 || !slices.Equal(got[1].payments, []string{b}) {
+	if len(got) != 2 || got[0].available() != 1940 || !slices.Equal(got[0].payments, []string{a}) ||
+		got[1].available() != 940 || !slices.Equal(got[1].payments, []string{b}) {
 		t.Fatalf("settlements = %+v, want 1940 with A on the 2nd and 940 with B on the 3rd", got)
 	}
 }
 
-// Decision 27 for F7: what the merchant owes after a refund of settled money is not
-// paid out as a negative settlement; it waits, and the payments that arrive meanwhile
-// go into the first settlement that is positive again.
-func TestNegativeAvailableWaitsForMoreMoney(t *testing.T) {
+// Decision 27: what the merchant owes after a refund of settled money is not paid out
+// as a negative settlement. The next run takes it from the reserve as far as it goes,
+// and the rest waits: the payments that arrive meanwhile go into the first settlement
+// that is positive again.
+func TestNegativeAvailableTakesTheReserveThenWaits(t *testing.T) {
 	c := newContract(t)
 	key := c.merchantKey()
 	s := c.settler()
 
 	a := c.paidPayment(key)
 	c.toLocalDay(2)
-	c.settle(s)
+	c.settle(s)            // 1746 paid, 194 held
 	c.refund(key, a, 2000) // the whole payment back, the fee not returned: -2000
+	c.wantBalance(key, "A refunded", -2000, 0, 194)
 
 	c.toLocalDay(3)
 	b := c.paidPayment(key)
 	if n := c.settle(s); n != 0 {
 		t.Fatalf("settled %d with -2000 available, want 0", n)
 	}
+	c.wantBalance(key, "the 3rd, after the run", -1806, 1940, 0)
+	if n := c.settle(s); n != 0 {
+		t.Fatalf("settled %d running again with an empty reserve, want 0", n)
+	}
+	c.wantBalance(key, "the 3rd, run again", -1806, 1940, 0)
+
+	c.toLocalDay(4)
+	if n := c.settle(s); n != 1 {
+		t.Fatalf("settled %d with 134 available, want 1", n)
+	}
+	got := c.settlements()
+	if len(got) != 2 || got[1].amount != 121 || got[1].reserved != 13 || !slices.Equal(got[1].payments, []string{b}) {
+		t.Fatalf("settlements = %+v, want the second of 121 and 13 held with B", got)
+	}
+	c.wantBalance(key, "the 4th, after the run", 0, 0, 13)
+	c.checkBooksBalance()
+}
+
+// toDate moves the clock to 00:00:30 in São Paulo on the date, as toLocalDay does.
+func (c *contract) toDate(year int, month time.Month, day int) {
+	c.t.Helper()
+	target := time.Date(year, month, day, 3, 0, 30, 0, time.UTC)
+	if !target.After(c.clock.Now()) {
+		c.t.Fatalf("clock at %v is already past %v", c.clock.Now(), target)
+	}
+	c.clock.Advance(target.Sub(c.clock.Now()))
+}
+
+// Decision 26: each hold comes back 90 days after its cutoff, and is paid out with
+// what is available then, less a new hold. A reserve that covered a debt gave the
+// oldest holds first: the first hold comes back with nothing, the second with what
+// the debt left of it.
+func TestReserveIsReleasedAfter90DaysOldestUsedFirst(t *testing.T) {
+	c := newContract(t)
+	key := c.merchantKey()
+	s := c.settler()
+
+	a := c.paidPayment(key)
+	c.toLocalDay(2)
+	c.settle(s) // 194 held until 2027-01-31
+	c.paidPayment(key)
+	c.toLocalDay(3)
+	c.settle(s) // 194 held until 2027-02-01
+	c.refund(key, a, 300)
 	c.toLocalDay(4)
 	if n := c.settle(s); n != 0 {
-		t.Fatalf("settled %d with -60 available, want 0", n)
+		t.Fatalf("settled %d with -300 available, want 0", n)
 	}
-	cc := c.paidPayment(key)
-	c.toLocalDay(5)
-	if n := c.settle(s); n != 1 {
-		t.Fatalf("settled %d with 1880 available, want 1", n)
-	}
+	c.wantBalance(key, "the 4th, debt covered", 0, 0, 88)
 
-	got := c.settlements()
-	if len(got) != 2 || got[1].amount != 1880 || !slices.Equal(got[1].payments, sorted(b, cc)) {
-		t.Fatalf("settlements = %+v, want the second of 1880 with B and C", got)
+	c.toDate(2027, time.January, 30)
+	c.settle(s)
+	c.toDate(2027, time.January, 31)
+	if n := c.settle(s); n != 0 {
+		t.Fatalf("settled %d when the hold used by the debt came due, want 0", n)
 	}
+	c.wantBalance(key, "2027-01-31", 0, 0, 88)
+
+	c.toDate(2027, time.February, 1)
+	if n := c.settle(s); n != 1 {
+		t.Fatalf("settled %d when the second hold came due, want 1", n)
+	}
+	for range 2 {
+		if n := c.settle(s); n != 0 {
+			t.Fatalf("settled %d again on the cutoff of the release, want 0", n)
+		}
+	}
+	got := c.settlements()
+	if len(got) != 3 || got[2].amount != 80 || got[2].reserved != 8 || len(got[2].payments) != 0 {
+		t.Fatalf("settlements = %+v, want a third of 80 and 8 held, with no payment", got)
+	}
+	c.wantBalance(key, "2027-02-01", 0, 0, 8)
+
+	var released []time.Time
+	rows, err := c.pool.Query(t.Context(), "SELECT reserve_released_on FROM settlements WHERE reserve_released_on IS NOT NULL ORDER BY cutoff_date")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var d time.Time
+		if err := rows.Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		released = append(released, d)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []time.Time{time.Date(2027, 1, 31, 0, 0, 0, 0, time.UTC), time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC)}; !slices.Equal(released, want) {
+		t.Errorf("released on %v, want %v", released, want)
+	}
+	c.checkBooksBalance()
 }
 
 // Payments and refunds at random over several days, against a model of what each
 // cutoff should pay: the sum of the nets of the payments available by it, less what
-// was paid before; nothing when that is not positive. Each payment is in exactly the
-// first settlement after it became available.
+// was paid out or held before, plus what the reserve covered. A positive amount is
+// paid less a tenth held; a negative one takes what it can from the reserve. Each
+// payment is in exactly the first settlement after it became available.
 func TestSettlementsMatchAModel(t *testing.T) {
 	for round := range 4 {
 		t.Run(fmt.Sprint(round), func(t *testing.T) {
@@ -314,7 +402,7 @@ func TestSettlementsMatchAModel(t *testing.T) {
 				settled  bool
 			}
 			var all []*modelPayment
-			var paidOut int64
+			var paidOut, held, covered, reserve int64
 			wantSettlements := 0
 			activity := func(day int) {
 				for range rng.IntN(3) {
@@ -348,9 +436,14 @@ func TestSettlementsMatchAModel(t *testing.T) {
 							}
 						}
 					}
-					available -= paidOut
+					available += covered - paidOut - held
 					// Run it twice: the second is a no-op.
 					n := c.settle(s) + c.settle(s)
+					if available <= 0 {
+						cover := min(-available, reserve)
+						reserve -= cover
+						covered += cover
+					}
 					if available > 0 {
 						if n != 1 {
 							t.Fatalf("day %d: %d settlements with %d available, want 1", day, n, available)
@@ -358,10 +451,13 @@ func TestSettlementsMatchAModel(t *testing.T) {
 						wantSettlements++
 						got := c.settlements()
 						last := got[len(got)-1]
-						if last.amount != available || !slices.Equal(last.payments, sorted(included...)) {
-							t.Fatalf("day %d: settlement %+v, want %d with %v", day, last, available, sorted(included...))
+						hold := available / 10
+						if last.amount != available-hold || last.reserved != hold || !slices.Equal(last.payments, sorted(included...)) {
+							t.Fatalf("day %d: settlement %+v, want %d and %d held with %v", day, last, available-hold, hold, sorted(included...))
 						}
-						paidOut += available
+						paidOut += available - hold
+						held += hold
+						reserve += hold
 						for _, p := range all {
 							if p.day < day {
 								p.settled = true
@@ -378,6 +474,9 @@ func TestSettlementsMatchAModel(t *testing.T) {
 			}
 			if got := len(c.settlements()); got != wantSettlements {
 				t.Errorf("%d settlements, want %d", got, wantSettlements)
+			}
+			if got := c.balance("merchant_reserve:"); got != reserve {
+				t.Errorf("reserve = %d, want %d", got, reserve)
 			}
 			c.checkBooksBalance()
 		})
@@ -443,13 +542,16 @@ func TestSettlementUnderConcurrentPaymentsAndRefunds(t *testing.T) {
 
 	c.toLocalDay(3)
 	c.settle(c.settler())
-	var total int64
+	// A run that met the refunds before the fresh payments covered the debt from the
+	// reserve, so how much is still held depends on the order; what was paid out and
+	// what is still held do not.
+	total := c.balance("merchant_reserve:")
 	for _, s := range c.settlements() {
 		total += s.amount
 	}
 	// The six first, the four fresh, less six refunds of 700: everything is available.
 	if want := int64(10*1940 - 6*700); total != want {
-		t.Errorf("paid out %d in all, want %d", total, want)
+		t.Errorf("paid out and held %d in all, want %d", total, want)
 	}
 	if b := c.balance("merchant_payable:"); b != 0 {
 		t.Errorf("merchant payable = %d, want 0", b)

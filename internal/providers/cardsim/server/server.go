@@ -20,6 +20,10 @@ const idLength = 20
 
 type Config struct {
 	Seed uint64
+	// WebhookURL receives an event, signed with WebhookSecret, for every chargeback
+	// opened or closed. Without it the simulator sends nothing.
+	WebhookURL    string
+	WebhookSecret []byte
 }
 
 type Clock = simkit.Clock
@@ -27,8 +31,12 @@ type Clock = simkit.Clock
 type authRecord struct {
 	req  cardsim.Authorize
 	auth cardsim.Authorization
-	// refunded is what completed refunds returned, in minor units.
-	refunded int64
+	// refunded is what completed refunds returned, and chargedBack what chargebacks
+	// took, in minor units. Each is bounded by the capture on its own: a chargeback
+	// can take back what a refund already returned (decision 7).
+	refunded    int64
+	chargedBack int64
+	chargebacks int
 }
 
 type refundRecord struct {
@@ -37,23 +45,30 @@ type refundRecord struct {
 }
 
 type Simulator struct {
-	seed   simkit.Seed
-	clock  Clock
-	logger *slog.Logger
-	faults *simkit.Faults
+	seed    simkit.Seed
+	clock   Clock
+	logger  *slog.Logger
+	faults  *simkit.Faults
+	webhook *simkit.Webhook
 
-	mu      sync.Mutex
-	byKey   map[string]*authRecord
-	keyByID map[string]string
-	refunds map[string]*refundRecord
+	mu          sync.Mutex
+	byKey       map[string]*authRecord
+	keyByID     map[string]string
+	refunds     map[string]*refundRecord
+	chargebacks map[string]*cardsim.Chargeback
 }
 
-func New(cfg *Config, clock Clock, logger *slog.Logger) *Simulator {
+func New(cfg *Config, clock Clock, logger *slog.Logger) (*Simulator, error) {
+	webhook, err := simkit.NewWebhook(cfg.WebhookURL, cfg.WebhookSecret, cardsim.SignatureHeader, clock)
+	if err != nil {
+		return nil, err
+	}
 	return &Simulator{
 		seed: simkit.Seed(cfg.Seed), clock: clock, logger: logger,
-		faults: simkit.NewFaults(cardsim.Ops, cardsim.Rejectable),
-		byKey:  map[string]*authRecord{}, keyByID: map[string]string{}, refunds: map[string]*refundRecord{},
-	}
+		faults: simkit.NewFaults(cardsim.Ops, cardsim.Rejectable), webhook: webhook,
+		byKey: map[string]*authRecord{}, keyByID: map[string]string{}, refunds: map[string]*refundRecord{},
+		chargebacks: map[string]*cardsim.Chargeback{},
+	}, nil
 }
 
 func (s *Simulator) Register(mux *http.ServeMux) {
@@ -63,6 +78,12 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/authorizations/{id}/void", s.void)
 	mux.HandleFunc("POST /v1/authorizations/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
+	mux.HandleFunc("GET /v1/chargebacks/{id}", s.getChargeback)
+	mux.HandleFunc("POST /v1/chargebacks/{id}/accept", s.accept)
+	mux.HandleFunc("POST /v1/chargebacks/{id}/contest", s.contest)
+	mux.HandleFunc("POST /control/authorizations/{id}/chargebacks", s.openChargeback)
+	mux.HandleFunc("POST /control/chargebacks/{id}/resolve", s.resolve)
+	mux.HandleFunc("POST /control/events/{id}/deliver", s.webhook.Redeliver)
 	mux.HandleFunc("POST /control/faults", s.faults.InjectFault)
 }
 

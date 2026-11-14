@@ -82,10 +82,23 @@ func (c *contract) processInbox() {
 
 type boletoEvents struct{ c *contract }
 
+// Handle routes by provider, as the worker's bridge does; an event about something not
+// stored yet is retried.
 func (h boletoEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (eventsapp.Result, error) {
 	sinks := paymentSinks()
-	subject, err := paymentsadapters.HandleBoletoSimEvent(ctx, tx, &sinks, e.Payload, h.c.clock.Now())
-	if err != nil {
+	sinks.Rates = contractRates(h.c.t)
+	handle := paymentsadapters.HandleBoletoSimEvent
+	switch e.Provider {
+	case string(paymentsadapters.CardSimName):
+		handle = paymentsadapters.HandleCardSimEvent
+	case string(paymentsadapters.PixSimName):
+		handle = paymentsadapters.HandlePixSimEvent
+	}
+	subject, err := handle(ctx, tx, &sinks, e.Payload, h.c.clock.Now())
+	switch {
+	case errors.Is(err, paymentsapp.ErrEventEarly), errors.Is(err, paymentsapp.ErrAttemptNotFound):
+		return eventsapp.Result{Subject: subject, Outcome: events.Retry, Reason: err.Error()}, nil
+	case err != nil:
 		return eventsapp.Result{Subject: subject, Outcome: events.Failed, Reason: err.Error()}, nil
 	}
 	return eventsapp.Result{Subject: subject, Outcome: events.Processed}, nil

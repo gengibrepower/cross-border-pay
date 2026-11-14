@@ -22,6 +22,11 @@ const (
 	PaymentCanceled      EventType = "payment.canceled"
 	RefundSucceededEvent EventType = "refund.succeeded"
 	RefundFailedEvent    EventType = "refund.failed"
+	// ChargebackOpenedEvent is the cardholder's bank taking money back; the merchant has
+	// lost it until the dispute is won.
+	ChargebackOpenedEvent EventType = "chargeback.opened"
+	ChargebackWonEvent    EventType = "chargeback.won"
+	ChargebackLostEvent   EventType = "chargeback.lost"
 )
 
 // PaymentSnapshot is what an event tells the merchant about a payment right after a
@@ -104,6 +109,44 @@ func NewRefundEvent(id EventID, t EventType, refund RefundID, amount money.Money
 		PaymentID:      p.ID.String(),
 		PaymentVersion: p.Version,
 		Data:           refundEventData{RefundID: refund.String(), Amount: amount, PaymentStatus: p.Status},
+	})
+	if err != nil {
+		return MerchantEvent{}, fmt.Errorf("payments: event %s: %w", t, err)
+	}
+	return MerchantEvent{ID: id, Merchant: p.Merchant, Type: t, Payment: p.ID, Payload: payload, CreatedAt: at}, nil
+}
+
+type chargebackEventJSON struct {
+	ID             string              `json:"id"`
+	Type           EventType           `json:"type"`
+	CreatedAt      time.Time           `json:"created_at"`
+	PaymentID      string              `json:"payment_id"`
+	PaymentVersion int                 `json:"payment_version"`
+	Data           chargebackEventData `json:"data"`
+}
+
+type chargebackEventData struct {
+	ChargebackID  string           `json:"chargeback_id"`
+	Status        ChargebackStatus `json:"status"`
+	Reason        string           `json:"reason"`
+	Amount        money.Money      `json:"amount"`
+	PaymentStatus Status           `json:"payment_status"`
+}
+
+// NewChargebackEvent serializes a step of a chargeback: opened, won or lost. Amount is
+// what the merchant lost with it, or got back when won; p is the payment right after.
+func NewChargebackEvent(id EventID, t EventType, c *ChargebackCase, p *PaymentSnapshot, now time.Time) (MerchantEvent, error) {
+	at := now.UTC().Truncate(time.Microsecond)
+	payload, err := json.Marshal(chargebackEventJSON{
+		ID:             id.String(),
+		Type:           t,
+		CreatedAt:      at,
+		PaymentID:      p.ID.String(),
+		PaymentVersion: p.Version,
+		Data: chargebackEventData{
+			ChargebackID: c.ID.String(), Status: c.Status, Reason: c.Reason,
+			Amount: c.Amounts.Amount, PaymentStatus: p.Status,
+		},
 	})
 	if err != nil {
 		return MerchantEvent{}, fmt.Errorf("payments: event %s: %w", t, err)

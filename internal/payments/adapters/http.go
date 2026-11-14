@@ -39,15 +39,16 @@ type Payments interface {
 type MerchantFunc func(ctx context.Context) (domain.MerchantID, bool)
 
 type Handler struct {
-	payments Payments
-	refunds  Refunds
-	payouts  Payouts
-	merchant MerchantFunc
-	logger   *slog.Logger
+	payments    Payments
+	refunds     Refunds
+	payouts     Payouts
+	chargebacks Chargebacks
+	merchant    MerchantFunc
+	logger      *slog.Logger
 }
 
-func NewHandler(payments Payments, refunds Refunds, payouts Payouts, merchant MerchantFunc, logger *slog.Logger) *Handler {
-	return &Handler{payments: payments, refunds: refunds, payouts: payouts, merchant: merchant, logger: logger}
+func NewHandler(payments Payments, refunds Refunds, payouts Payouts, chargebacks Chargebacks, merchant MerchantFunc, logger *slog.Logger) *Handler {
+	return &Handler{payments: payments, refunds: refunds, payouts: payouts, chargebacks: chargebacks, merchant: merchant, logger: logger}
 }
 
 // Register adds the payment routes, each wrapped by auth; the ones that create or move
@@ -62,6 +63,9 @@ func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handle
 	mux.Handle("POST /v1/payments/{id}/refunds", auth(idempotent(http.HandlerFunc(h.refund))))
 	mux.Handle("GET /v1/balance", auth(http.HandlerFunc(h.balance)))
 	mux.Handle("GET /v1/settlements", auth(http.HandlerFunc(h.settlements)))
+	mux.Handle("GET /v1/chargebacks/{id}", auth(http.HandlerFunc(h.getChargeback)))
+	mux.Handle("POST /v1/chargebacks/{id}/accept", auth(http.HandlerFunc(h.acceptChargeback)))
+	mux.Handle("POST /v1/chargebacks/{id}/contest", auth(http.HandlerFunc(h.contestChargeback)))
 }
 
 type createRequest struct {
@@ -548,6 +552,8 @@ func (h *Handler) createError(w http.ResponseWriter, r *http.Request, err error)
 		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_payer_email", "payer.email must be a valid e-mail address of at most 254 characters")
 	case errors.Is(err, domain.ErrUnknownMethod):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_method", "method must be pix, boleto or card")
+	case errors.Is(err, domain.ErrDebtLimit):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "debt_limit_exceeded", "the merchant owes more than US$ 1,000.00; no new payment until its balance comes back")
 	case errors.Is(err, domain.ErrUnsupportedCurrency):
 		writeProblem(w, r, http.StatusUnprocessableEntity, "unsupported_currency", "payments are charged in USD")
 	case errors.Is(err, domain.ErrInvalidAmount):
