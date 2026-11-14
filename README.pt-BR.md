@@ -885,7 +885,7 @@ Não é parecer jurídico. Processar dinheiro de terceiros no Brasil exige autor
 
 **Felipe Gegembauer**, estudante de Bacharelado em Engenharia de Software na PUCPR (Curitiba).
 
-[GitHub](https://github.com/gengibrepower) · TODO: LinkedIn
+[GitHub](https://github.com/gengibrepower) · [LinkedIn](https://www.linkedin.com/in/felipe-gegembauer/)
 
 ## Licença
 

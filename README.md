@@ -885,7 +885,7 @@ Not legal advice. Processing third-party money in Brazil requires Central Bank a
 
 **Felipe Gegembauer**, Bachelor of Software Engineering student at PUCPR (Curitiba, Brazil).
 
-[GitHub](https://github.com/gengibrepower) · TODO: LinkedIn
+[GitHub](https://github.com/gengibrepower) · [LinkedIn](https://www.linkedin.com/in/felipe-gegembauer/)
 
 ## License
 
