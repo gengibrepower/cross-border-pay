@@ -35,6 +35,7 @@ func TestLoad(t *testing.T) {
 				"CARDSIM_URL":              "http://cardsim:8091",
 				"BOLETOSIM_URL":            "http://boletosim:8092",
 				"BOLETOSIM_WEBHOOK_SECRET": "b0leto",
+				"CARDSIM_WEBHOOK_SECRET":   "c4rd",
 				"PROVIDER_TIMEOUT":         "2s",
 				"PIXSIM_WEBHOOK_SECRET":    "s3cret",
 				"WEBHOOK_SIGNING_KEY":      "0123456789abcdef0123456789abcdef",
@@ -51,6 +52,7 @@ func TestLoad(t *testing.T) {
 				CardSimURL:             "http://cardsim:8091",
 				BoletoSimURL:           "http://boletosim:8092",
 				BoletoSimWebhookSecret: "b0leto",
+				CardSimWebhookSecret:   "c4rd",
 				ProviderTimeout:        2 * time.Second,
 				PixSimWebhookSecret:    "s3cret",
 				WebhookSigningKey:      "0123456789abcdef0123456789abcdef",
@@ -125,8 +127,11 @@ func TestRequireWebhookSecret(t *testing.T) {
 	if err := (&Config{PixSimWebhookSecret: "s3cret"}).RequireWebhookSecret(); !errors.Is(err, ErrMissingBoletoSimSecret) {
 		t.Errorf("RequireWebhookSecret() without the boleto secret = %v, want %v", err, ErrMissingBoletoSimSecret)
 	}
-	if err := (&Config{PixSimWebhookSecret: "s3cret", BoletoSimWebhookSecret: "b0leto"}).RequireWebhookSecret(); err != nil {
-		t.Errorf("RequireWebhookSecret() with both secrets = %v", err)
+	if err := (&Config{PixSimWebhookSecret: "s3cret", BoletoSimWebhookSecret: "b0leto"}).RequireWebhookSecret(); !errors.Is(err, ErrMissingCardSimSecret) {
+		t.Errorf("RequireWebhookSecret() without the card secret = %v, want %v", err, ErrMissingCardSimSecret)
+	}
+	if err := (&Config{PixSimWebhookSecret: "s3cret", CardSimWebhookSecret: "c4rd", BoletoSimWebhookSecret: "b0leto"}).RequireWebhookSecret(); err != nil {
+		t.Errorf("RequireWebhookSecret() with every secret = %v", err)
 	}
 }
 

@@ -11,6 +11,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const chargebacksOfPayment = `-- name: ChargebacksOfPayment :one
+SELECT coalesce(sum(payer_amount), 0)::bigint AS payer_amount,
+    coalesce(sum(amount), 0)::bigint AS amount,
+    coalesce(sum(spread), 0)::bigint AS spread
+FROM chargebacks WHERE payment_id = $1
+`
+
+type ChargebacksOfPaymentRow struct {
+	PayerAmount int64
+	Amount      int64
+	Spread      int64
+}
+
+// The running total PriceChargeback takes; the payment's lock keeps it current.
+func (q *Queries) ChargebacksOfPayment(ctx context.Context, paymentID pgtype.UUID) (ChargebacksOfPaymentRow, error) {
+	row := q.db.QueryRow(ctx, chargebacksOfPayment, paymentID)
+	var i ChargebacksOfPaymentRow
+	err := row.Scan(&i.PayerAmount, &i.Amount, &i.Spread)
+	return i, err
+}
+
 const claimDueAttempts = `-- name: ClaimDueAttempts :many
 UPDATE payment_attempts SET next_check_at = $1
 WHERE id IN (
@@ -256,6 +277,39 @@ func (q *Queries) GetAttempt(ctx context.Context, id pgtype.UUID) (PaymentAttemp
 	return i, err
 }
 
+const getChargeback = `-- name: GetChargeback :one
+SELECT id, payment_id, merchant_id, provider, external_id, reason, status, payer_amount, payer_currency, amount, spread, currency, evidence, created_at, updated_at, closed_at FROM chargebacks WHERE id = $1 AND merchant_id = $2
+`
+
+type GetChargebackParams struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+}
+
+func (q *Queries) GetChargeback(ctx context.Context, arg GetChargebackParams) (Chargeback, error) {
+	row := q.db.QueryRow(ctx, getChargeback, arg.ID, arg.MerchantID)
+	var i Chargeback
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Reason,
+		&i.Status,
+		&i.PayerAmount,
+		&i.PayerCurrency,
+		&i.Amount,
+		&i.Spread,
+		&i.Currency,
+		&i.Evidence,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClosedAt,
+	)
+	return i, err
+}
+
 const getMerchantRefund = `-- name: GetMerchantRefund :one
 SELECT r.id, r.payment_id, r.provider, r.status, r.amount, r.currency, r.payer_amount, r.payer_currency, r.spread, r.external_id, r.reason, r.created_at, r.updated_at, r.checks, r.next_check_at, r.escalated_at FROM refunds AS r
 JOIN payments AS p ON p.id = r.payment_id
@@ -401,6 +455,66 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) (P
 		&i.PayerEmail,
 		&i.DueDate,
 		&i.Barcode,
+	)
+	return i, err
+}
+
+const insertChargeback = `-- name: InsertChargeback :one
+INSERT INTO chargebacks (payment_id, merchant_id, provider, external_id, reason, status,
+    payer_amount, payer_currency, amount, spread, currency, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, 'needs_response',
+    $6, $7, $8, $9, $10, $11, $11)
+ON CONFLICT (provider, external_id) DO NOTHING
+RETURNING id, payment_id, merchant_id, provider, external_id, reason, status, payer_amount, payer_currency, amount, spread, currency, evidence, created_at, updated_at, closed_at
+`
+
+type InsertChargebackParams struct {
+	PaymentID     pgtype.UUID
+	MerchantID    pgtype.UUID
+	Provider      string
+	ExternalID    string
+	Reason        string
+	PayerAmount   int64
+	PayerCurrency string
+	Amount        int64
+	Spread        int64
+	Currency      string
+	CreatedAt     pgtype.Timestamptz
+}
+
+// No row when the provider's chargeback is stored already: a redelivered event.
+func (q *Queries) InsertChargeback(ctx context.Context, arg InsertChargebackParams) (Chargeback, error) {
+	row := q.db.QueryRow(ctx, insertChargeback,
+		arg.PaymentID,
+		arg.MerchantID,
+		arg.Provider,
+		arg.ExternalID,
+		arg.Reason,
+		arg.PayerAmount,
+		arg.PayerCurrency,
+		arg.Amount,
+		arg.Spread,
+		arg.Currency,
+		arg.CreatedAt,
+	)
+	var i Chargeback
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Reason,
+		&i.Status,
+		&i.PayerAmount,
+		&i.PayerCurrency,
+		&i.Amount,
+		&i.Spread,
+		&i.Currency,
+		&i.Evidence,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClosedAt,
 	)
 	return i, err
 }
@@ -754,6 +868,68 @@ func (q *Queries) LockCapturablePayment(ctx context.Context, arg LockCapturableP
 	return i, err
 }
 
+const lockChargeback = `-- name: LockChargeback :one
+SELECT id, payment_id, merchant_id, provider, external_id, reason, status, payer_amount, payer_currency, amount, spread, currency, evidence, created_at, updated_at, closed_at FROM chargebacks WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockChargeback(ctx context.Context, id pgtype.UUID) (Chargeback, error) {
+	row := q.db.QueryRow(ctx, lockChargeback, id)
+	var i Chargeback
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Reason,
+		&i.Status,
+		&i.PayerAmount,
+		&i.PayerCurrency,
+		&i.Amount,
+		&i.Spread,
+		&i.Currency,
+		&i.Evidence,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClosedAt,
+	)
+	return i, err
+}
+
+const lockChargebackByExternalID = `-- name: LockChargebackByExternalID :one
+SELECT id, payment_id, merchant_id, provider, external_id, reason, status, payer_amount, payer_currency, amount, spread, currency, evidence, created_at, updated_at, closed_at FROM chargebacks WHERE provider = $1 AND external_id = $2 FOR UPDATE
+`
+
+type LockChargebackByExternalIDParams struct {
+	Provider   string
+	ExternalID string
+}
+
+// Taken after the payment's lock, as every chargeback path does.
+func (q *Queries) LockChargebackByExternalID(ctx context.Context, arg LockChargebackByExternalIDParams) (Chargeback, error) {
+	row := q.db.QueryRow(ctx, lockChargebackByExternalID, arg.Provider, arg.ExternalID)
+	var i Chargeback
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Reason,
+		&i.Status,
+		&i.PayerAmount,
+		&i.PayerCurrency,
+		&i.Amount,
+		&i.Spread,
+		&i.Currency,
+		&i.Evidence,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClosedAt,
+	)
+	return i, err
+}
+
 const lockMerchantPayment = `-- name: LockMerchantPayment :one
 SELECT id, merchant_id, status, amount, currency FROM payments
 WHERE merchant_id = $1 AND id = $2
@@ -862,6 +1038,42 @@ func (q *Queries) LockPaymentOfAttempt(ctx context.Context, id pgtype.UUID) (Loc
 		&i.PayerAmount,
 		&i.QuoteCurrency,
 		&i.AttemptProvider,
+	)
+	return i, err
+}
+
+const lockPaymentOfChargeback = `-- name: LockPaymentOfChargeback :one
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.amount, p.currency
+FROM chargebacks AS c
+JOIN payments AS p ON p.id = c.payment_id
+WHERE c.id = $1 AND c.merchant_id = $2
+FOR NO KEY UPDATE OF p
+`
+
+type LockPaymentOfChargebackParams struct {
+	ID         pgtype.UUID
+	MerchantID pgtype.UUID
+}
+
+type LockPaymentOfChargebackRow struct {
+	PaymentID  pgtype.UUID
+	MerchantID pgtype.UUID
+	Status     string
+	Amount     int64
+	Currency   string
+}
+
+// LockPaymentOfAttempt for a chargeback the merchant answers: the payment first, then
+// the chargeback, the order of the event path.
+func (q *Queries) LockPaymentOfChargeback(ctx context.Context, arg LockPaymentOfChargebackParams) (LockPaymentOfChargebackRow, error) {
+	row := q.db.QueryRow(ctx, lockPaymentOfChargeback, arg.ID, arg.MerchantID)
+	var i LockPaymentOfChargebackRow
+	err := row.Scan(
+		&i.PaymentID,
+		&i.MerchantID,
+		&i.Status,
+		&i.Amount,
+		&i.Currency,
 	)
 	return i, err
 }
@@ -1070,13 +1282,17 @@ func (q *Queries) NewID(ctx context.Context) (pgtype.UUID, error) {
 }
 
 const pendingNet = `-- name: PendingNet :one
-SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
+SELECT coalesce(sum(q.merchant_net - r.refunded - c.charged_back), 0)::bigint
 FROM payments AS p
 JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 CROSS JOIN LATERAL (
     SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
     WHERE payment_id = p.id AND status <> 'rejected'
 ) AS r
+CROSS JOIN LATERAL (
+    SELECT coalesce(sum(amount), 0)::bigint AS charged_back FROM chargebacks
+    WHERE payment_id = p.id AND status <> 'won'
+) AS c
 WHERE p.merchant_id = $1 AND p.paid_at IS NOT NULL
     AND p.paid_at >= CASE p.method
         WHEN 'pix' THEN $2::timestamptz
@@ -1092,9 +1308,10 @@ type PendingNetParams struct {
 }
 
 // What the merchant's payable holds for payments not available yet: each one's net,
-// less its refunds that still count. Every refund takes its amount from the payable
-// when created and only a rejection gives it back (migration 00017), so this is
-// exactly their share of the payable's balance.
+// less its refunds that still count and its chargebacks not won. Every refund takes
+// its amount from the payable when created and only a rejection gives it back
+// (migration 00017); a chargeback takes its amount when it opens and only a won one
+// gives it back (migration 00025). So this is exactly their share of the payable.
 func (q *Queries) PendingNet(ctx context.Context, arg PendingNetParams) (int64, error) {
 	row := q.db.QueryRow(ctx, pendingNet,
 		arg.MerchantID,
@@ -1309,6 +1526,32 @@ func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) er
 		arg.UpdatedAt,
 		arg.Checks,
 		arg.NextCheckAt,
+		arg.ID,
+	)
+	return err
+}
+
+const updateChargeback = `-- name: UpdateChargeback :exec
+UPDATE chargebacks
+SET status = $1, evidence = coalesce($2, evidence),
+    updated_at = $3, closed_at = $4
+WHERE id = $5
+`
+
+type UpdateChargebackParams struct {
+	Status    string
+	Evidence  pgtype.Text
+	UpdatedAt pgtype.Timestamptz
+	ClosedAt  pgtype.Timestamptz
+	ID        pgtype.UUID
+}
+
+func (q *Queries) UpdateChargeback(ctx context.Context, arg UpdateChargebackParams) error {
+	_, err := q.db.Exec(ctx, updateChargeback,
+		arg.Status,
+		arg.Evidence,
+		arg.UpdatedAt,
+		arg.ClosedAt,
 		arg.ID,
 	)
 	return err

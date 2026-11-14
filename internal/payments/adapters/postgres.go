@@ -39,6 +39,9 @@ type Reviews interface {
 type Sinks struct {
 	Outbox  Outbox
 	Reviews Reviews
+	// Rates is the base rate a chargeback's money is bought back and sold at
+	// (decision 13); only the worker's event handler needs it.
+	Rates app.RateSource
 }
 
 type Postgres struct {

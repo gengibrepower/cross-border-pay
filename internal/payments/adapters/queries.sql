@@ -220,16 +220,21 @@ FOR NO KEY UPDATE;
 
 -- name: PendingNet :one
 -- What the merchant's payable holds for payments not available yet: each one's net,
--- less its refunds that still count. Every refund takes its amount from the payable
--- when created and only a rejection gives it back (migration 00017), so this is
--- exactly their share of the payable's balance.
-SELECT coalesce(sum(q.merchant_net - r.refunded), 0)::bigint
+-- less its refunds that still count and its chargebacks not won. Every refund takes
+-- its amount from the payable when created and only a rejection gives it back
+-- (migration 00017); a chargeback takes its amount when it opens and only a won one
+-- gives it back (migration 00025). So this is exactly their share of the payable.
+SELECT coalesce(sum(q.merchant_net - r.refunded - c.charged_back), 0)::bigint
 FROM payments AS p
 JOIN quotes AS q ON q.id = coalesce(p.captured_quote_id, p.quote_id)
 CROSS JOIN LATERAL (
     SELECT coalesce(sum(amount), 0)::bigint AS refunded FROM refunds
     WHERE payment_id = p.id AND status <> 'rejected'
 ) AS r
+CROSS JOIN LATERAL (
+    SELECT coalesce(sum(amount), 0)::bigint AS charged_back FROM chargebacks
+    WHERE payment_id = p.id AND status <> 'won'
+) AS c
 WHERE p.merchant_id = @merchant_id AND p.paid_at IS NOT NULL
     AND p.paid_at >= CASE p.method
         WHEN 'pix' THEN @pix_before::timestamptz
@@ -281,3 +286,44 @@ FOR NO KEY UPDATE;
 
 -- name: SetCapturedQuote :exec
 UPDATE payments SET captured_quote_id = @captured_quote_id WHERE id = @id;
+
+-- name: InsertChargeback :one
+-- No row when the provider's chargeback is stored already: a redelivered event.
+INSERT INTO chargebacks (payment_id, merchant_id, provider, external_id, reason, status,
+    payer_amount, payer_currency, amount, spread, currency, created_at, updated_at)
+VALUES (@payment_id, @merchant_id, @provider, @external_id, @reason, 'needs_response',
+    @payer_amount, @payer_currency, @amount, @spread, @currency, @created_at, @created_at)
+ON CONFLICT (provider, external_id) DO NOTHING
+RETURNING *;
+
+-- name: ChargebacksOfPayment :one
+-- The running total PriceChargeback takes; the payment's lock keeps it current.
+SELECT coalesce(sum(payer_amount), 0)::bigint AS payer_amount,
+    coalesce(sum(amount), 0)::bigint AS amount,
+    coalesce(sum(spread), 0)::bigint AS spread
+FROM chargebacks WHERE payment_id = @payment_id;
+
+-- name: LockChargebackByExternalID :one
+-- Taken after the payment's lock, as every chargeback path does.
+SELECT * FROM chargebacks WHERE provider = @provider AND external_id = @external_id FOR UPDATE;
+
+-- name: LockChargeback :one
+SELECT * FROM chargebacks WHERE id = @id FOR UPDATE;
+
+-- name: GetChargeback :one
+SELECT * FROM chargebacks WHERE id = @id AND merchant_id = @merchant_id;
+
+-- name: LockPaymentOfChargeback :one
+-- LockPaymentOfAttempt for a chargeback the merchant answers: the payment first, then
+-- the chargeback, the order of the event path.
+SELECT p.id AS payment_id, p.merchant_id, p.status, p.amount, p.currency
+FROM chargebacks AS c
+JOIN payments AS p ON p.id = c.payment_id
+WHERE c.id = @id AND c.merchant_id = @merchant_id
+FOR NO KEY UPDATE OF p;
+
+-- name: UpdateChargeback :exec
+UPDATE chargebacks
+SET status = @status, evidence = coalesce(sqlc.narg(evidence), evidence),
+    updated_at = @updated_at, closed_at = sqlc.narg(closed_at)
+WHERE id = @id;

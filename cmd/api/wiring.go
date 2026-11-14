@@ -30,6 +30,7 @@ import (
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/ssrf"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
@@ -51,13 +52,16 @@ type api struct {
 // deps are what the API needs from outside the database: the base rate, the clock and
 // the providers, which tests replace.
 type deps struct {
-	usdbrl          string
-	clock           moduleClock
-	calendar        *calendar.Calendar
-	providers       *paymentsapp.Providers
+	usdbrl    string
+	clock     moduleClock
+	calendar  *calendar.Calendar
+	providers *paymentsapp.Providers
+	// disputers take the merchant's answers to chargebacks, by provider.
+	disputers       map[payments.ProviderName]paymentsapp.Disputer
 	providerTimeout time.Duration
 	webhookSecret   string
 	boletoSecret    string
+	cardSecret      string
 	signingKey      []byte
 	webhooks        ssrf.Policy
 }
@@ -79,7 +83,9 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 	}
 	rates := fxadapters.NewFixedRates(rate)
 	quoter := fxapp.NewQuoter(rates, d.clock, fx.DefaultPricing)
-	paymentsStore := paymentsadapters.NewPostgres(pool, paymentSinks())
+	sinks := paymentSinks()
+	sinks.Rates = rates
+	paymentsStore := paymentsadapters.NewPostgres(pool, sinks)
 	merchantsStore := merchantsadapters.NewPostgres(pool)
 	merchants := merchantsapp.NewService(merchantsStore, rand.Reader)
 	policy, err := payments.DefaultSettlementPolicy()
@@ -96,6 +102,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 			paymentsapp.NewService(quoter, paymentsStore, d.providers, d.calendar, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewRefunder(rates, paymentsStore, d.providers, d.clock, logger, d.providerTimeout),
 			paymentsapp.NewPayouts(paymentsStore, policy, d.clock),
+			paymentsapp.NewChargebacks(paymentsStore, d.disputers, d.clock, logger, d.providerTimeout),
 			merchantFrom,
 			logger,
 		),
@@ -103,6 +110,7 @@ func newAPI(pool *pgxpool.Pool, logger *slog.Logger, d *deps) (*api, error) {
 			eventsapp.NewInbox(eventsadapters.NewPostgres(pool), map[string]eventsapp.Verifier{
 				string(paymentsadapters.PixSimName):    pixsimVerifier{secret: []byte(d.webhookSecret)},
 				string(paymentsadapters.BoletoSimName): boletosimVerifier{secret: []byte(d.boletoSecret)},
+				string(paymentsadapters.CardSimName):   cardsimVerifier{secret: []byte(d.cardSecret)},
 			}, d.clock, logger),
 			logger,
 		),
@@ -157,6 +165,26 @@ func (v boletosimVerifier) Verify(header func(string) string, body []byte, now t
 	e, err := boletosim.VerifyEvent(v.secret, sig, body, now)
 	switch {
 	case errors.Is(err, boletosim.ErrBadEvent):
+		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrMalformedEvent, err)
+	case err != nil:
+		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrUnauthenticated, err)
+	}
+	return events.Incoming{ExternalID: e.ID, Type: string(e.Type), Payload: body, Signature: sig}, nil
+}
+
+// cardsimVerifier is pixsimVerifier for the card simulator's chargeback events.
+type cardsimVerifier struct {
+	secret []byte
+}
+
+func (v cardsimVerifier) Verify(header func(string) string, body []byte, now time.Time) (events.Incoming, error) {
+	if len(v.secret) == 0 {
+		return events.Incoming{}, fmt.Errorf("%w: no secret configured for cardsim", eventsapp.ErrUnauthenticated)
+	}
+	sig := header(cardsim.SignatureHeader)
+	e, err := cardsim.VerifyEvent(v.secret, sig, body, now)
+	switch {
+	case errors.Is(err, cardsim.ErrBadEvent):
 		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrMalformedEvent, err)
 	case err != nil:
 		return events.Incoming{}, fmt.Errorf("%w: %w", eventsapp.ErrUnauthenticated, err)

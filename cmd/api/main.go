@@ -68,9 +68,10 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("config: BOLETOSIM_URL: %w", err)
 	}
+	card := paymentsadapters.NewCardSim(cardsimClient)
 	providers, err := paymentsapp.NewProviders(map[paymentsdomain.Method]paymentsapp.Provider{
 		paymentsdomain.Pix:    paymentsadapters.NewPixSim(pixsimClient),
-		paymentsdomain.Card:   paymentsadapters.NewCardSim(cardsimClient),
+		paymentsdomain.Card:   card,
 		paymentsdomain.Boleto: paymentsadapters.NewBoletoSim(boletosimClient),
 	})
 	if err != nil {
@@ -85,9 +86,11 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		clock:           clock.System{},
 		calendar:        &cal,
 		providers:       providers,
+		disputers:       map[paymentsdomain.ProviderName]paymentsapp.Disputer{paymentsadapters.CardSimName: card},
 		providerTimeout: cfg.ProviderTimeout,
 		webhookSecret:   cfg.PixSimWebhookSecret,
 		boletoSecret:    cfg.BoletoSimWebhookSecret,
+		cardSecret:      cfg.CardSimWebhookSecret,
 		signingKey:      []byte(cfg.WebhookSigningKey),
 		webhooks:        ssrf.Policy{AllowPrivate: cfg.WebhookAllowPrivate},
 	})

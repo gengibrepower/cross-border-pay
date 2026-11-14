@@ -23,6 +23,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/clock"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres/pgtest"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 	pixsimserver "github.com/gengibrepower/cross-border-pay/internal/providers/pixsim/server"
 )
@@ -44,8 +45,8 @@ func newInboxEnv(t *testing.T) *inboxEnv {
 	c := clock.NewFake(t0)
 	store := eventsadapters.NewPostgres(pool)
 	return &inboxEnv{
-		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, paymentSinks()),
-		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, sinks: paymentSinks()}, c, slog.New(slog.DiscardHandler)),
+		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, paymentSinks(testRates(t))),
+		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, sinks: paymentSinks(testRates(t))}, c, slog.New(slog.DiscardHandler)),
 	}
 }
 
@@ -287,4 +288,50 @@ func TestWorkerRoutesBoletoEventsToTheirOwnAttempts(t *testing.T) {
 	if status, subject := e.event(); err != nil || a.Status() != payments.AttemptAccepted || status != "failed" || subject != id.String() {
 		t.Errorf("attempt %s (%v), event %s for %q; want the PIX attempt untouched and the event failed", a.Status(), err, status, subject)
 	}
+}
+
+// A card chargeback goes to the card handler: named with a PIX attempt it fails, named
+// with an attempt not stored yet it waits for a retry.
+func TestWorkerRoutesCardSimEvents(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stored bool
+		status string
+	}{
+		"a PIX attempt":  {true, "failed"},
+		"not stored yet": {false, "pending"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newInboxEnv(t)
+			id, _ := e.attempt()
+			key := id.String()
+			if !tc.stored {
+				key = payments.AttemptID{1}.String()
+			}
+			payload, err := json.Marshal(cardsim.Event{
+				ID: "evt_c1", Type: cardsim.ChargebackOpened, CreatedAt: t0,
+				Chargeback: cardsim.Chargeback{
+					ID: "cbk_1", AuthorizationID: "auth_1", AuthorizationKey: key,
+					Status: cardsim.NeedsResponse, Amount: money.New(10150, money.BRL), Reason: "fraudulent", CreatedAt: t0,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.receive("cardsim", payload)
+			e.process()
+			if status, _ := e.event(); status != tc.status {
+				t.Errorf("event %s, want %s", status, tc.status)
+			}
+		})
+	}
+}
+
+// testRates is the base rate of the GameStore example, 5.0000 BRL per USD.
+func testRates(t *testing.T) fxadapters.FixedRates {
+	t.Helper()
+	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fxadapters.NewFixedRates(rate)
 }

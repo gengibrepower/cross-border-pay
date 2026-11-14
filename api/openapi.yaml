@@ -507,6 +507,150 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
 
+  /v1/chargebacks/{id}:
+    get:
+      operationId: getChargeback
+      summary: Get a chargeback of one of the merchant's payments
+      description: |
+        A chargeback is the cardholder's bank taking a card payment's money back
+        (section 4.7). The money leaves the merchant's balance when it opens, which can
+        leave the balance negative (decision 27); `chargeback.opened` tells the
+        merchant, with its ID. A refunded payment can still be charged back, and the
+        money then leaves twice (decision 7): contest it with the refund as evidence.
+      parameters:
+        - $ref: "#/components/parameters/ChargebackId"
+      responses:
+        "200":
+          description: The chargeback.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chargeback"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          description: No chargeback with this ID on the merchant's payments.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+
+  /v1/chargebacks/{id}/accept:
+    post:
+      operationId: acceptChargeback
+      summary: Give a chargeback up
+      description: |
+        The chargeback is lost at once and `chargeback.lost` is sent; the money stays
+        with the cardholder. Accepting a chargeback already accepted answers 200 with
+        it unchanged, so the request needs no Idempotency-Key.
+      parameters:
+        - $ref: "#/components/parameters/ChargebackId"
+      responses:
+        "200":
+          description: The chargeback, lost.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chargeback"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          description: "`chargeback_closed`: it is contested or decided already."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "503":
+          description: "`provider_unavailable`: the acquirer did not answer. Nothing changed; retry."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /v1/chargebacks/{id}/contest:
+    post:
+      operationId: contestChargeback
+      summary: Contest a chargeback with evidence
+      description: |
+        The evidence goes to the acquirer and the chargeback is `under_review` until the
+        issuer decides; `chargeback.won` gives the money back to the merchant's balance,
+        `chargeback.lost` keeps it with the cardholder. Contesting a chargeback already
+        under review answers 200 with it unchanged.
+      parameters:
+        - $ref: "#/components/parameters/ChargebackId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContestChargebackRequest"
+      responses:
+        "200":
+          description: The chargeback, under review.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chargeback"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          description: "`chargeback_closed`: it is accepted or decided already."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: "`invalid_evidence`: evidence must have 1 to 2000 characters."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+        "503":
+          description: "`provider_unavailable`: the acquirer did not answer. Nothing changed; retry."
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
   /v1/events:
     get:
       operationId: listEvents
@@ -695,6 +839,12 @@ components:
       description: "An API key: `Authorization: Bearer sk_test_...`."
 
   parameters:
+    ChargebackId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/ChargebackId"
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -952,6 +1102,99 @@ components:
             payment_status:
               $ref: "#/components/schemas/PaymentStatus"
 
+    ChargebackId:
+      type: string
+      pattern: "^cbk_[0-9a-z]{26}$"
+
+    Chargeback:
+      type: object
+      additionalProperties: false
+      required: [id, payment_id, status, reason, payer_amount, amount, evidence, created_at, closed_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/ChargebackId"
+        payment_id:
+          $ref: "#/components/schemas/PaymentId"
+        status:
+          type: string
+          enum: [needs_response, under_review, won, lost]
+        reason:
+          type: string
+          description: Why the cardholder disputed, as the acquirer said it.
+        payer_amount:
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: What the cardholder's bank took back, in BRL.
+        amount:
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: >-
+            What the merchant lost with it, in USD: the same share of the payment, the
+            fee kept, as for a refund. A won chargeback gives exactly this back.
+        evidence:
+          type: string
+          nullable: true
+          description: What the merchant contested with; null until contested.
+        created_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it was won or lost.
+
+    ContestChargebackRequest:
+      type: object
+      additionalProperties: false
+      required: [evidence]
+      properties:
+        evidence:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: Refunded in full on 2026-11-05, refund ref_...
+
+    ChargebackEvent:
+      description: |
+        Posted when a chargeback opens, is won or is lost, signed and delivered like
+        PaymentEvent. `amount` is what the merchant lost when it opened, or got back
+        when won. Each moves `payment_version`, ordering it with the payment's events.
+      type: object
+      additionalProperties: false
+      required: [id, type, created_at, payment_id, payment_version, data]
+      properties:
+        id:
+          type: string
+          pattern: "^evt_[0-9a-z]{26}$"
+        type:
+          type: string
+          enum: [chargeback.opened, chargeback.won, chargeback.lost]
+        created_at:
+          type: string
+          format: date-time
+        payment_id:
+          $ref: "#/components/schemas/PaymentId"
+        payment_version:
+          type: integer
+          minimum: 1
+        data:
+          type: object
+          additionalProperties: false
+          required: [chargeback_id, status, reason, amount, payment_status]
+          properties:
+            chargeback_id:
+              $ref: "#/components/schemas/ChargebackId"
+            status:
+              type: string
+              enum: [needs_response, under_review, won, lost]
+            reason:
+              type: string
+            amount:
+              $ref: "#/components/schemas/Money"
+            payment_status:
+              $ref: "#/components/schemas/PaymentStatus"
+
     EventList:
       type: object
       additionalProperties: false
@@ -975,6 +1218,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/PaymentEvent"
             - $ref: "#/components/schemas/RefundEvent"
+            - $ref: "#/components/schemas/ChargebackEvent"
         delivery:
           type: object
           additionalProperties: false

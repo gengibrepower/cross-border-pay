@@ -110,7 +110,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("providers: %w", err)
 	}
-	store := paymentsadapters.NewPostgres(pool, paymentSinks())
+	rates := fxadapters.NewFixedRates(rate)
+	store := paymentsadapters.NewPostgres(pool, paymentSinks(rates))
 	resolver := paymentsapp.NewResolver(store, providers, clock.System{}, logger, cfg.ProviderTimeout)
 	expirer := paymentsapp.NewExpirer(store, providers, clock.System{}, logger, cfg.ProviderTimeout)
 	policy, err := paymentsdomain.DefaultSettlementPolicy()
@@ -119,8 +120,8 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	}
 	settler := paymentsapp.NewSettler(store, policy, clock.System{}, logger)
 	refunds := paymentsapp.NewRefundResolver(
-		paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, providers, clock.System{}, logger, cfg.ProviderTimeout), store)
-	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks()}, clock.System{}, logger)
+		paymentsapp.NewRefunder(rates, store, providers, clock.System{}, logger, cfg.ProviderTimeout), store)
+	inbox := eventsapp.NewProcessor(eventsadapters.NewPostgres(pool), paymentEvents{clock: clock.System{}, sinks: paymentSinks(rates)}, clock.System{}, logger)
 	deliverer, err := webhooksapp.NewDeliverer(
 		eventsadapters.NewDeliveries(pool), merchantsadapters.NewPostgres(pool),
 		webhooksadapters.NewHTTPSender(ssrf.Policy{AllowPrivate: cfg.WebhookAllowPrivate}, cfg.WebhookTimeout),

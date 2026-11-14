@@ -38,7 +38,7 @@ func TestRunServesAndStopsWhenCanceled(t *testing.T) {
 	var out syncBuffer
 	result := make(chan error, 1)
 	go func() {
-		result <- run(ctx, env(map[string]string{"CARDSIM_ADDR": "127.0.0.1:0"}), &out)
+		result <- run(ctx, env(map[string]string{"CARDSIM_ADDR": "127.0.0.1:0", "CARDSIM_WEBHOOK_SECRET": "s"}), &out)
 	}()
 
 	var addr string
@@ -82,18 +82,23 @@ func TestRunServesAndStopsWhenCanceled(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	s, err := load(env(nil))
-	if err != nil || s.addr != defaultAddr || s.sim.Seed != defaultSeed {
+	secret := map[string]string{"CARDSIM_WEBHOOK_SECRET": "s"}
+	s, err := load(env(secret))
+	if err != nil || s.addr != defaultAddr || s.sim.Seed != defaultSeed || s.sim.WebhookURL != defaultWebhookURL || string(s.sim.WebhookSecret) != "s" {
 		t.Errorf("load(defaults) = %+v, %v", s, err)
 	}
-	s, err = load(env(map[string]string{"CARDSIM_ADDR": ":9000", "CARDSIM_SEED": "18446744073709551615"}))
-	if err != nil || s.addr != ":9000" || s.sim.Seed != 1<<64-1 {
+	s, err = load(env(map[string]string{
+		"CARDSIM_ADDR": ":9000", "CARDSIM_SEED": "18446744073709551615",
+		"CARDSIM_WEBHOOK_URL": "http://api:8080/hook", "CARDSIM_WEBHOOK_SECRET": "s",
+	}))
+	if err != nil || s.addr != ":9000" || s.sim.Seed != 1<<64-1 || s.sim.WebhookURL != "http://api:8080/hook" {
 		t.Errorf("load(set) = %+v, %v", s, err)
 	}
 	for name, vars := range map[string]map[string]string{
-		"bad addr":      {"CARDSIM_ADDR": "9000"},
-		"negative seed": {"CARDSIM_SEED": "-1"},
-		"text seed":     {"CARDSIM_SEED": "abc"},
+		"bad addr":      {"CARDSIM_ADDR": "9000", "CARDSIM_WEBHOOK_SECRET": "s"},
+		"negative seed": {"CARDSIM_SEED": "-1", "CARDSIM_WEBHOOK_SECRET": "s"},
+		"text seed":     {"CARDSIM_SEED": "abc", "CARDSIM_WEBHOOK_SECRET": "s"},
+		"no secret":     {},
 	} {
 		if _, err := load(env(vars)); err == nil {
 			t.Errorf("%s: load() succeeded", name)

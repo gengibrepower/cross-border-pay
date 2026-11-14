@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	defaultAddr = ":8091"
-	defaultSeed = 1
+	defaultAddr       = ":8091"
+	defaultSeed       = 1
+	defaultWebhookURL = "http://localhost:8080/v1/providers/cardsim/events"
 )
 
 func main() {
@@ -42,7 +43,7 @@ type settings struct {
 }
 
 func load(getenv func(string) string) (settings, error) {
-	s := settings{addr: defaultAddr, sim: server.Config{Seed: defaultSeed}}
+	s := settings{addr: defaultAddr, sim: server.Config{Seed: defaultSeed, WebhookURL: defaultWebhookURL}}
 	var errs []error
 	if v := getenv("CARDSIM_ADDR"); v != "" {
 		if _, _, err := net.SplitHostPort(v); err != nil {
@@ -56,6 +57,13 @@ func load(getenv func(string) string) (settings, error) {
 			errs = append(errs, fmt.Errorf("CARDSIM_SEED: %w", err))
 		}
 		s.sim.Seed = seed
+	}
+	if v := getenv("CARDSIM_WEBHOOK_URL"); v != "" {
+		s.sim.WebhookURL = v
+	}
+	s.sim.WebhookSecret = []byte(getenv("CARDSIM_WEBHOOK_SECRET"))
+	if len(s.sim.WebhookSecret) == 0 {
+		errs = append(errs, errors.New("CARDSIM_WEBHOOK_SECRET is required: it signs the chargeback events sent to CARDSIM_WEBHOOK_URL"))
 	}
 	return s, errors.Join(errs...)
 }
@@ -76,14 +84,18 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
-	server.New(&s.sim, clock.System{}, logger).Register(mux)
+	sim, err := server.New(&s.sim, clock.System{}, logger)
+	if err != nil {
+		return fmt.Errorf("simulator: %w", err)
+	}
+	sim.Register(mux)
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	logger.Info("card simulator configured", "seed", s.sim.Seed)
+	logger.Info("card simulator configured", "seed", s.sim.Seed, "webhook_url", s.sim.WebhookURL)
 	if err := httpapi.Serve(ctx, "cardsim", ln, httpapi.Handler(mux, logger), logger, cfg.ShutdownTimeout); err != nil {
 		return fmt.Errorf("http: %w", err)
 	}

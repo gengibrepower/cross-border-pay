@@ -246,7 +246,7 @@ Money the provider confirmed always enters the ledger; what is in doubt is only 
 </details>
 
 <details>
-<summary><b>Refunds and settlement</b> · 5 tests</summary>
+<summary><b>Refunds and settlement</b> · 6 tests</summary>
 
 **Refund pricing and postings (`payments`, decision 13)**
 
@@ -282,9 +282,17 @@ Once per merchant and cutoff date in `America/Sao_Paulo`, what is available beco
 
 **Balance and settlements (`GET /v1/balance`, `GET /v1/settlements`)**
 
-The balance splits the merchant's payable as the settlement job does at that moment: pending is the net of the payments not available yet less their refunds, available is the rest, negative after a refund of settled money that exceeds what came in since; reserved is zero until F8's reserve. Both sums come from one `REPEATABLE READ` snapshot without the payable's lock, so a read never waits on a confirmation or holds up a settlement. The list shows the settlements newest cutoff first, each with its payments, read in the same snapshot as the page; the cursor is the cutoff date, unique per merchant, on the `UNIQUE (merchant_id, cutoff_date)` index; the payments come from a new partial index on `payments.settlement_id` (migration 00020)
+The balance splits the merchant's payable as the settlement job does at that moment: pending is the net of the payments not available yet less their refunds, available is the rest, negative after a refund or chargeback of settled money that exceeds what came in since; reserved is the rolling reserve below. Both sums come from one `REPEATABLE READ` snapshot without the payable's lock, so a read never waits on a confirmation or holds up a settlement. The list shows the settlements newest cutoff first, each with its payments, read in the same snapshot as the page; the cursor is the cutoff date, unique per merchant, on the `UNIQUE (merchant_id, cutoff_date)` index; the payments come from a new partial index on `payments.settlement_id` (migration 00020)
 
 **Result:** A balance checked at 9 points across 3 São Paulo days, among them 23:30 local, when the date in UTC has already turned, always adding up to the payable. 3 settlements in pages of 1: each seen once, newest first, with the same amount and payments as stored, none of another merchant's settled in the same runs. 5 invalid parameters and 2 `401`s. 20/20 runs with `-race -count=20`. 11 mutants killed, among them available without the pending, availability a day early or late, the cutoff in UTC, the cursor with `<=`, the list without the merchant filter, the payments of every settlement, and an error for a merchant with no payable yet.
+
+---
+
+**Rolling reserve and debt limit (decisions 26 and 27)**
+
+Each payout holds 10% of what is available on `merchant_reserve` for 90 days, and a later run gives it back, oldest first; the settlement stores what it held and until when (migration 00024). An available balance that a refund or chargeback made negative takes the reserve first, then waits for the next payments. A merchant whose payable plus reserve is below −US$ 1,000.00 takes no new payment (`422 debt_limit_exceeded`). The settlement locks the payments, then the payable and the reserve in account order, as every path.
+
+**Result:** 3 new contract tests and 6 domain tests, and the reserve added to the settlement tests above: a negative available covered by the reserve and the rest waiting; reserves released after 90 days, the oldest first and none early; the reserve in the 4-round model and in the concurrent run, where every payout plus the reserve adds up to what came in; and a merchant past the limit refused for PIX and card, the refusal stored for the retry, nothing stored as a payment and another merchant unaffected, still refused after the reserve covered what it could. The release checked by property: what is released and held always adds up to what is left.
 
 </details>
 
@@ -375,6 +383,25 @@ A bank over real HTTP with the other two's `simkit`: it registers a boleto once 
 `method: boleto` with `payer` (name, CPF and an optional e-mail) comes back `201` pending with `boleto.status: ready`, the barcode, the printed linha digitável and a `due_date` three calendar days later in São Paulo; the quote lasts until the end of the bank's last day to receive it. The payer and the due date are stored with the attempt (migration 00023, with `CHECK`s that keep them together and apart from the card), so a retry registers the same boleto, and so is the returned barcode, so the `GET` shows the boleto the payer may already have printed; the linha digitável is derived from it. The CPF is in no response. `boleto.paid` reaches the inbox at `POST /v1/providers/boletosim/events` and the worker confirms the payment as any other, but only on an attempt `boletosim` holds: an event naming another provider's attempt fails. A lapsed boleto is refused by the bank and the payment expires through the expiry job; a lost answer stays `processing` until the resolver finds the boleto by its key.
 
 **Result:** 5 contract tests against a real Postgres and the simulator, plus 1 worker test and 2 domain ones: the boleto ready, the same on `GET`, with the payer stored and the CPF absent from the response; paid at the bank, confirmed by the event with the GameStore's books and half refunded back through the bank; refused after its due date and expired with nothing posted; a lost answer resolved with 1 registration at the bank; 7 refused requests that never call the bank; and a `boleto.paid` naming a PIX attempt left `failed`. Due dates on a Saturday, on a holiday and at 23:30 on a Friday in São Paulo. 20/20 runs with `-race`. 8 mutants killed: a masked CPF sent to the bank, the due date or the barcode not stored, a payer accepted on PIX, an event changing the barcode accepted, the worker without the boleto handler, the API without its verifier, and an event applied to another provider's attempt (that last one a real flaw, found while writing the test: with a single provider it never showed).
+
+</details>
+
+<details>
+<summary><b>Chargebacks</b> · 2 tests</summary>
+
+**Disputes at the card simulator (`cmd/cardsim`, section 4.7)**
+
+The acquirer opens a chargeback on a captured authorization by control endpoint, standing in for the cardholder's bank, up to the capture and regardless of refunds (decision 7). The merchant accepts, which loses it, or contests with evidence, and the issuer's decision is another control call. Opening and closing each send one event signed in `Cardsim-Signature` to `CARDSIM_WEBHOOK_URL`, so asking the same thing again sends nothing. IDs come from the seed.
+
+**Result:** 4 client tests against the server: a whole chargeback contested and won with exactly two events and every signature valid; a refunded capture charged back in two halves, one lost unanswered and one accepted; 5 refused openings, an unknown chargeback, empty evidence and a fault that leaves the chargeback untouched; the same seed giving the same IDs.
+
+---
+
+**Chargebacks (`GET /v1/chargebacks/{id}`, `/accept`, `/contest`, decisions 7, 26 and 27)**
+
+`chargeback.opened` reaches the inbox at `POST /v1/providers/cardsim/events`, and the worker moves the payment to `charged_back`, stores the chargeback and takes the money back in one transaction: the reais leave the acquirer's receivable, the merchant loses the same share of the payment in USD, fee kept, priced cumulatively like refunds, and the gateway's exchange result absorbs today's rate. The merchant learns of it by `chargeback.opened`, with the chargeback's ID. Accept and contest go to the acquirer first, outside the transaction, and a lost answer is a `503` that changed nothing. A won dispute posts the reversal and sends `chargeback.won`; a lost one sends `chargeback.lost`. Each moves the payment's version. A refunded payment can still be charged back, and the money leaves twice until the dispute is won (decision 7). A chargeback of a capture still being confirmed, or a close before its opening, is retried; the same opening under another event ID is applied once.
+
+**Result:** **F8's criterion:** the GameStore paid by card, paid out on day 30 with US$ 1.94 held, charged back: the balance goes to −US$ 20.00, the next run takes the reserve and leaves −US$ 18.06, and the won dispute brings it back to US$ 1.94, with the acquirer's receivable back at R$ 101.50 and every event matching `ChargebackEvent`. 8 contract tests, plus 6 domain tests and 1 worker test: the above; accepted and lost; refunded then charged back, the payable at −US$ 1.20 until won; two halves at US$ 10.00 each; pending money charged back from pending; 404s, evidence refused and a `503` retried; a replayed opening and an early close; a chargeback before the capture is confirmed, applied after. Pricing and postings by property: chargebacks in any pieces add up to the payment and the whole spread, every posting balanced at any rate. 20/20 runs with `-race -count=20`. 5 mutants killed, among them pending money without its chargebacks, the reversal never posted and an early chargeback failed instead of retried. One was a real bug, found by writing the test: the replayed opening was priced before it was recognized, and a whole chargeback seen twice failed as exceeding the payment.
 
 </details>
 
@@ -629,7 +656,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 </details>
 
 <details>
-<summary><b>Refunds and settlement</b> · 9 decisions</summary>
+<summary><b>Refunds and settlement</b> · 11 decisions</summary>
 
 - **Who pays for a refund:** The merchant pays the refunded amount whole: the fee is not returned. The spread returns its share, since the payer gets back the same reais they paid. The gateway absorbs the rate change in the exchange result.<br>*Discarded:* Returning the fee too: generous, but fee revenue could go negative. Paying back reais at today's rate: the payer would get a different amount than they paid.
 
@@ -643,11 +670,30 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Start of availability:** When the confirmation is posted (`paid_at`)<br>*Discarded:* The provider's paid time: late news would make money available in a cutoff that already ran.
 
-- **Negative available:** Pays nothing and waits for more money; the available payments go into the first positive payout.<br>*Discarded:* A negative payout: charging the merchant is decision 27's rule, with the reserve and a debt limit, in F8.
+- **Negative available:** Takes the reserve first, then pays nothing and waits for more money (decision 27); the available payments go into the first positive payout.<br>*Discarded:* A negative payout: the gateway would be charging the merchant's bank account, which it has no mandate to do.
+
+- **Rolling reserve:** 10% of each payout, held 90 days per settlement and released by a later run, oldest first (decision 26).<br>*Discarded:* A fixed reserve per merchant: a new merchant with little volume would have nothing held, and a large one too much. Holding a share of each payment: one more posting per payment for the same money.
+
+- **Debt limit:** Payable plus reserve below −US$ 1,000.00 refuses new payments, read without the payable's lock at creation.<br>*Discarded:* Locking the payable: every create would queue behind the merchant's confirmations, for a limit that a payment in flight cannot cross alone.
 
 - **Reading the balance:** One `REPEATABLE READ` snapshot, without the payable's lock: the payable and what is pending agree because every change to what is pending posts to the payable in the same transaction.<br>*Discarded:* The payable's lock, as the settlement takes it: every `GET /v1/balance` would queue behind confirmations and refunds of the merchant.
 
 - **Payments of a settlement:** Their IDs inline in `GET /v1/settlements`, one settlement a day per merchant, read through a partial index on `payments.settlement_id`<br>*Discarded:* A `?settlement=` filter on `GET /v1/payments` or a `GET /v1/settlements/{id}`: one more endpoint, worth it when a day holds more payments than a page should carry.
+
+</details>
+
+<details>
+<summary><b>Chargebacks</b> · 5 decisions</summary>
+
+- **What the merchant loses:** The BRL share of the payment the bank took back, in USD, fee kept, priced cumulatively as refunds; the gateway's exchange result takes today's rate.<br>*Discarded:* Converting the reais at today's rate: the merchant would win or lose on the exchange of a dispute it did not choose. A chargeback fee: none is in the scope, and it would hide the movement under test.
+
+- **When the money leaves:** At opening; a won dispute posts the reversal.<br>*Discarded:* Only when lost: the acquirer already took the reais, and the merchant's balance would count money that is gone.
+
+- **Refunded, then charged back:** The money leaves again (decision 7), and the merchant contests with the refund as evidence.<br>*Discarded:* Netting the refund: the acquirer takes the reais regardless, and the books would disagree with the bank until the dispute ends.
+
+- **Event before what it names:** A chargeback of a payment still pending, or a close before its opening, is retried as an event for an attempt not stored yet. The same opening under another event ID is applied once, by the acquirer's chargeback ID.<br>*Discarded:* Failing them: the order of webhooks is not guaranteed, and each would wait for a person.
+
+- **Answering the dispute:** Accept and contest call the acquirer first and store its answer; the same answer again returns the chargeback as it is.<br>*Discarded:* Storing first and sending later: the merchant would be told a contest went through that the acquirer could still refuse.
 
 </details>
 
@@ -704,7 +750,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F5 | Simulated PIX, inbox, confirmation | ✅ done |
 | F6 | Outbox and webhooks; GameStore end to end over HTTP | ✅ done |
 | F7 | Refunds and settlement | ✅ done |
-| F8 | Card, boleto, chargebacks | 🚧 in progress |
+| F8 | Card, boleto, chargebacks | ✅ done |
 | F9 | Hostile simulator, CNAB 240 reconciliation, Efí sandbox | planned |
 | F10 | Public production deploy | planned |
 
@@ -740,6 +786,7 @@ The worker applies inbox events, resolves `unknown` attempts and refunds, expire
 | `PIXSIM_WEBHOOK_URL` | set by mise | Where the simulator posts its events: the API's inbox |
 | `PIXSIM_WEBHOOK_SECRET` | set by mise | Signs the simulator's events; the API verifies them |
 | `BOLETOSIM_WEBHOOK_URL`, `BOLETOSIM_WEBHOOK_SECRET` | set by mise | The same for the boleto simulator; the API requires the secret |
+| `CARDSIM_WEBHOOK_URL`, `CARDSIM_WEBHOOK_SECRET` | set by mise | The same for the card simulator's chargebacks; the API requires the secret |
 | `WEBHOOK_SIGNING_KEY` | set by mise | 32 bytes or more; derives each merchant's webhook secret |
 | `WEBHOOK_TIMEOUT` | `5s` | Timeout of each webhook post |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` (mise: `true`) | Lets webhooks reach `http` and private networks, never cloud metadata |
@@ -804,6 +851,18 @@ curl -s $API/v1/balance -H "Authorization: Bearer $KEY"
 # 200 available, pending and reserved, in USD
 curl -s "$API/v1/settlements?limit=20" -H "Authorization: Bearer $KEY"
 # 200 payouts by cutoff date, each with its payments
+```
+
+Chargebacks, with the ID from `chargeback.opened`:
+
+```sh
+curl -s $API/v1/chargebacks/cbk_... -H "Authorization: Bearer $KEY"
+# 200 needs_response, payer_amount in BRL, amount lost in USD
+curl -s -X POST $API/v1/chargebacks/cbk_.../contest -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" -d '{"evidence": "delivered: tracking BR123"}'
+# 200 under_review; chargeback.won or chargeback.lost when the issuer decides
+curl -s -X POST $API/v1/chargebacks/cbk_.../accept -H "Authorization: Bearer $KEY"
+# 200 lost at once; 409 chargeback_closed once contested
 ```
 
 Registering the webhook endpoint, and rotating its secret:

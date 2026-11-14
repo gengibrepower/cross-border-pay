@@ -18,6 +18,25 @@ type ApiKey struct {
 	RevokedAt  pgtype.Timestamptz
 }
 
+type Chargeback struct {
+	ID            pgtype.UUID
+	PaymentID     pgtype.UUID
+	MerchantID    pgtype.UUID
+	Provider      string
+	ExternalID    string
+	Reason        string
+	Status        string
+	PayerAmount   int64
+	PayerCurrency string
+	Amount        int64
+	Spread        int64
+	Currency      string
+	Evidence      pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	ClosedAt      pgtype.Timestamptz
+}
+
 type IdempotencyKey struct {
 	MerchantID      pgtype.UUID
 	Key             string
