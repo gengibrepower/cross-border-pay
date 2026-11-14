@@ -19,7 +19,7 @@ import (
 )
 
 // Balance splits the merchant's payable as Settle does at now: what is pending, and the
-// rest available. Both are read in one REPEATABLE READ snapshot, without the payable's
+// rest available; and reads what the reserve holds. Both are read in one REPEATABLE READ snapshot, without the payable's
 // lock: a read never waits on a confirmation or blocks a settlement, and the two sums
 // still agree, since every change to what is pending posts to the payable in the same
 // transaction. A merchant with no confirmed payment has no payable yet: all zero.
@@ -45,6 +45,18 @@ func (p *Postgres) Balance(ctx context.Context, merchant domain.MerchantID, poli
 		if err != nil {
 			return fmt.Errorf("payable balance: %w", err)
 		}
+		// The reserve is created by the first settlement, after the payable.
+		reserved := money.Zero(currency)
+		reserves, err := l.AccountsByCode(ctx, tx, reserveCode(merchant, currency))
+		switch {
+		case errors.Is(err, ledger.ErrUnknownAccount):
+		case err != nil:
+			return fmt.Errorf("merchant reserve: %w", err)
+		default:
+			if reserved, err = l.Balance(ctx, tx, reserves[reserveCode(merchant, currency)].ID()); err != nil {
+				return fmt.Errorf("reserve balance: %w", err)
+			}
+		}
 		pending, err := paymentsdb.New(tx).PendingNet(ctx, paymentsdb.PendingNetParams{
 			MerchantID: pgtype.UUID{Bytes: merchant, Valid: true},
 			PixBefore:  before(domain.Pix), BoletoBefore: before(domain.Boleto), CardBefore: before(domain.Card),
@@ -55,7 +67,7 @@ func (p *Postgres) Balance(ctx context.Context, merchant domain.MerchantID, poli
 		b = domain.Balance{
 			Available: money.New(balance.Amount()-pending, currency),
 			Pending:   money.New(pending, currency),
-			Reserved:  money.Zero(currency),
+			Reserved:  reserved,
 		}
 		return nil
 	})
@@ -90,14 +102,7 @@ func (p *Postgres) ListSettlements(ctx context.Context, merchant domain.Merchant
 			}
 			ids[i] = r.ID
 			index[r.ID.Bytes] = i
-			out[i] = domain.Settlement{
-				ID:         r.ID.Bytes,
-				Merchant:   merchant,
-				CutoffDate: r.CutoffDate.Time,
-				Amount:     money.New(r.Amount, currency),
-				Payments:   []domain.PaymentID{},
-				CreatedAt:  r.CreatedAt.Time.UTC(),
-			}
+			out[i] = settlementFromRow(r, merchant, currency)
 		}
 		if len(rows) == 0 {
 			return nil

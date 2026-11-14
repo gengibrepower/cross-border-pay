@@ -43,6 +43,30 @@ func usdBody(cents int64) string {
 func (c *contract) paidPayment(key string) string {
 	c.t.Helper()
 	id, _ := c.createPayment(key)
+	return c.pay(id)
+}
+
+// paidPaymentOf is a PIX of cents paid through the simulator.
+func (c *contract) paidPaymentOf(key string, cents int64) string {
+	c.t.Helper()
+	body := fmt.Sprintf(`{"amount": {"value": %d, "currency": "USD"}, "method": "pix", "reference": "big-%d"}`, cents, c.count("payments"))
+	rec := c.do(postPayment(c.t, key, rand.Text(), body), true)
+	if rec.Code != http.StatusCreated {
+		c.t.Fatalf("create of %d: status = %d: %s", cents, rec.Code, rec.Body.String())
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		c.t.Fatal(err)
+	}
+	return c.pay(p.ID)
+}
+
+// pay pays the payment's PIX at the simulator and applies the answer, as the event
+// would.
+func (c *contract) pay(id string) string {
+	c.t.Helper()
 	a := c.attemptOf(id)
 	paid, err := c.sim.Pay(c.t.Context(), a.externalID)
 	if err != nil {

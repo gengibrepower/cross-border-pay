@@ -40,12 +40,12 @@ func (c *contract) getBalance(key string) balanceBody {
 
 // wantBalance checks the merchant's balance and that it splits the payable, all of it:
 // what the platform holds is either available or pending.
-func (c *contract) wantBalance(key, when string, available, pending int64) {
+func (c *contract) wantBalance(key, when string, available, pending, reserved int64) {
 	c.t.Helper()
 	b := c.getBalance(key)
-	if b.Available.Value != available || b.Pending.Value != pending || b.Reserved.Value != 0 {
-		c.t.Errorf("%s: balance = %d available, %d pending, %d reserved; want %d, %d, 0",
-			when, b.Available.Value, b.Pending.Value, b.Reserved.Value, available, pending)
+	if b.Available.Value != available || b.Pending.Value != pending || b.Reserved.Value != reserved {
+		c.t.Errorf("%s: balance = %d available, %d pending, %d reserved; want %d, %d, %d",
+			when, b.Available.Value, b.Pending.Value, b.Reserved.Value, available, pending, reserved)
 	}
 	if payable := c.balance("merchant_payable:"); b.Available.Value+b.Pending.Value != payable {
 		c.t.Errorf("%s: available + pending = %d, but the payable holds %d",
@@ -60,26 +60,26 @@ func TestBalanceSplitsThePayableAsTheSettlementDoes(t *testing.T) {
 	c := newContract(t)
 	key, other := c.merchantKey(), c.merchantKey()
 	s := c.settler()
-	c.wantBalance(key, "before any payment", 0, 0)
+	c.wantBalance(key, "before any payment", 0, 0, 0)
 
 	a := c.paidPayment(key)
-	c.wantBalance(key, "A paid on the 1st", 0, 1940)
+	c.wantBalance(key, "A paid on the 1st", 0, 1940, 0)
 	c.refund(key, a, 500)
-	c.wantBalance(key, "A refunded 500", 0, 1440)
+	c.wantBalance(key, "A refunded 500", 0, 1440, 0)
 	c.clock.Advance(14*time.Hour + 30*time.Minute) // 23:30 local on the 1st, the 2nd in UTC
-	c.wantBalance(key, "late on the 1st", 0, 1440)
+	c.wantBalance(key, "late on the 1st", 0, 1440, 0)
 
 	c.toLocalDay(2)
-	c.wantBalance(key, "the 2nd, before the run", 1440, 0)
+	c.wantBalance(key, "the 2nd, before the run", 1440, 0, 0)
 	c.paidPayment(key) // B
-	c.wantBalance(key, "B paid on the 2nd", 1440, 1940)
+	c.wantBalance(key, "B paid on the 2nd", 1440, 1940, 0)
 	c.settle(s)
-	c.wantBalance(key, "after the run of the 2nd", 0, 1940)
+	c.wantBalance(key, "after the run of the 2nd", 0, 1940, 144)
 
 	c.refund(key, a, 1500) // A is settled: it comes out of what is available
-	c.wantBalance(key, "settled A refunded 1500", -1500, 1940)
+	c.wantBalance(key, "settled A refunded 1500", -1500, 1940, 144)
 	c.toLocalDay(3)
-	c.wantBalance(key, "the 3rd", 440, 0)
+	c.wantBalance(key, "the 3rd", 440, 0, 144)
 
 	if got := c.getBalance(other); got.Available.Value != 0 || got.Pending.Value != 0 {
 		t.Errorf("another merchant's balance = %+v, want zero", got)
@@ -87,11 +87,13 @@ func TestBalanceSplitsThePayableAsTheSettlementDoes(t *testing.T) {
 }
 
 type settlementBody struct {
-	ID         string    `json:"id"`
-	CutoffDate string    `json:"cutoff_date"`
-	Amount     moneyBody `json:"amount"`
-	Payments   []string  `json:"payments"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	CutoffDate   string    `json:"cutoff_date"`
+	Amount       moneyBody `json:"amount"`
+	Reserved     moneyBody `json:"reserved"`
+	ReserveUntil *string   `json:"reserve_until"`
+	Payments     []string  `json:"payments"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type settlementList struct {
@@ -163,7 +165,7 @@ func TestSettlementsListPagesWithTheirPayments(t *testing.T) {
 	}
 	for i, got := range walked {
 		want := stored[len(stored)-1-i] // stored is oldest first
-		if got.CutoffDate != want.cutoff.Format(time.DateOnly) || got.Amount.Value != want.amount ||
+		if got.CutoffDate != want.cutoff.Format(time.DateOnly) || got.Amount.Value != want.amount || got.Reserved.Value != want.reserved ||
 			got.Amount.Currency != "USD" || !slices.Equal(sorted(got.Payments...), want.payments) {
 			t.Errorf("settlement %d = %+v, want cutoff %s, %d with %v",
 				i, got, want.cutoff.Format(time.DateOnly), want.amount, want.payments)

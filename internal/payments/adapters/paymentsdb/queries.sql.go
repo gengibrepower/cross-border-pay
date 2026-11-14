@@ -323,6 +323,32 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 	return i, err
 }
 
+const heldReserves = `-- name: HeldReserves :one
+SELECT coalesce(sum(reserved), 0)::bigint AS held,
+    coalesce(sum(reserved) FILTER (WHERE reserve_until <= $1), 0)::bigint AS due
+FROM settlements
+WHERE merchant_id = $2 AND reserve_until IS NOT NULL AND reserve_released_on IS NULL
+`
+
+type HeldReservesParams struct {
+	CutoffDate pgtype.Date
+	MerchantID pgtype.UUID
+}
+
+type HeldReservesRow struct {
+	Held int64
+	Due  int64
+}
+
+// The merchant's holds not released yet, and the part of them due by the cutoff, on
+// settlements_reserve_held (migration 00024).
+func (q *Queries) HeldReserves(ctx context.Context, arg HeldReservesParams) (HeldReservesRow, error) {
+	row := q.db.QueryRow(ctx, heldReserves, arg.CutoffDate, arg.MerchantID)
+	var i HeldReservesRow
+	err := row.Scan(&i.Held, &i.Due)
+	return i, err
+}
+
 const insertAttempt = `-- name: InsertAttempt :one
 INSERT INTO payment_attempts (payment_id, provider, status, card_token, manual_capture,
     payer_name, payer_document, payer_email, due_date, created_at, updated_at)
@@ -467,18 +493,20 @@ func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) (Ref
 }
 
 const insertSettlement = `-- name: InsertSettlement :one
-INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, created_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, reserved, reserve_until, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (merchant_id, cutoff_date) DO NOTHING
-RETURNING id, merchant_id, cutoff_date, amount, currency, created_at
+RETURNING id, merchant_id, cutoff_date, amount, currency, created_at, reserved, reserve_until, reserve_released_on
 `
 
 type InsertSettlementParams struct {
-	MerchantID pgtype.UUID
-	CutoffDate pgtype.Date
-	Amount     int64
-	Currency   string
-	CreatedAt  pgtype.Timestamptz
+	MerchantID   pgtype.UUID
+	CutoffDate   pgtype.Date
+	Amount       int64
+	Currency     string
+	Reserved     int64
+	ReserveUntil pgtype.Date
+	CreatedAt    pgtype.Timestamptz
 }
 
 // No row when the cutoff is already settled: a concurrent run got there first.
@@ -488,6 +516,8 @@ func (q *Queries) InsertSettlement(ctx context.Context, arg InsertSettlementPara
 		arg.CutoffDate,
 		arg.Amount,
 		arg.Currency,
+		arg.Reserved,
+		arg.ReserveUntil,
 		arg.CreatedAt,
 	)
 	var i Settlement
@@ -498,6 +528,9 @@ func (q *Queries) InsertSettlement(ctx context.Context, arg InsertSettlementPara
 		&i.Amount,
 		&i.Currency,
 		&i.CreatedAt,
+		&i.Reserved,
+		&i.ReserveUntil,
+		&i.ReserveReleasedOn,
 	)
 	return i, err
 }
@@ -607,7 +640,7 @@ func (q *Queries) ListPayments(ctx context.Context, arg ListPaymentsParams) ([]P
 }
 
 const listSettlements = `-- name: ListSettlements :many
-SELECT id, merchant_id, cutoff_date, amount, currency, created_at FROM settlements
+SELECT id, merchant_id, cutoff_date, amount, currency, created_at, reserved, reserve_until, reserve_released_on FROM settlements
 WHERE merchant_id = $1
   AND ($2::date IS NULL OR cutoff_date < $2)
 ORDER BY cutoff_date DESC
@@ -638,6 +671,9 @@ func (q *Queries) ListSettlements(ctx context.Context, arg ListSettlementsParams
 			&i.Amount,
 			&i.Currency,
 			&i.CreatedAt,
+			&i.Reserved,
+			&i.ReserveUntil,
+			&i.ReserveReleasedOn,
 		); err != nil {
 			return nil, err
 		}
@@ -979,6 +1015,21 @@ func (q *Queries) LockSettleablePayments(ctx context.Context, arg LockSettleable
 	return items, nil
 }
 
+const markReservesReleased = `-- name: MarkReservesReleased :exec
+UPDATE settlements SET reserve_released_on = $1
+WHERE merchant_id = $2 AND reserve_until <= $1 AND reserve_released_on IS NULL
+`
+
+type MarkReservesReleasedParams struct {
+	CutoffDate pgtype.Date
+	MerchantID pgtype.UUID
+}
+
+func (q *Queries) MarkReservesReleased(ctx context.Context, arg MarkReservesReleasedParams) error {
+	_, err := q.db.Exec(ctx, markReservesReleased, arg.CutoffDate, arg.MerchantID)
+	return err
+}
+
 const markSettled = `-- name: MarkSettled :exec
 UPDATE payments SET settlement_id = $1 WHERE id = ANY($2::uuid[])
 `
@@ -1001,6 +1052,18 @@ SELECT uuidv7()::uuid AS id
 // exists, because the payload carries it.
 func (q *Queries) NewEventID(ctx context.Context) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, newEventID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const newID = `-- name: NewID :one
+SELECT uuidv7()::uuid AS id
+`
+
+// An ID for a ledger reference with no row of its own, such as a use of the reserve.
+func (q *Queries) NewID(ctx context.Context) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, newID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err

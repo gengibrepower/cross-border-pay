@@ -548,6 +548,8 @@ func (h *Handler) createError(w http.ResponseWriter, r *http.Request, err error)
 		writeProblem(w, r, http.StatusUnprocessableEntity, "invalid_payer_email", "payer.email must be a valid e-mail address of at most 254 characters")
 	case errors.Is(err, domain.ErrUnknownMethod):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_method", "method must be pix, boleto or card")
+	case errors.Is(err, domain.ErrDebtLimit):
+		writeProblem(w, r, http.StatusUnprocessableEntity, "debt_limit_exceeded", "the merchant owes more than US$ 1,000.00; no new payment until its balance comes back")
 	case errors.Is(err, domain.ErrUnsupportedCurrency):
 		writeProblem(w, r, http.StatusUnprocessableEntity, "unsupported_currency", "payments are charged in USD")
 	case errors.Is(err, domain.ErrInvalidAmount):

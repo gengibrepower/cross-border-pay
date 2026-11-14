@@ -187,12 +187,15 @@ type ReviewCase struct {
 }
 
 type Settlement struct {
-	ID         pgtype.UUID
-	MerchantID pgtype.UUID
-	CutoffDate pgtype.Date
-	Amount     int64
-	Currency   string
-	CreatedAt  pgtype.Timestamptz
+	ID                pgtype.UUID
+	MerchantID        pgtype.UUID
+	CutoffDate        pgtype.Date
+	Amount            int64
+	Currency          string
+	CreatedAt         pgtype.Timestamptz
+	Reserved          int64
+	ReserveUntil      pgtype.Date
+	ReserveReleasedOn pgtype.Date
 }
 
 type WebhookEndpoint struct {

@@ -112,6 +112,10 @@ JOIN quotes AS q ON q.id = p.quote_id
 WHERE p.id = @id
 FOR NO KEY UPDATE OF p;
 
+-- name: NewID :one
+-- An ID for a ledger reference with no row of its own, such as a use of the reserve.
+SELECT uuidv7()::uuid AS id;
+
 -- name: NewEventID :one
 -- Every ID is a UUIDv7 the database issues; an event's is needed before its row
 -- exists, because the payload carries it.
@@ -234,10 +238,22 @@ WHERE p.merchant_id = @merchant_id AND p.paid_at IS NOT NULL
 
 -- name: InsertSettlement :one
 -- No row when the cutoff is already settled: a concurrent run got there first.
-INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, created_at)
-VALUES (@merchant_id, @cutoff_date, @amount, @currency, @created_at)
+INSERT INTO settlements (merchant_id, cutoff_date, amount, currency, reserved, reserve_until, created_at)
+VALUES (@merchant_id, @cutoff_date, @amount, @currency, @reserved, sqlc.narg(reserve_until), @created_at)
 ON CONFLICT (merchant_id, cutoff_date) DO NOTHING
 RETURNING *;
+
+-- name: HeldReserves :one
+-- The merchant's holds not released yet, and the part of them due by the cutoff, on
+-- settlements_reserve_held (migration 00024).
+SELECT coalesce(sum(reserved), 0)::bigint AS held,
+    coalesce(sum(reserved) FILTER (WHERE reserve_until <= @cutoff_date), 0)::bigint AS due
+FROM settlements
+WHERE merchant_id = @merchant_id AND reserve_until IS NOT NULL AND reserve_released_on IS NULL;
+
+-- name: MarkReservesReleased :exec
+UPDATE settlements SET reserve_released_on = @cutoff_date
+WHERE merchant_id = @merchant_id AND reserve_until <= @cutoff_date AND reserve_released_on IS NULL;
 
 -- name: MarkSettled :exec
 UPDATE payments SET settlement_id = @settlement_id WHERE id = ANY(@ids::uuid[]);

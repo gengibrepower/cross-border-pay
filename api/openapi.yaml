@@ -26,6 +26,10 @@ paths:
         back pending with its barcode and linha digitável, due three days later; it
         is received until the end of the first banking day on or after the due date
         in São Paulo, and the quote lasts until then (decisions 44 and 53).
+
+        A merchant whose available, pending and reserved money together is below
+        -US$ 1,000.00, after refunds or chargebacks of settled money, gets
+        `422 debt_limit_exceeded` and no payment (decision 27).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1007,11 +1011,23 @@ components:
       required: [available, pending, reserved]
       properties:
         available:
-          $ref: "#/components/schemas/Money"
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: >-
+            What a settlement run now would pay before its reserve hold. Negative when
+            refunds or chargebacks of settled money exceed what came in since; the next
+            settlement covers it from the reserve, and new payments are refused once
+            available plus reserved is below -US$ 1,000.00.
         pending:
-          $ref: "#/components/schemas/Money"
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: Confirmed money not available yet, by each method's days.
         reserved:
-          $ref: "#/components/schemas/Money"
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: >-
+            Held against chargebacks: 10% of each settlement, released 90 days after its
+            cutoff.
 
     SettlementList:
       type: object
@@ -1030,7 +1046,7 @@ components:
     Settlement:
       type: object
       additionalProperties: false
-      required: [id, cutoff_date, amount, payments, created_at]
+      required: [id, cutoff_date, amount, reserved, reserve_until, payments, created_at]
       properties:
         id:
           type: string
@@ -1040,7 +1056,18 @@ components:
           format: date
           description: The São Paulo local date the settlement belongs to.
         amount:
-          $ref: "#/components/schemas/Money"
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: What was paid out; amount plus reserved was available.
+        reserved:
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: What was held in the reserve, rounded down.
+        reserve_until:
+          type: string
+          format: date
+          nullable: true
+          description: The cutoff date the hold is released on; null when nothing was held.
         payments:
           type: array
           description: The payments that became available for this settlement.
