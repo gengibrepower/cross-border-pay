@@ -34,3 +34,18 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - run: mise run vuln
+
+  # What someone who clones does (docs/f11.md): the whole stack from compose.yaml.
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker compose up -d --build
+      - name: wait for the API and the simulators
+        run: |
+          for url in localhost:8080/readyz localhost:8090/healthz localhost:8091/healthz localhost:8092/healthz; do
+            timeout 60 sh -c "until curl -sf $url >/dev/null; do sleep 1; done" || { echo "$url never answered"; exit 1; }
+          done
+      - if: failure()
+        run: docker compose logs

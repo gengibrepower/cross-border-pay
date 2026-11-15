@@ -72,7 +72,7 @@ run = "sqlc diff"
 
 [tasks.db]
 description = "Sobe o Postgres local (compose.yaml) e espera ficar saudável"
-run = "docker compose up -d --wait"
+run = "docker compose up -d --wait postgres"
 
 [tasks.migrate]
 description = "Aplica as migrations embutidas no DATABASE_URL"
