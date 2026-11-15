@@ -48,13 +48,7 @@ type boletoPayment struct {
 
 func boletoOf(t *testing.T, rec *httptest.ResponseRecorder) boletoPayment {
 	t.Helper()
-	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
-	}
-	var p boletoPayment
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		t.Fatal(err)
-	}
+	p := decode[boletoPayment](t, rec, http.StatusCreated, http.StatusOK)
 	if p.Boleto == nil || p.Pix != nil || p.Card != nil {
 		t.Fatalf("a boleto payment must carry boleto and nothing else: %s", rec.Body)
 	}

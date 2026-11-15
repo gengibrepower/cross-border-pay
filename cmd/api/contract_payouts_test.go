@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
@@ -22,14 +21,7 @@ type balanceBody struct {
 
 func (c *contract) getBalance(key string) balanceBody {
 	c.t.Helper()
-	rec := c.do(getRequest(c.t, key, "/v1/balance"), true)
-	if rec.Code != http.StatusOK {
-		c.t.Fatalf("balance: status = %d: %s", rec.Code, rec.Body.String())
-	}
-	var b balanceBody
-	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
-		c.t.Fatal(err)
-	}
+	b := decode[balanceBody](c.t, c.do(getRequest(c.t, key, "/v1/balance"), true), http.StatusOK)
 	for _, m := range []moneyBody{b.Available, b.Pending, b.Reserved} {
 		if m.Currency != "USD" {
 			c.t.Fatalf("balance %+v is not all in USD", b)
@@ -103,15 +95,7 @@ type settlementList struct {
 
 func (c *contract) listSettlements(key, query string) settlementList {
 	c.t.Helper()
-	rec := c.do(getRequest(c.t, key, "/v1/settlements"+query), true)
-	if rec.Code != http.StatusOK {
-		c.t.Fatalf("settlements%s: status = %d: %s", query, rec.Code, rec.Body.String())
-	}
-	var l settlementList
-	if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
-		c.t.Fatal(err)
-	}
-	return l
+	return decode[settlementList](c.t, c.do(getRequest(c.t, key, "/v1/settlements"+query), true), http.StatusOK)
 }
 
 // Walking every page sees each settlement once, newest cutoff first, with the same

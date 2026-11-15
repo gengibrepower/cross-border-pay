@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -77,20 +76,15 @@ func (c *contract) events(key, query string, status int) eventList {
 	if rec.Code != status {
 		c.t.Fatalf("GET /v1/events%s: status %d, want %d: %s", query, rec.Code, status, rec.Body)
 	}
-	var l eventList
-	if status == http.StatusOK {
-		if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
-			c.t.Fatal(err)
-		}
+	if status != http.StatusOK {
+		return eventList{}
 	}
-	return l
+	return decode[eventList](c.t, rec)
 }
 
 func (c *contract) redeliver(key, id string, status int) (e outboxEvent, code string) {
 	c.t.Helper()
-	req := httptest.NewRequestWithContext(c.t.Context(), http.MethodPost, "http://localhost:8080/v1/events/"+id+"/redeliver", http.NoBody)
-	req.Header.Set("Authorization", "Bearer "+key)
-	rec := c.do(req, true)
+	rec := c.do(apiRequest(c.t, http.MethodPost, "/v1/events/"+id+"/redeliver", key, "", ""), true)
 	if rec.Code != status {
 		c.t.Fatalf("POST redeliver %s: status %d, want %d: %s", id, rec.Code, status, rec.Body)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -34,13 +33,9 @@ func (c *contract) count(table string) int {
 
 func paymentID(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	var p struct {
+	return decode[struct {
 		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		t.Fatal(err)
-	}
-	return p.ID
+	}](t, rec).ID
 }
 
 // Section 4.1, step 4: a retry after a timeout gets the stored answer and creates nothing.
