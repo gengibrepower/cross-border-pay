@@ -11,8 +11,7 @@ import (
 )
 
 var (
-	ErrInvalidAttemptID = errors.New("payments: invalid attempt ID")
-	// ErrExternalIDMismatch is a provider naming one attempt with two different IDs.
+	ErrInvalidAttemptID   = errors.New("payments: invalid attempt ID")
 	ErrExternalIDMismatch = errors.New("payments: provider changed the attempt's external ID")
 	ErrBRCodeMismatch     = errors.New("payments: provider changed the attempt's BR Code")
 )
@@ -31,11 +30,9 @@ func ParseAttemptID(s string) (AttemptID, error) {
 	return id, nil
 }
 
-// ProviderName names the adapter an attempt was made with, such as "pixsim".
 type ProviderName string
 
-// PaymentAttempt is one try at collecting a payment through a provider (decision 6).
-// Its status only changes through Apply.
+// PaymentAttempt is decision 6. Its status only changes through Apply.
 type PaymentAttempt struct {
 	id         AttemptID
 	payment    PaymentID
@@ -58,8 +55,7 @@ func RestoreAttempt(id AttemptID, payment PaymentID, provider ProviderName, stat
 	}
 }
 
-// RestoreBoleto adds what a boleto attempt stored to one RestoreAttempt rebuilt; only
-// adapters call it.
+// RestoreBoleto completes a RestoreAttempt; only adapters call it.
 func (a *PaymentAttempt) RestoreBoleto(in BoletoInput, barcode string) {
 	a.boleto, a.barcode = in, barcode
 }
@@ -75,44 +71,35 @@ func (a *PaymentAttempt) Status() AttemptStatus { return a.status }
 // ExternalID is the provider's ID for the attempt, empty until the provider names it.
 func (a *PaymentAttempt) ExternalID() string { return a.externalID }
 
-// BRCode is the PIX code the payer pays, empty until the provider returns it.
 func (a *PaymentAttempt) BRCode() string { return a.brCode }
 
-// Card is the card a card attempt charges, stored with it so a request that died
-// before calling the provider can still be completed the same way.
+// Card is stored so a request that died before calling the provider can still be
+// completed the same way.
 func (a *PaymentAttempt) Card() CardInput { return a.card }
 
-// Boleto is what a boleto attempt asked the bank to register.
 func (a *PaymentAttempt) Boleto() BoletoInput { return a.boleto }
 
-// Barcode is the boleto's 44 digits, empty until the bank returns them. The linha
-// digitável is derived from it.
+// Barcode is the 44 digits; the linha digitável is derived from it.
 func (a *PaymentAttempt) Barcode() string { return a.barcode }
 
 func (a *PaymentAttempt) CreatedAt() time.Time { return a.createdAt }
 
 func (a *PaymentAttempt) UpdatedAt() time.Time { return a.updatedAt }
 
-// AttemptUpdate is what one answer or event says about an attempt. ExternalID, BRCode
-// and Barcode are empty when it does not carry them.
+// AttemptUpdate leaves empty what the answer does not carry.
 type AttemptUpdate struct {
 	Event      AttemptEvent
 	ExternalID string
 	BRCode     string
 	Barcode    string
-	// PaidAt and Amount are when and how much the provider says the payer paid, set
-	// with Succeed. PaidAt decides whether the payment was on time, not when the news
-	// reached us.
+	// PaidAt and Amount come with Succeed.
 	PaidAt time.Time
 	Amount money.Money
 }
 
-// Apply moves the attempt by the update's event and records what the provider named
-// for the first time. A value the attempt already has with another content is refused:
-// the provider cannot rename an attempt or change the code a payer may have scanned or
-// the boleto a payer may have printed.
-// changed is false when there is nothing new to store, so a duplicate that first
-// reveals the external ID still counts as a change.
+// Apply refuses a value the attempt already has with another content: the provider
+// cannot rename an attempt or change a code a payer may have scanned or printed. A
+// duplicate that first reveals the external ID still counts as a change.
 func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, err error) {
 	to, moved, err := TransitionAttempt(a.status, u.Event)
 	if err != nil {
@@ -147,7 +134,6 @@ func (a *PaymentAttempt) Apply(u *AttemptUpdate, now time.Time) (changed bool, e
 	return true, nil
 }
 
-// learn reports whether got is new for a field that holds have.
 func learn(have, got string, mismatch error) (bool, error) {
 	switch {
 	case got == "" || got == have:

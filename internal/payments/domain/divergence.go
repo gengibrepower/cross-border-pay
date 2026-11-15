@@ -11,18 +11,14 @@ import (
 )
 
 var (
-	// ErrAmountMismatch is a payment the provider confirmed for another amount than the
-	// quote's: real money, but not this payment's.
-	ErrAmountMismatch = errors.New("payments: paid amount differs from the quote")
-	// ErrAlreadyPaid is a second attempt paid for a payment another one already paid.
-	ErrAlreadyPaid = errors.New("payments: payment already paid")
-	// ErrPaidAfterRejection is money for an attempt the provider had rejected.
+	// ErrAmountMismatch is real money, but not this payment's.
+	ErrAmountMismatch     = errors.New("payments: paid amount differs from the quote")
+	ErrAlreadyPaid        = errors.New("payments: payment already paid")
 	ErrPaidAfterRejection = errors.New("payments: attempt paid after being rejected")
 )
 
-// CheckPaid is the one rule every path that learns of a payment goes through, whether
-// the provider's event, the resolver or the expiry job: the amount the quote asked for,
-// paid on time.
+// CheckPaid is the one rule every path that learns of a payment goes through: the
+// provider's event, the resolver and the expiry job.
 func CheckPaid(q *fx.Quote, amount money.Money, paidAt time.Time) error {
 	if amount != q.PayerAmount() {
 		return fmt.Errorf("%w: paid %s, quoted %s", ErrAmountMismatch, amount, q.PayerAmount())
@@ -30,8 +26,7 @@ func CheckPaid(q *fx.Quote, amount money.Money, paidAt time.Time) error {
 	return CheckOnTime(q, paidAt)
 }
 
-// ConfirmPayment is the payment's side of an attempt that just succeeded: the status it
-// moves to, or why the money confirms nothing, which DivergenceOf names.
+// ConfirmPayment's errors are named by DivergenceOf.
 func ConfirmPayment(status Status, q *fx.Quote, amount money.Money, paidAt time.Time) (Status, error) {
 	to, changed, err := Transition(status, Confirm)
 	if err != nil {
@@ -56,8 +51,8 @@ const (
 	SecondCharge       DivergenceKind = "second_charge"
 )
 
-// DivergenceOf names the divergence an error is, for money the provider confirmed. Any
-// other error is not one: the money cannot be posted and the event is not settled.
+// DivergenceOf: any other error means the money cannot be posted and the event is not
+// settled.
 func DivergenceOf(err error) (DivergenceKind, bool) {
 	switch {
 	case errors.Is(err, ErrAmountMismatch):
@@ -73,7 +68,7 @@ func DivergenceOf(err error) (DivergenceKind, bool) {
 	}
 }
 
-// ReviewCase is what a person gets to decide where the money goes (decision 8, F7).
+// ReviewCase lets a person decide where the money goes (decision 8, F7).
 type ReviewCase struct {
 	Kind            DivergenceKind
 	Provider        ProviderName
@@ -86,14 +81,14 @@ type ReviewCase struct {
 	CreatedAt       time.Time
 }
 
-// DivergenceReference names one provider charge in the ledger, so it is posted once
-// however many paths report it.
+// DivergenceReference is per provider charge, so it posts once however many paths
+// report it.
 func DivergenceReference(provider ProviderName, externalID string) string {
 	return "divergence:" + string(provider) + ":" + externalID
 }
 
-// DivergencePosting takes money in at the provider and holds it on the divergence
-// account until a person decides where it goes: confirmed money always enters the ledger.
+// DivergencePosting: confirmed money always enters the ledger, held until a person
+// decides.
 func DivergencePosting(reference string, receivables, divergence ledger.AccountID, amount money.Money) (ledger.Transaction, error) {
 	held, err := amount.Neg()
 	if err != nil {

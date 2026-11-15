@@ -65,8 +65,8 @@ type refundEdge struct {
 	event RefundEvent
 }
 
-// refundTransitions is section 3.5 for refunds: the provider's answer, or the lookup
-// of decision 17 after an ambiguous one, ends the refund.
+// refundTransitions is section 3.5; after an ambiguous answer, the lookup of
+// decision 17 ends the refund.
 var refundTransitions = map[refundEdge]RefundStatus{
 	{RefundCreated, SendRefund}: RefundSent,
 
@@ -78,10 +78,10 @@ var refundTransitions = map[refundEdge]RefundStatus{
 	{RefundUnknown, RejectRefund}:  RefundRejected,
 }
 
-// refundReflected lists duplicates. A retried request and the resolver each read the
-// refund before locking it, so one of them can arrive with a send or an ambiguous
-// answer the other has already gone past: that knows less than what is stored, and is
-// not a contradiction. Only succeeded against rejected is.
+// refundReflected: a retried request and the resolver each read the refund before
+// locking it, so one can arrive with a send or an ambiguous answer the other already
+// went past. That knows less than what is stored, not a contradiction; only succeeded
+// against rejected is.
 var refundReflected = map[refundEdge]bool{
 	{RefundSent, SendRefund}:      true,
 	{RefundUnknown, SendRefund}:   true,
@@ -96,9 +96,7 @@ var refundReflected = map[refundEdge]bool{
 	{RefundRejected, RejectRefund}:   true,
 }
 
-// TransitionRefund returns the status after the event. changed is false for a
-// duplicate the status already reflects. A provider that contradicts a final answer,
-// succeeded then rejected or the reverse, is ErrInvalidTransition: that needs a person.
+// TransitionRefund: a provider contradicting a final answer needs a person.
 func TransitionRefund(from RefundStatus, e RefundEvent) (to RefundStatus, changed bool, err error) {
 	if next, ok := refundTransitions[refundEdge{from, e}]; ok {
 		return next, true, nil
@@ -109,8 +107,7 @@ func TransitionRefund(from RefundStatus, e RefundEvent) (to RefundStatus, change
 	return from, false, fmt.Errorf("%w: refund %s on %s", ErrInvalidTransition, e, from)
 }
 
-// Refund is one refund of a payment at its provider. Its status only changes through
-// Apply.
+// Refund's status only changes through Apply.
 type Refund struct {
 	id         RefundID
 	payment    PaymentID
@@ -123,7 +120,6 @@ type Refund struct {
 	updatedAt  time.Time
 }
 
-// NewRefund is a refund priced and about to be stored, before the provider is called.
 func NewRefund(id RefundID, payment PaymentID, provider ProviderName, amounts *RefundAmounts, now time.Time) Refund {
 	return Refund{id: id, payment: payment, provider: provider, status: RefundCreated, amounts: *amounts, createdAt: now, updatedAt: now}
 }
@@ -151,22 +147,18 @@ func (r *Refund) Amounts() RefundAmounts { return r.amounts }
 // ExternalID is the provider's ID for the refund, empty until the provider names it.
 func (r *Refund) ExternalID() string { return r.externalID }
 
-// Reason is the provider's words for a rejection.
 func (r *Refund) Reason() string { return r.reason }
 
 func (r *Refund) CreatedAt() time.Time { return r.createdAt }
 
 func (r *Refund) UpdatedAt() time.Time { return r.updatedAt }
 
-// RefundUpdate is what one answer says about a refund.
 type RefundUpdate struct {
 	Event      RefundEvent
 	ExternalID string
 	Reason     string
 }
 
-// Apply moves the refund by the update's event and records the provider's ID the first
-// time it is named; a provider renaming a refund is refused.
 func (r *Refund) Apply(u *RefundUpdate, now time.Time) (changed bool, err error) {
 	to, moved, err := TransitionRefund(r.status, u.Event)
 	if err != nil {

@@ -116,6 +116,7 @@ Marque `[x]` ao terminar e anote o número da PR.
   (300), `payments/app` (238), `payments/adapters` (209), `providers/cardsim` (72),
   `simkit` (64), `webhooks/app` (48), `boleto` (47). Alvo: menos da metade das 1.630
   linhas.
+  Feito: `payments/domain` 300 → 159 (#59).
 - [ ] **3. Duplicação no código de produção.**
   - `HandlePixSimEvent` e `HandleBoletoSimEvent` (`payments/adapters/events.go`) são o
     mesmo código com tipos diferentes. Basta uma função que receba o que muda.
@@ -153,6 +154,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 |---|---|---|---|---|---|---|
 | 14/11/2026 | Linha de base | — | 17.147 | 1.630 | 19.009 | master `b8619b2` |
 | 15/11/2026 | 1. Código morto | #58 | 17.131 | 1.628 | 19.009 | `deadcode` só achou 4 funções |
+| 15/11/2026 | 2. Comentários: `payments/domain` | #59 | 16.990 | 1.487 | 19.009 | 300 → 159 no pacote |
 
 ## 8. Como retomar numa sessão nova
 

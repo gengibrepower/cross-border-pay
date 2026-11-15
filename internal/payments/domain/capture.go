@@ -8,16 +8,12 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
-// ErrCaptureExceedsAuthorization is a capture of more than the payment asked for,
-// which is all the card was authorized for.
 var ErrCaptureExceedsAuthorization = errors.New("payments: capture exceeds the authorized amount")
 
-// PriceCapture is the quote of what a capture takes: the whole authorization is the
-// payment's own quote, and a part is priced again at the same locked base rate and
-// pricing, as if the merchant had asked for that amount from the start. The payer pays
-// its BRL, the merchant gets its net, and the fee is charged on what was captured,
-// never on what was only held. Refunds then stop at what was captured (invariant 8),
-// because they are priced from this quote.
+// PriceCapture prices a partial capture at the locked rate and pricing, as if the
+// merchant had asked for that amount from the start: the fee is charged on what was
+// captured, never on what was only held, and refunds, priced from this quote, stop at
+// it (invariant 8).
 func PriceCapture(q *fx.Quote, amount money.Money) (fx.Quote, error) {
 	if amount.Currency() != q.Amount().Currency() {
 		return fx.Quote{}, fmt.Errorf("payments: capture %s: %w: the payment is in %s", amount, money.ErrCurrencyMismatch, q.Amount().Currency())

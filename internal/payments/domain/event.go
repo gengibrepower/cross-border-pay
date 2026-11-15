@@ -17,20 +17,16 @@ func (id EventID) String() string { return publicid.Encode("evt_", id) }
 type EventType string
 
 const (
-	PaymentPaid          EventType = "payment.paid"
-	PaymentExpired       EventType = "payment.expired"
-	PaymentCanceled      EventType = "payment.canceled"
-	RefundSucceededEvent EventType = "refund.succeeded"
-	RefundFailedEvent    EventType = "refund.failed"
-	// ChargebackOpenedEvent is the cardholder's bank taking money back; the merchant has
-	// lost it until the dispute is won.
+	PaymentPaid           EventType = "payment.paid"
+	PaymentExpired        EventType = "payment.expired"
+	PaymentCanceled       EventType = "payment.canceled"
+	RefundSucceededEvent  EventType = "refund.succeeded"
+	RefundFailedEvent     EventType = "refund.failed"
 	ChargebackOpenedEvent EventType = "chargeback.opened"
 	ChargebackWonEvent    EventType = "chargeback.won"
 	ChargebackLostEvent   EventType = "chargeback.lost"
 )
 
-// PaymentSnapshot is what an event tells the merchant about a payment right after a
-// transition.
 type PaymentSnapshot struct {
 	ID       PaymentID
 	Merchant MerchantID
@@ -39,8 +35,7 @@ type PaymentSnapshot struct {
 	Amount   money.Money
 }
 
-// MerchantEvent is an event for the merchant, already serialized: Payload is the body
-// of section 4.5, the bytes every delivery sends.
+// MerchantEvent's Payload is the body of section 4.5, the bytes every delivery sends.
 type MerchantEvent struct {
 	ID        EventID
 	Merchant  MerchantID
@@ -64,8 +59,8 @@ type paymentEventData struct {
 	Amount money.Money `json:"amount"`
 }
 
-// NewPaymentEvent serializes the event once. Time is cut to the microsecond the
-// database keeps, so the stored created_at and the one in the payload are equal.
+// NewPaymentEvent cuts time to the microsecond the database keeps, so the stored
+// created_at and the payload's are equal.
 func NewPaymentEvent(id EventID, t EventType, p *PaymentSnapshot, now time.Time) (MerchantEvent, error) {
 	at := now.UTC().Truncate(time.Microsecond)
 	payload, err := json.Marshal(paymentEventJSON{
@@ -97,9 +92,8 @@ type refundEventData struct {
 	PaymentStatus Status      `json:"payment_status"`
 }
 
-// NewRefundEvent serializes the end of a refund: refund.succeeded or refund.failed. p is
-// the payment right after the refund ended, so payment_version orders it with the
-// payment's own events.
+// NewRefundEvent: p is the payment right after the refund ended, so payment_version
+// orders it with the payment's own events.
 func NewRefundEvent(id EventID, t EventType, refund RefundID, amount money.Money, p *PaymentSnapshot, now time.Time) (MerchantEvent, error) {
 	at := now.UTC().Truncate(time.Microsecond)
 	payload, err := json.Marshal(refundEventJSON{
@@ -133,8 +127,6 @@ type chargebackEventData struct {
 	PaymentStatus Status           `json:"payment_status"`
 }
 
-// NewChargebackEvent serializes a step of a chargeback: opened, won or lost. Amount is
-// what the merchant lost with it, or got back when won; p is the payment right after.
 func NewChargebackEvent(id EventID, t EventType, c *ChargebackCase, p *PaymentSnapshot, now time.Time) (MerchantEvent, error) {
 	at := now.UTC().Truncate(time.Microsecond)
 	payload, err := json.Marshal(chargebackEventJSON{

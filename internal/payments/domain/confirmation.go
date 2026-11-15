@@ -8,8 +8,8 @@ import (
 	ledger "github.com/gengibrepower/cross-border-pay/internal/ledger/domain"
 )
 
-// ConfirmationAccounts are where a confirmation posts (section 3.3). Receivables and
-// FXPayer hold the payer's currency; the others hold the merchant's.
+// ConfirmationAccounts: Receivables and FXPayer hold the payer's currency, the others
+// the merchant's.
 type ConfirmationAccounts struct {
 	ProviderReceivables ledger.AccountID
 	FXPayer             ledger.AccountID
@@ -20,10 +20,8 @@ type ConfirmationAccounts struct {
 	Rounding            ledger.AccountID
 }
 
-// CheckOnTime refuses a payment the provider says was made once the quote had expired,
-// or without saying when: that is late money (decision 8), not a confirmation. The
-// provider's time decides, not when the news reached the gateway, so a payer who paid
-// on time is not punished for a slow event.
+// CheckOnTime goes by the provider's time, not when the news arrived, so a payer who
+// paid on time is not punished for a slow event. Late money is decision 8.
 func CheckOnTime(q *fx.Quote, paidAt time.Time) error {
 	if paidAt.IsZero() {
 		return fmt.Errorf("%w: the provider did not say when it was paid", ErrLatePayment)
@@ -35,14 +33,10 @@ func CheckOnTime(q *fx.Quote, paidAt time.Time) error {
 	return nil
 }
 
-// ConfirmationReference is unique in the ledger, so a payment that somehow got past its
-// status check still cannot be posted twice (invariant 7).
+// ConfirmationReference: a payment that got past its status check still cannot post
+// twice (invariant 7).
 func ConfirmationReference(id PaymentID) string { return "payment:" + id.String() + ":confirm" }
 
-// Confirmation is the ledger transaction of a paid payment: what the payer paid enters
-// at the provider and is converted at the base rate into what the merchant is owed,
-// the fee, the spread and the rounding. Zero legs are left out; the ledger refuses
-// them.
 func Confirmation(id PaymentID, q *fx.Quote, a *ConfirmationAccounts) (ledger.Transaction, error) {
 	return postLegs(ConfirmationReference(id),
 		leg{a.ProviderReceivables, q.PayerAmount(), false},
