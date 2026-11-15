@@ -485,7 +485,7 @@ sequenceDiagram
 
 ## Decisões principais
 
-A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/escopo.md §11](docs/escopo.md). Abaixo estão as escolhas feitas na construção, cada uma com a alternativa que perdeu, agrupadas por área:
+A lista completa das 58 decisões fechadas, com o raciocínio, está em [docs/escopo.md §11](docs/escopo.md). Abaixo estão as escolhas feitas na construção, cada uma com a alternativa que perdeu, agrupadas por área:
 
 <details>
 <summary><b>Arquitetura e testes</b> · 5 decisões</summary>
@@ -496,7 +496,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Testes:** Postgres real em todo teste de integração; determinismo só no simulador de provedor, controlado por seed.<br>*Descartado:* Banco mockado ou mundo todo simulado: perde os bugs reais de lock e isolamento.
 
-- **Teste ponta a ponta:** `api`, `worker` e `pixsim` compilados com `-race` e rodados como processos, com Postgres pelo `testcontainers` e o lojista falso conferindo cada assinatura; os três param com `SIGTERM` e precisam sair limpos.<br>*Descartado:* `docker compose` com um Dockerfile por binário: mais fiel ao deploy, mas adianta a F10 e fica mais lento e frágil na CI. Montar tudo num processo só: duplica o wiring dos `main` e deixa de testar config, sinais e HTTP de verdade.
+- **Teste ponta a ponta:** `api`, `worker` e `pixsim` compilados com `-race` e rodados como processos, com Postgres pelo `testcontainers` e o lojista falso conferindo cada assinatura; os três param com `SIGTERM` e precisam sair limpos.<br>*Descartado:* `docker compose` com um Dockerfile por binário: mais fiel ao deploy, mas adianta a F11 e fica mais lento e frágil na CI. Montar tudo num processo só: duplica o wiring dos `main` e deixa de testar config, sinais e HTTP de verdade.
 
 - **HTTP:** Roteador da stdlib `net/http`; OpenAPI escrito à mão, validado nos testes de contrato.<br>*Descartado:* Frameworks e código gerado: mais a explicar, pouco ganho com os padrões de método+caminho do Go.
 
@@ -568,7 +568,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Idempotência da captura:** Nenhuma chave: uma autorização é capturada uma vez, então a mesma captura responde como está e outro valor é `409`, mesmo depois de uma captura que o adquirente talvez não tenha recebido.<br>*Descartado:* Idempotency-Key: uma segunda chave com outro valor poderia capturar duas vezes.
 
-- **Confirmação do boleto:** O `boleto.paid` assinado do simulador, pelo mesmo inbox do PIX; o retorno CNAB 240 chega na F9 como evidência da conciliação.<br>*Descartado:* Esperar o CNAB: o boleto da F8 dependeria do parser da F9, e um banco real avisa a liquidação de qualquer jeito antes do arquivo do dia seguinte.
+- **Confirmação do boleto:** O `boleto.paid` assinado do simulador, pelo mesmo inbox do PIX; o retorno CNAB 240 pode entrar na F10 como evidência da conciliação.<br>*Descartado:* Esperar o CNAB: o boleto da F8 dependeria de um parser futuro, e um banco real avisa a liquidação de qualquer jeito antes do arquivo do dia seguinte.
 
 - **Vencimento do boleto:** Três dias corridos em `America/Sao_Paulo` (decisão 44), recebido até o fim do primeiro dia útil a partir dele; a cotação dura até lá, e a data fica gravada com a tentativa.<br>*Descartado:* Recalcular o vencimento a cada chamada: uma criação retomada depois da meia-noite pediria outro boleto com a mesma key. Três dias úteis: a decisão 44 diz corridos, e o dia útil já entra no último dia de recebimento.
 
@@ -594,7 +594,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **txid do PIX:** Escolhido pelo simulador (25 caracteres tirados da seed) e devolvido com a cobrança; o ID da nossa tentativa viaja como `Idempotency-Key`<br>*Descartado:* Compactar os 26 caracteres do ID da tentativa em 25, tirando os bits de versão e variante do UUIDv7: sem perda, mas engenhosidade sem ganho.
 
-- **Assinatura dos eventos do simulador:** `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(segredo, t.corpo)>`, comparada com `hmac.Equal` e tolerância de 5 minutos; vários `v1` aceitos, para o segredo poder ser trocado.<br>*Descartado:* Assinar só o corpo: uma entrega capturada pode ser reenviada para sempre. Um token fixo no cabeçalho: não prova nada sobre o corpo. mTLS: papel do provedor real (F9), não do simulador.
+- **Assinatura dos eventos do simulador:** `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(segredo, t.corpo)>`, comparada com `hmac.Equal` e tolerância de 5 minutos; vários `v1` aceitos, para o segredo poder ser trocado.<br>*Descartado:* Assinar só o corpo: uma entrega capturada pode ser reenviada para sempre. Um token fixo no cabeçalho: não prova nada sobre o corpo. mTLS: papel de um provedor real, não do simulador.
 
 - **BR Code:** Codec próprio, só ASCII imprimível; o simulador emite o código estático com valor e txid.<br>*Descartado:* Biblioteca de terceiros: dependência para ~380 linhas testáveis contra o manual. Código dinâmico no simulador: o valor fica num JSON assinado (JWS) hospedado na URL, sem relação com o que a F5 prova.
 
@@ -619,7 +619,7 @@ A lista completa das 57 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Invariante 7, uma confirmação por cobrança:** Duas barreiras: o lock da cobrança com a máquina de estados (`paid` + `confirm` é no-op), e uma referência única no ledger, `payment:<id>:confirm`, que recusa um segundo lançamento se a primeira barreira um dia falhar.<br>*Descartado:* Confiar só no status: um bug em um caminho e o dinheiro é contado duas vezes.
 
-- **Dono da fila de revisão:** O módulo `reconciliation` (seção 2.1), por enquanto só com `review_cases`; o `payments` abre casos por uma porta ligada no `cmd`, como a outbox.<br>*Descartado:* Tabela no `payments`: a F9 precisaria de uma segunda fila ou de uma migração de dados. O `failed` do inbox: não guarda lançamento, e o job de expiração não tem evento.
+- **Dono da fila de revisão:** O módulo `reconciliation` (seção 2.1), por enquanto só com `review_cases`; o `payments` abre casos por uma porta ligada no `cmd`, como a outbox.<br>*Descartado:* Tabela no `payments`: a conciliação da F10 precisaria de uma segunda fila ou de uma migração de dados. O `failed` do inbox: não guarda lançamento, e o job de expiração não tem evento.
 
 - **Pagamento de cobrança fechada:** Atrasado ou com outro valor: tentativa `succeeded` (o provedor tem o dinheiro), cobrança intocada, dinheiro retido.<br>*Descartado:* Desfazer tudo, como antes: o dinheiro ficava fora do ledger, e um evento atrasado deixava a tentativa pela metade.
 
@@ -751,8 +751,11 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | ✅ pronta |
 | F7 | Estornos e liquidação | ✅ pronta |
 | F8 | Cartão, boleto, chargebacks | ✅ pronta |
-| F9 | Simulador hostil, conciliação CNAB 240, sandbox Efí | planejada |
-| F10 | Deploy público em produção | planejada |
+| F9 | Polimento: menos código, comentário só para o porquê, sem mudar comportamento ([plano](docs/polimento.md)) | 🚧 em andamento |
+| F10 | Teste de caos nos três simuladores e conciliação diária | planejada |
+| F11 | `docker compose up` com tudo e script de demo da GameStore | planejada |
+
+Em 14 de novembro de 2026, depois da F8, saíram o sandbox Efí, o deploy público, os testes de carga e a página do pagador (decisão 58): F0–F8 já provam os quatro eixos, e o tempo vai para um código menor.
 
 ## Rodando localmente
 
@@ -931,10 +934,6 @@ e2e/          roteiro GameStore contra os binários reais
 ## Stack
 
 Go 1.27 · PostgreSQL 18 · `pgx/v5` · `sqlc` · `goose` (como biblioteca) · `log/slog` · `testcontainers-go` · `rapid` (testes de propriedade) · `golangci-lint` v2 + `gofumpt` · GitHub Actions · mise
-
-## Hospedagem (planejada, F10)
-
-Uma VM Linux rodando a mesma stack do Docker Compose, com Caddy para HTTPS automático, no Azure. Backup com restauração testada, deploy pela CI, OpenTelemetry + Prometheus + Grafana com dashboard público, números de carga do k6 em `docs/benchmarks.md` e uma conta de demonstração com limites.
 
 ## Regulação
 

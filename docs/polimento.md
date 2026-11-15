@@ -1,0 +1,161 @@
+# Plano de polimento (F9) e novo escopo
+
+Escrito em 14/11/2026, depois do merge da F8 (PR #56). Serve para retomar o trabalho em
+sessões novas: cada sessão lê este arquivo, pega o próximo item não feito e atualiza o
+registro de progresso no fim.
+
+## 1. Mudança de escopo
+
+O projeto serve à entrevista na EBANX. O que conta é o raciocínio sobre dinheiro, falhas e
+consistência, que as fases F0–F8 já provam. Os cortes abaixo trocam operação e integração
+por um código menor e mais fácil de ler.
+
+| Antes | Agora | Motivo |
+|---|---|---|
+| F9: simulador hostil, CNAB 240, conciliação, sandbox Efí | **F9: polimento** (este plano) | O código está inchado; quem avalia lê código antes de rodar |
+| Adapter Efí com mTLS (decisão 40) | **Cortado** | Os três simuladores já provam o port de provedor; a conta pode exigir PJ e a homologação tem limites estranhos |
+| F10: deploy no Azure, HTTPS, backup, observabilidade, k6 (decisão 39) | **Cortado** | Custo, manutenção e superfície de ataque para um link que ninguém vai testar sob carga |
+| CNAB 240, parser e gerador (decisão 29) | **Opcional**: só o retorno de cobrança (segmentos T e U), se sobrar tempo | Formato posicional grande e com dialeto por banco; a conciliação mostra o mesmo raciocínio contra o extrato do simulador |
+| Página do pagador e painel em `html/template` (decisão 55) | **Cortado** | A demo por script cobre o mesmo roteiro |
+| — | **F10: caos e conciliação** | Teste citado 5 (mesma seed, mesmo estado final); falhas injetadas nos três simuladores sem perder nem duplicar dinheiro; conciliação diária com os casos da seção 4.8 |
+| — | **F11: entrega** | `docker compose up` com Postgres, API, worker e os três simuladores; script de demo da GameStore (PIX, liquidação, chargeback); README final curto; roteiro de perguntas da entrevista |
+
+Isto já está no `docs/escopo.md` (decisão 58, com as decisões 29, 39, 40 e 55 marcadas
+como revistas, e as seções 1, 5, 9, 10 e 12 atualizadas) e na tabela de status dos dois
+READMEs. A página do pagador (decisão 55) saiu junto.
+
+## 2. Linha de base (14/11/2026, master em `b8619b2`)
+
+Contagem com `wc -l`, sem o código gerado pelo sqlc (`*db/`).
+
+| O quê | Linhas |
+|---|---|
+| Go de produção | 17.147 |
+| Comentários no Go de produção | 1.630 (~10%) |
+| Go de teste | 19.009 |
+| Código gerado pelo sqlc | 4.796 |
+| SQL: migrations / queries | 631 / 633 |
+| `README.md` / `README.pt-BR.md` | 951 / 951 |
+| `api/openapi.yaml` | 1.505 |
+| Todos os arquivos versionados | 46.994 |
+
+Maiores pacotes (produção / comentários / teste):
+
+| Pacote | Produção | Comentários | Teste |
+|---|---|---|---|
+| `internal/payments/adapters` | 3.577 | 209 | 1.937 |
+| `internal/payments/domain` | 2.009 | 300 | 1.831 |
+| `internal/payments/app` | 1.396 | 238 | 82 |
+| `internal/providers/cardsim/server` | 634 | 37 | 0 |
+| `internal/providers/simkit` | 553 | 64 | 229 |
+| `cmd/api` | 390 | 15 | 4.903 |
+
+Para medir de novo, rode da raiz:
+
+```sh
+find . -name '*.go' ! -name '*_test.go' ! -path './*/*db/*' | xargs cat | wc -l
+find . -name '*.go' ! -name '*_test.go' ! -path './*/*db/*' | xargs grep -h '^\s*//' | wc -l
+find . -name '*_test.go' | xargs cat | wc -l
+```
+
+## 3. Regras
+
+1. **Nenhuma mudança de comportamento.** O polimento só reescreve; corrigir um bug é uma PR
+   separada, com teste que o mostre.
+2. **Quanto menos código, melhor**, desde que fique claro. Apagar vence reescrever, e
+   reaproveitar vence criar.
+3. **Comentário só para o porquê:** um invariante, uma decisão (com o número), uma armadilha
+   ou uma ordem de locks. Comentário que repete o nome ou o corpo da função sai. Doc
+   comment em identificador exportado só quando acrescenta algo além do nome.
+4. **Os testes provam a mesma coisa com menos linhas:** tabelas no lugar de testes quase
+   iguais e helpers compartilhados no lugar de cópias. Nenhum teste citado no README perde
+   força.
+5. **PRs pequenas, uma por área**, cada uma com as linhas antes e depois na descrição.
+6. Commits em português, no estilo `chore(scope): ...` ou `refactor(scope): ...`, **sem
+   atribuição ao Claude**.
+
+## 4. Ferramentas
+
+- **Ponytail**, as regras de "código mínimo" para agentes. Instala dentro do Claude Code,
+  não no terminal, com dois prompts separados:
+  1. `/plugin marketplace add DietrichGebert/ponytail`
+  2. `/plugin install ponytail@ponytail`
+
+  Os hooks dele precisam do `node` no PATH. Antes de usar, ler as regras instaladas e
+  conferir que não contradizem as regras da seção 3.
+- **deadcode**: lista funções inalcançáveis. O modo automático bloqueia o Claude de baixar
+  a ferramenta, então **o Claude deve pedir ao Felipe para rodar** no prompt, com `!` na
+  frente, para a saída cair na conversa:
+  `! go run golang.org/x/tools/cmd/deadcode@v0.28.0 -test ./...`
+- **`dupl`** do golangci-lint, ligado só localmente para achar blocos repetidos:
+  `golangci-lint run --enable-only dupl ./...`
+
+## 5. Verificação de cada PR
+
+```sh
+golangci-lint fmt ./... && golangci-lint run ./...
+sqlc diff
+go test -race -count=1 ./...          # inclui o e2e
+```
+
+Nas PRs que mexem em `payments`, `ledger` ou `idempotency`, plante de propósito dois ou
+três erros num caminho de dinheiro e confira que algum teste falha. Exemplos: tirar um
+lock, inverter um sinal, pular uma verificação de idempotência. Depois desfaça.
+
+## 6. Itens, em ordem
+
+Marque `[x]` ao terminar e anote o número da PR.
+
+- [x] **0. Escopo.** Decisão 58 no `docs/escopo.md` e status nos READMEs.
+- [ ] **1. Código morto.** Pedir ao Felipe para rodar o `deadcode` (seção 4) e apagar o que
+  não for usado. Já se sabe:
+  - `ErrChargebackNotDisputable` já saiu;
+  - erros declarados num arquivo e usados em outro, como `ErrChargebackNotFound` em
+    `app/refund.go`, que ficaria melhor em `app/chargeback.go`.
+- [ ] **2. Comentários.** Pacote por pacote, do maior para o menor: `payments/domain`
+  (300), `payments/app` (238), `payments/adapters` (209), `providers/cardsim` (72),
+  `simkit` (64), `webhooks/app` (48), `boleto` (47). Alvo: menos da metade das 1.630
+  linhas.
+- [ ] **3. Duplicação no código de produção.**
+  - `HandlePixSimEvent` e `HandleBoletoSimEvent` (`payments/adapters/events.go`) são o
+    mesmo código com tipos diferentes. Basta uma função que receba o que muda.
+  - Os adapters `pixsim.go`, `boletosim.go` e `cardsim.go` em `payments/adapters`:
+    comparar e extrair o que se repete.
+  - Os servidores dos simuladores (`providers/*/server`) já usam o `simkit`. Ver o que
+    ainda se repete: roteamento, faults, entrega de eventos.
+  - `payments/adapters/http.go` (575 linhas) e os outros `*_http.go`: mapeamento de erro
+    para problema repetido em cada handler.
+  - Construtores com seis ou mais parâmetros repetidos (`clock`, `logger`,
+    `providerTimeout`): ver se um struct de dependências comum encurta.
+- [ ] **4. Testes.**
+  - `cmd/api` tem 4.903 linhas. Os helpers estão espalhados: `processInbox` e
+    `boletoEvents` estão em `contract_boleto_test.go` mas roteiam os três provedores, e
+    devem ir para `contract_test.go` com outro nome.
+  - Taxa fixa de 5,0000 repetida em `contractRates`, `testRates` (worker) e duas vezes em
+    `contract_refund_resolver_test.go`: deixar uma só.
+  - Testes quase iguais que viram tabela.
+  - Helpers de corpo e de requisição repetidos entre arquivos: `postChargeback`,
+    `postRefund`, `getRequest` e semelhantes.
+- [ ] **5. OpenAPI.** Respostas `404`, `409` e `503` com o mesmo bloco inline repetido em
+  cada caminho: mover para `components/responses` e referenciar. Os testes de contrato
+  validam contra o arquivo, então qualquer erro aparece.
+- [ ] **6. Pendência de comportamento (PR à parte, não é polimento).** Confirmar se o job
+  de expiração pega um cartão `authorized` por mais de 7 dias sem captura (decisão 52).
+  Se não pegar, teste e correção.
+- [ ] **7. READMEs.** O começo deve se entender em 30 segundos: o que é, como rodar e os 5
+  testes mais fortes. As seções de resultado ficam mais curtas e as decisões mais
+  enxutas. Os números de linhas da seção 2 entram lá, antes e depois.
+- [ ] **8. Medir de novo** e preencher o registro abaixo.
+
+## 7. Registro de progresso
+
+| Data | Item | PR | Produção | Comentários | Teste | Observação |
+|---|---|---|---|---|---|---|
+| 14/11/2026 | Linha de base | — | 17.147 | 1.630 | 19.009 | master `b8619b2` |
+
+## 8. Como retomar numa sessão nova
+
+Peça ao Claude:
+
+> Lê `docs/polimento.md` e continua o polimento a partir do próximo item não marcado.
+> Segue as regras da seção 3 e a verificação da seção 5, e atualiza o registro no fim.

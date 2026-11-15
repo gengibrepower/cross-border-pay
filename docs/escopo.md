@@ -2,8 +2,8 @@
 
 > Projeto pessoal de aprendizado. **Não é** um gateway de pagamentos real, não processa
 > dinheiro real, não tem clientes. É um clone simplificado do negócio do EBANX, com
-> provedores simulados e, depois, adapters para sandboxes reais. Este documento define o
-> escopo, as regras, a stack e as decisões fechadas antes de escrever código.
+> provedores simulados. Este documento define o escopo, as regras, a stack e as decisões
+> fechadas antes de escrever código; o corte de 14/11/2026 está na decisão 58.
 
 ---
 
@@ -36,7 +36,8 @@ fica pequeno.
 - O teste de concorrência termina sempre com o ledger fechado em zero, nenhuma cobrança
   paga duas vezes e nenhum webhook perdido.
 - Cada decisão da seção 11 está no README com a alternativa descartada e o motivo.
-- O sistema está no ar com link público, dashboard e conta de demonstração (F10).
+- Quem clona roda tudo com um `docker compose up` e vê o roteiro GameStore num script de
+  demo (F11).
 - Quem nunca viu o projeto entende o que ele faz em 30 segundos lendo o início do README.
 
 ---
@@ -44,7 +45,7 @@ fica pequeno.
 ## 2. Arquitetura — a decisão central
 
 **Monólito modular, hexagonal** (decisões 1, 2, 3): dois binários do mesmo módulo Go, um
-Postgres, nenhuma mensageria até a F10.
+Postgres, nenhuma mensageria.
 
 ```
    lojista ──HTTP──> [ cmd/api ]  só recebe, valida e registra
@@ -375,7 +376,7 @@ at-least-once; o lojista deduplica pelo `id`.
 | Valor diferente | Caso com as duas versões |
 | Status diferente | Resolve tentativas `unknown` ou abre caso |
 
-- CNAB 240 (decisão 29): largura fixa, headers, segmentos T e U por título, trailers.
+- CNAB 240 (decisão 29, opcional pela 58): largura fixa, headers, segmentos T e U por título, trailers.
   Parser com tipos por registro, validação de contagens e totais, erro com número da
   linha. O simulador gera retornos no mesmo formato, com erros injetáveis.
 - Boleto: código de barras de 44 posições, linha digitável de 47, DV módulo 10 e 11,
@@ -424,10 +425,7 @@ cursor; datas ISO 8601 UTC; request ID em toda resposta, ligado aos logs.
 | Contrato | OpenAPI à mão; tipos à mão; `kin-openapi` só nos testes de contrato | Contrato validado sem código gerado (decisão 50) |
 | Lint e formato | `golangci-lint` v2 rigoroso + `gofumpt` (decisão 51) | Corretude por ferramenta |
 | Config | Variáveis de ambiente lidas num struct no boot | Sem framework |
-| Página do pagador e painel | `html/template` da stdlib, renderizado pelo `cmd/api`, sem framework JS | Frontend fica fora do escopo (decisão 55) |
 | QR do PIX | BR Code à mão; imagem PNG por uma lib pequena, escolhida na F5 | O valor está no BR Code (decisão 56) |
-| Observabilidade (F10) | OpenTelemetry, Prometheus, Grafana | — |
-| Carga (F10) | k6 | — |
 
 Dependência fora desta tabela só com pergunta e aprovação.
 
@@ -506,7 +504,6 @@ README:
 | Falhas | Timeouts, duplicatas, reordenação, worker morto | simulador com seed |
 | Contrato | Respostas batem com o OpenAPI | validador de OpenAPI |
 | Ponta a ponta | Roteiro GameStore via HTTP | `testing` + compose |
-| Carga (F10) | Throughput e p99 com gargalo identificado | k6 |
 
 **Testes que o README cita** (a "métrica" do projeto, como o exchange cita os dele):
 
@@ -518,9 +515,7 @@ README:
 5. Mesma seed → mesmo histórico e mesmo estado final.
 
 Números a reportar no README ao fim de cada fase relevante: casos do teste de
-propriedade, operações do teste de concorrência e quantas rodadas `-count` passaram; na
-F10, throughput e p50/p99 do `POST /v1/payments` e da confirmação, com o gargalo
-identificado e a metodologia em `docs/benchmarks.md`.
+propriedade, operações do teste de concorrência e quantas rodadas `-count` passaram.
 
 Simulação determinística só no simulador de provedor; o Postgres é real (decisão 38).
 
@@ -531,21 +526,23 @@ Simulação determinística só no simulador de provedor; o Postgres é real (de
 **Dentro (ao longo das fases)**
 - Cobrança, cotação, idempotência; ledger multi-moeda.
 - PIX com BR Code real (pagável só no simulador); boleto com linha digitável real e
-  compensação simulada via CNAB; cartão com tokens fictícios.
+  compensação simulada; cartão com tokens fictícios.
 - Inbox, outbox, webhooks.
 - Liquidação em USD, estornos, chargebacks, reserva.
-- Conciliação com CNAB 240.
-- Simulador hostil com seed; adapter Efí (mTLS), depois Asaas.
-- Deploy público com dinheiro simulado, observabilidade, carga.
+- Conciliação diária contra o extrato dos simuladores; CNAB 240 opcional, só o retorno.
+- Simulador hostil com seed.
+- `docker compose` com tudo e script de demo.
 
 **Opcional (decisão 28):** roteamento de cartão, depois antifraude, segundo país; só
-depois da F10.
+depois da F11.
 
 **Fora**
 - Dinheiro real de terceiros; impostos reais; KYC/PLD; armazenamento de cartão.
 - Frontend elaborado: só a página do pagador e um painel mínimo.
 - Mensageria (NATS, Kafka) antes de um motivo medido.
-- Serviços separados antes da F10.
+- Serviços separados.
+- Sandbox real (Efí, Asaas), deploy público, observabilidade e carga (decisão 58).
+- Página do pagador e painel (decisão 58).
 - Feriados municipais.
 
 ---
@@ -559,8 +556,8 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
    serviços com mensageria desde o início (custo antes de saber onde dói).
 2. **Layout por módulo**: `internal/<módulo>/{domain,app,adapters}`. Descartado: por
    camada (pacotes gigantes, módulos não extraíveis).
-3. **Sem mensageria**: Postgres como fila (outbox e jobs com `SKIP LOCKED`). NATS só na
-   F10 com motivo medido; Kafka descartado (pesado demais).
+3. **Sem mensageria**: Postgres como fila (outbox e jobs com `SKIP LOCKED`). NATS só com motivo
+   medido; Kafka descartado (pesado demais).
 4. **Primeira entrega só PIX**, com a porta de provedor desenhada para cartão e boleto.
    Boleto por último (depende de CNAB e calendário).
 5. **Só Brasil**, com país e moeda como dados, nunca `if` espalhado.
@@ -611,8 +608,9 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
 26. **Reserva rolante** de chargeback (percentual retido por período), na F8.
 27. **Saldo negativo**: consome a reserva, depois desconta das próximas liquidações;
     bloqueia novas cobranças acima de um limite de dívida.
-28. **Módulos opcionais**: nenhum antes da F10; depois roteamento, depois antifraude.
-29. **CNAB 240** (Febraban + manual de um banco grande); 400 só se sobrar tempo.
+28. **Módulos opcionais**: nenhum antes da F11; depois roteamento, depois antifraude.
+29. **CNAB 240** (Febraban + manual de um banco grande); 400 só se sobrar tempo. *Revista
+    pela 58: opcional, só o retorno de cobrança (segmentos T e U).*
 30. **Conciliação diária**, lógica de comparação independente da origem.
 
 **API, stack e testes**
@@ -637,9 +635,9 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
     Railway (Prometheus e Grafana viram serviços cobrados, sobra pouco para operar),
     AWS (custo e complexidade fora dos quatro eixos; AWS Academy tem sessões de 4 h e não
     hospeda). Premissa fixa: tudo roda em Docker Compose, então trocar de provedor não
-    muda o código.
+    muda o código. *Revista pela 58: sem deploy; o Docker Compose fica para rodar local.*
 40. **Sandbox real: Efí primeiro** (mTLS com `.p12`), **Asaas depois** (provar que trocar
-    é configuração). Adapter sobre a API HTTP, sem SDK.
+    é configuração). Adapter sobre a API HTTP, sem SDK. *Revista pela 58: cortada.*
 
 **Fechadas nesta sessão**
 41. **Taxa de câmbio** como inteiro escalado por 10^8, produto intermediário sem overflow.
@@ -649,8 +647,8 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
     de 1,5%** sobre a taxa base na cotação ao pagador. Números ilustrativos.
 44. **Validade da cotação**: PIX 30 min; boleto até o vencimento (3 dias corridos); cartão
     usa a cotação do momento da autorização.
-45. **Fases F0–F10** com critério de pronto (seção 12), agrupadas nas quatro fases do
-    plano original.
+45. **Fases F0–F11** com critério de pronto (seção 12), agrupadas nas quatro fases do
+    plano original (renumeradas pela 58).
 
 **Repositório, ferramentas e regras finais**
 46. **Repositório `github.com/gengibrepower/cross-border-pay`**, público, branch `master`,
@@ -676,12 +674,24 @@ Fechadas em 23/10/2026. Cada uma vai para o README com a alternativa descartada.
     recusa depois do vencimento; um pagamento tardio que apareça no CNAB cai na decisão 8.
 54. **Dados do pagador**: nome, CPF (com validação de dígitos) e e-mail opcional, todos
     mascarados em logs; a demo só aceita CPFs de teste gerados.
-55. **Página do pagador e painel em `html/template`**, sem framework JS.
+55. **Página do pagador e painel em `html/template`**, sem framework JS. *Revista pela 58:
+    cortada; a demo é por script.*
 56. **QR do PIX**: BR Code (EMV + CRC16) à mão; a imagem sai de uma lib pequena e
     estável, escolhida na F5.
 57. **CI**: em todo PR, formato, `vet`, lint, `go test -race` com cobertura reportada (sem
     meta) e `govulncheck`; job noturno com `-race -count=100`; Dependabot para módulos Go
     e actions.
+
+**Corte de escopo (14/11/2026, depois da F8)**
+58. **Polimento no lugar de integração e operação.** O projeto serve à entrevista no EBANX,
+    e as fases F0–F8 já provam os quatro eixos da seção 1. Saem o sandbox Efí e o Asaas
+    (40), o deploy no Azure com observabilidade e carga (39 e a antiga F10) e a página do
+    pagador (55). O CNAB 240 fica opcional (29). Entram uma fase de polimento (F9, plano
+    em `docs/polimento.md`), caos e conciliação (F10) e uma entrega local com `docker
+    compose` e script de demo (F11). Descartado: seguir o plano original, em que conta PJ,
+    certificado, crédito de nuvem e manutenção de um servidor custariam semanas sem
+    acrescentar raciocínio novo; quem avalia lê o código antes de rodar, e 17 mil linhas
+    de produção com 10% de comentário pesam contra.
 
 ---
 
@@ -736,16 +746,20 @@ F0–F5 + README; F6 logo depois.
   *Pronto quando*: ciclo completo da GameStore, inclusive chargeback após liquidação,
   testado; nenhuma transição fora da tabela de estados.
 
-**Fase 3 — Confiabilidade e integrações**
+**Fase 3 — Polimento e confiabilidade** (decisão 58)
 
-- **F9 — Simulador hostil, conciliação, sandbox real**: falhas injetáveis com seed, CNAB
-  240 (parser e gerador), conciliação diária, adapter Efí com mTLS. *Pronto quando*:
-  teste citado 5 passa; falhas injetadas não perdem nem duplicam dinheiro; o mesmo
-  roteiro roda no sandbox Efí.
+- **F9 — Polimento**: código morto, comentários só para o porquê, duplicação, testes e
+  OpenAPI mais curtos, READMEs enxutos, sem mudar comportamento. Plano e registro em
+  `docs/polimento.md`. *Pronto quando*: todos os itens do plano feitos, suíte inteira com
+  `-race` verde e as linhas antes e depois no README.
+- **F10 — Caos e conciliação**: um roteiro com falhas injetadas por seed nos três
+  simuladores; conciliação diária com os casos da seção 4.8 contra o extrato dos
+  simuladores; CNAB 240 só o retorno, se sobrar tempo. *Pronto quando*: teste citado 5
+  passa; falhas injetadas não perdem nem duplicam dinheiro; cada divergência da 4.8 vira
+  lançamento ou caso.
 
-**Fase 4 — Produção e plataforma**
+**Fase 4 — Entrega**
 
-- **F10 — Produção**: deploy no Azure (decisão 39), HTTPS, backup com restauração testada,
-  deploy por CI, migrations expand/contract, shutdown gracioso, health checks,
-  observabilidade, k6, demo pública com limites. *Pronto quando*: sistema no ar com link,
-  dashboard público, conta de demonstração e números de carga em `docs/benchmarks.md`.
+- **F11 — Entrega local**: `docker compose up` com Postgres, API, worker e os três
+  simuladores; script de demo da GameStore (PIX, liquidação, chargeback); README final.
+  *Pronto quando*: um clone limpo roda a demo com dois comandos.
