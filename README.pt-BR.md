@@ -18,14 +18,29 @@ A regra que nunca pode quebrar: **o dinheiro registrado sempre bate com o dinhei
 
 ## Começo rápido
 
-Precisa de [mise](https://mise.jdx.dev) e Docker.
+Precisa de Docker.
 
 ```sh
-mise install    # Go e as ferramentas nas versões que o CI usa
-mise run test   # a suíte inteira com -race, contra um Postgres real em container
+docker compose up -d           # Postgres, a API, o worker e os três simuladores
+docker compose run --rm demo   # a história da GameStore, contada contra todos eles
 ```
 
-Para subir a API, o worker e os simuladores à mão, veja [Rodando localmente](#rodando-localmente).
+A demo faz o papel do lojista pela API pública, e o do pagador e do adquirente nos simuladores (a saída é em inglês, como o código):
+
+```
+1. PIX
+   A player buys 20.00 USD of credits. The gateway quotes it: the payer pays 101.50 BRL by PIX,
+   the GameStore gets 19.40 USD after a fee of 0.60 USD.
+   ...
+   and the GameStore receives payment.paid, signed: the signature checks out.
+   PIX settles D+1: the money is available on 2026-11-16 and paid out by that day's settlement.
+
+2. Card and chargeback
+   ...
+   The issuer decides for the GameStore: chargeback.won, and the money comes back.
+```
+
+Para mexer no código, precisa também de [mise](https://mise.jdx.dev): `mise install` traz o Go e as ferramentas nas versões que o CI usa, e `mise run test` roda a suíte inteira com `-race` contra um Postgres real. Para subir cada parte à mão, veja [Rodando localmente](#rodando-localmente).
 
 ## O que o projeto se propõe a provar
 
@@ -447,7 +462,7 @@ A cada minuto o worker reconcilia, por provedor, os 7 últimos dias fechados que
 </details>
 
 <details>
-<summary><b>Ponta a ponta</b> · 2 testes</summary>
+<summary><b>Ponta a ponta</b> · 3 testes</summary>
 
 **Roteiro GameStore ponta a ponta (`e2e/`, seção 4.1)**
 
@@ -463,9 +478,17 @@ A cada minuto o worker reconcilia, por provedor, os 7 últimos dias fechados que
 
 **Resultado:** **Critério da F10:** os livros somam zero por moeda; a conciliação acha só a cobrança plantada (PIX: 1 divergência, segurada; cartão e boleto: nenhuma), então todo outro real dos extratos está no ledger uma vez; a seed 42 duas vezes deixa o mesmo estado e a 43 outro (teste citado 5). 24 operações por rodada, as três rodadas lado a lado em ~66 s com `-race`; o job noturno roda 300. O `fail_before` ficou fora: o gateway só desiste de uma chamada que o provedor nunca recebeu depois de um minuto, e os testes do resolvedor cobrem esse caso.
 
+---
+
+**A demo (`cmd/demo`, F11)**
+
+`docker compose run --rm demo` contra o stack do compose, e o mesmo binário contra os processos do `e2e/`. Cria a GameStore, registra um endpoint de webhook que ela mesma serve e conta a história com os valores: um PIX de US$ 20,00 cotado em R$ 101,50, pago no simulador, o `payment.paid` conferido pela assinatura e o dia em que liquida pela regra do PIX (D+1); depois um cartão de US$ 15,00 capturado, contestado pelo adquirente com um chargeback, defendido pela GameStore e ganho, com o saldo a cada passo. Cada espera tem limite de um minuto, então um passo quebrado derruba a demo em vez de travá-la.
+
+**Resultado:** o saldo vai de 33,95 a 18,95 e volta a 33,95 USD pendentes durante a disputa. ~14 s contra os processos. O job `compose` da CI constrói a imagem, sobe o stack e roda a demo em todo pull request: o caminho de quem clona.
+
 </details>
 
-A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request. Um job noturno roda tudo de novo com `-race -count=100`, os testes ponta a ponta com `-count=10` e o roteiro de caos com 300 operações.
+A CI roda formatação, um `golangci-lint` rigoroso, `go test -race` com cobertura e `govulncheck` em todo pull request, e um segundo job sobe o `docker compose` e roda a demo. Um job noturno roda tudo de novo com `-race -count=100`, os testes ponta a ponta com `-count=10` e o roteiro de caos com 300 operações.
 
 ## Arquitetura
 
@@ -800,6 +823,19 @@ A lista completa das 58 decisões fechadas, com o raciocínio, está em [docs/es
 
 </details>
 
+<details>
+<summary><b>Entrega local</b> · 4 decisões</summary>
+
+- **Uma imagem:** Um `Dockerfile` multi-stage compila todos os binários numa imagem `distroless/static` sem root; cada serviço do compose escolhe o seu comando, e só o `migrate` a constrói.<br>*Descartado:* Uma imagem por binário: oito builds do mesmo módulo. `build:` em todos os serviços: eles disputavam a mesma tag no primeiro `up`.
+
+- **Esperar os serviços:** A demo espera `/readyz` e os `/healthz` dos simuladores; os serviços Go não têm healthcheck no compose.<br>*Descartado:* Um modo `-healthcheck` em cada binário: código de produção para a infraestrutura de uma demo, já que a imagem distroless não tem `curl`.
+
+- **A demo em Go:** `cmd/demo`, na mesma imagem, então o segundo comando não precisa de nada na máquina além do Docker, e a demo tem teste.<br>*Descartado:* Um script `sh` com `curl` e `jq`: mais curto, mas precisa de ferramentas na máquina e não tem teste.
+
+- **Liquidação na demo:** O saldo pendente e o dia em que liquida pela regra do PIX (D+1).<br>*Descartado:* Um prazo de liquidação configurável, zerado para a demo: mostraria o payout, por uma configuração de produção que só a demo usa.
+
+</details>
+
 ## Status
 
 O plano é dividido em fases, cada uma com definição de "pronto" escrita ([docs/escopo.md §12](docs/escopo.md)).
@@ -817,7 +853,9 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F8 | Cartão, boleto, chargebacks | ✅ pronta |
 | F9 | Polimento: menos código, comentário só para o porquê, sem mudar comportamento ([plano](docs/polimento.md)) | ✅ pronta |
 | F10 | Teste de caos nos três simuladores e conciliação diária ([plano](docs/f10.md)) | ✅ pronta |
-| F11 | `docker compose up` com tudo e script de demo da GameStore | planejada |
+| F11 | `docker compose up` com tudo e script de demo da GameStore ([plano](docs/f11.md)) | ✅ pronta |
+
+Com a F11, todas as fases do plano estão prontas: um clone limpo roda a demo com os dois comandos do [Começo rápido](#começo-rápido).
 
 Em 14 de novembro de 2026, depois da F8, saíram o sandbox Efí, o deploy público, os testes de carga e a página do pagador (decisão 58): F0–F8 já provam os quatro eixos, e o tempo vai para um código menor.
 
@@ -832,7 +870,7 @@ O que a F9 mudou, em linhas (`wc -l`, sem o código que o sqlc gera):
 
 ## Rodando localmente
 
-Você precisa do [mise](https://mise.jdx.dev) e do Docker. O mise fixa Go, `golangci-lint`, `sqlc` e `govulncheck` nas mesmas versões da CI.
+O jeito mais rápido é o [Começo rápido](#começo-rápido): `docker compose up -d` constrói uma imagem com todos os binários e sobe a API na porta 8080 e os simuladores em 8090–8092, todos em `127.0.0.1`. Para subir cada parte separada, você precisa do [mise](https://mise.jdx.dev) e do Docker. O mise fixa Go, `golangci-lint`, `sqlc` e `govulncheck` nas mesmas versões da CI.
 
 ```sh
 mise install          # ferramentas nas versões fixadas
@@ -981,6 +1019,7 @@ cmd/
   worker/     jobs em segundo plano, com shutdown gracioso
   migrate/    aplica as migrations do goose embutidas
   admin/      tarefas de operação: criar lojista e API key, revogar chave
+  demo/       a história da GameStore contra o gateway rodando
   pixsim/     simulador PIX: seed, falhas, "pagar agora", eventos
   cardsim/    simulador de cartão: tokens, autorização, captura
   boletosim/  simulador de boleto: registro, vencimento, "pagar agora"
@@ -1003,7 +1042,9 @@ internal/
 api/          openapi.yaml, o contrato escrito à mão
 migrations/   migrations SQL, embutidas nos binários
 docs/         escopo, regras e decisões
-e2e/          roteiro GameStore e o roteiro de caos, contra os binários reais
+e2e/          roteiro GameStore, o roteiro de caos e a demo, contra os binários reais
+Dockerfile    uma imagem com todos os binários
+compose.yaml  o gateway inteiro localmente, e a demo
 ```
 
 ## Stack

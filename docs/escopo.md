@@ -763,4 +763,5 @@ F0–F5 + README; F6 logo depois.
 
 - **F11 — Entrega local**: `docker compose up` com Postgres, API, worker e os três
   simuladores; script de demo da GameStore (PIX, liquidação, chargeback); README final.
-  *Pronto quando*: um clone limpo roda a demo com dois comandos.
+  *Pronto quando*: um clone limpo roda a demo com dois comandos. Pronta em 15/11/2026;
+  plano e registro em `docs/f11.md`.
