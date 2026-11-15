@@ -58,7 +58,7 @@ const (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx, os.Getenv, os.Stdout)
+	err := run(ctx, os.Args[1:], os.Getenv, os.Stdout)
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -66,7 +66,17 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+// run with "reconcile -day YYYY-MM-DD" reconciles that day once for every provider and
+// exits, as an operator does after a provider fixed its statement; the daily runs are
+// left as they are.
+func run(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
+	var day calendar.Date
+	if len(args) > 0 {
+		var err error
+		if day, err = reconcileArgs(args); err != nil {
+			return err
+		}
+	}
 	cfg, err := config.Load(getenv)
 	if err == nil {
 		err = errors.Join(cfg.RequireDatabase(), cfg.RequireSigningKey())
@@ -137,6 +147,10 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		string(paymentsadapters.CardSimName):   cardsimClient,
 		string(paymentsadapters.BoletoSimName): boletosimClient,
 	}, books{store}, reconciliationadapters.NewCases(pool), &cal, clock.System{})
+
+	if !day.IsZero() {
+		return reconcileDay(ctx, reconciler, day, logger)
+	}
 
 	logger.Info("worker started")
 	all := append(jobs(pool, resolver, refunds, expirer, settler, inbox, deliverer, logger), reconciliationJob(pool, reconciler, logger))

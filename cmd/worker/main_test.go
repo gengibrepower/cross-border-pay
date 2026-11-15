@@ -51,7 +51,7 @@ func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	var out syncBuffer
 	result := make(chan error, 1)
-	go func() { result <- run(ctx, getenv, &out) }()
+	go func() { result <- run(ctx, nil, getenv, &out) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), `"job":"idempotency-cleanup"`) || !strings.Contains(out.String(), `"job":"attempt-resolver"`) ||
@@ -80,7 +80,7 @@ func TestRunStartsJobsAndStopsWhenCanceled(t *testing.T) {
 }
 
 func TestRunRequiresDatabase(t *testing.T) {
-	err := run(t.Context(), func(string) string { return "" }, io.Discard)
+	err := run(t.Context(), nil, func(string) string { return "" }, io.Discard)
 	if !errors.Is(err, config.ErrMissingDatabaseURL) {
 		t.Fatalf("run() error = %v, want %v", err, config.ErrMissingDatabaseURL)
 	}
@@ -95,7 +95,7 @@ func TestRunRequiresSigningKey(t *testing.T) {
 		}
 		return ""
 	}
-	if err := run(t.Context(), getenv, io.Discard); !errors.Is(err, config.ErrWeakSigningKey) {
+	if err := run(t.Context(), nil, getenv, io.Discard); !errors.Is(err, config.ErrWeakSigningKey) {
 		t.Fatalf("run() error = %v, want %v", err, config.ErrWeakSigningKey)
 	}
 }
@@ -107,7 +107,7 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 		}
 		return ""
 	}
-	if err := run(t.Context(), getenv, io.Discard); err == nil {
+	if err := run(t.Context(), nil, getenv, io.Discard); err == nil {
 		t.Fatal("run() error = nil, want config error")
 	}
 }

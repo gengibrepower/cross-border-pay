@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"time"
@@ -92,4 +94,37 @@ func reconciliationJob(pool *pgxpool.Pool, r *reconciliationapp.Reconciler, logg
 		}
 		return nil
 	})
+}
+
+func reconcileArgs(args []string) (calendar.Date, error) {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	day := fs.String("day", "", "the day to reconcile, YYYY-MM-DD in São Paulo")
+	if args[0] != "reconcile" {
+		return calendar.Date{}, fmt.Errorf("unknown command %q; the only one is reconcile -day YYYY-MM-DD", args[0])
+	}
+	if err := fs.Parse(args[1:]); err != nil {
+		return calendar.Date{}, fmt.Errorf("reconcile: %w", err)
+	}
+	d, err := calendar.ParseDate(*day)
+	if err != nil {
+		return calendar.Date{}, fmt.Errorf("reconcile -day: %w", err)
+	}
+	return d, nil
+}
+
+func reconcileDay(ctx context.Context, r *reconciliationapp.Reconciler, day calendar.Date, logger *slog.Logger) error {
+	var errs []error
+	for _, provider := range reconciled {
+		rep, err := r.Reconcile(ctx, provider, day)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		logger.InfoContext(ctx, "provider day reconciled", "provider", provider, "day", day.String(),
+			"divergences", rep.Divergences, "settled", rep.Settled, "opened", rep.Opened)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+	return nil
 }
