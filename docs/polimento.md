@@ -149,12 +149,17 @@ Marque `[x]` ao terminar e anote o número da PR.
   - [x] (#68) Helpers de corpo e de requisição repetidos entre arquivos: `postChargeback`,
     `postRefund`, `getRequest` e semelhantes. Os oito viraram uma linha sobre
     `apiRequest`, e o `getPayment` saiu.
-- [ ] **5. OpenAPI.** Respostas `404`, `409` e `503` com o mesmo bloco inline repetido em
+- [x] **5. OpenAPI.** (#70) Respostas `404`, `409` e `503` com o mesmo bloco inline repetido em
   cada caminho: mover para `components/responses` e referenciar. Os testes de contrato
-  validam contra o arquivo, então qualquer erro aparece.
-- [ ] **6. Pendência de comportamento (PR à parte, não é polimento).** Confirmar se o job
+  validam contra o arquivo, então qualquer erro aparece. Só dois blocos eram iguais de
+  fato: a `404` de pagamento (3 vezes) e a `503` do adquirente (2 vezes). Viraram
+  `PaymentNotFound` e `AcquirerUnavailable`. Os demais têm a descrição de cada endpoint,
+  e no OpenAPI 3.0 um `$ref` não troca a descrição. Os padrões de `evt_` (3 vezes) e
+  `ref_` (2 vezes) viraram `EventId` e `RefundId`. 1.505 → 1.493 linhas.
+- [x] **6. Pendência de comportamento (PR à parte, não é polimento).** Confirmar se o job
   de expiração pega um cartão `authorized` por mais de 7 dias sem captura (decisão 52).
-  Se não pegar, teste e correção.
+  Se não pegar, teste e correção. Pega: `TestUncapturedAuthorizationExpires` cobre, e
+  falha quando o prazo do `Schedule` muda. Nada a corrigir.
 - [ ] **7. READMEs.** O começo deve se entender em 30 segundos: o que é, como rodar e os 5
   testes mais fortes. As seções de resultado ficam mais curtas e as decisões mais
   enxutas. Os números de linhas da seção 2 entram lá, antes e depois.
@@ -178,6 +183,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 16/11/2026 | 3. Duplicação | — | 16.427 | 924 | 19.009 | medido, não compensa |
 | 16/11/2026 | 4. Testes: helpers do `cmd/api` | #68 | 16.427 | 924 | 18.956 | −53 no teste |
 | 16/11/2026 | 4. Testes: `decode[T]` | #69 | 16.427 | 924 | 18.894 | item 4 fechado |
+| 16/11/2026 | 5. OpenAPI e 6. expiração do cartão | #70 | 16.427 | 924 | 18.894 | spec −12; item 6 já coberto |
 
 ## 8. Como retomar numa sessão nova
 

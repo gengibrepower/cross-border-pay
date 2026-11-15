@@ -189,14 +189,7 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
         "404":
-          description: No such payment, as for `GET /v1/payments/{id}`.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+          $ref: "#/components/responses/PaymentNotFound"
         "409":
           description: |
             `payment_not_cancelable`: the payment is not pending, e.g. paid or expired.
@@ -264,14 +257,7 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
         "404":
-          description: No such payment, as for `GET /v1/payments/{id}`.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+          $ref: "#/components/responses/PaymentNotFound"
         "409":
           description: |
             `payment_not_capturable`: not an authorized card payment that is still
@@ -344,14 +330,7 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
         "404":
-          description: No such payment, as for `GET /v1/payments/{id}`.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+          $ref: "#/components/responses/PaymentNotFound"
         "409":
           description: |
             `payment_not_refundable`: the payment is not paid, or already refunded in
@@ -579,14 +558,7 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
         "503":
-          description: "`provider_unavailable`: the acquirer did not answer. Nothing changed; retry."
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+          $ref: "#/components/responses/AcquirerUnavailable"
 
   /v1/chargebacks/{id}/contest:
     post:
@@ -642,14 +614,7 @@ paths:
         "500":
           $ref: "#/components/responses/Problem"
         "503":
-          description: "`provider_unavailable`: the acquirer did not answer. Nothing changed; retry."
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+          $ref: "#/components/responses/AcquirerUnavailable"
 
   /v1/events:
     get:
@@ -878,6 +843,26 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
 
+    PaymentNotFound:
+      description: No such payment, as for `GET /v1/payments/{id}`.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    AcquirerUnavailable:
+      description: "`provider_unavailable`: the acquirer did not answer. Nothing changed; retry."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
   schemas:
     Money:
       type: object
@@ -986,6 +971,14 @@ components:
           type: string
           format: date-time
 
+    EventId:
+      type: string
+      pattern: "^evt_[0-9a-z]{26}$"
+
+    RefundId:
+      type: string
+      pattern: "^ref_[0-9a-z]{26}$"
+
     PaymentId:
       type: string
       pattern: "^pay_[0-9a-z]{26}$"
@@ -1011,8 +1004,7 @@ components:
       required: [id, type, created_at, payment_id, payment_version, data]
       properties:
         id:
-          type: string
-          pattern: "^evt_[0-9a-z]{26}$"
+          $ref: "#/components/schemas/EventId"
         type:
           type: string
           enum: [payment.paid, payment.expired, payment.canceled]
@@ -1048,8 +1040,7 @@ components:
       required: [id, payment_id, status, amount, payer_amount, created_at]
       properties:
         id:
-          type: string
-          pattern: "^ref_[0-9a-z]{26}$"
+          $ref: "#/components/schemas/RefundId"
         payment_id:
           $ref: "#/components/schemas/PaymentId"
         status:
@@ -1076,8 +1067,7 @@ components:
       required: [id, type, created_at, payment_id, payment_version, data]
       properties:
         id:
-          type: string
-          pattern: "^evt_[0-9a-z]{26}$"
+          $ref: "#/components/schemas/EventId"
         type:
           type: string
           enum: [refund.succeeded, refund.failed]
@@ -1095,8 +1085,7 @@ components:
           required: [refund_id, amount, payment_status]
           properties:
             refund_id:
-              type: string
-              pattern: "^ref_[0-9a-z]{26}$"
+              $ref: "#/components/schemas/RefundId"
             amount:
               $ref: "#/components/schemas/Money"
             payment_status:
@@ -1165,8 +1154,7 @@ components:
       required: [id, type, created_at, payment_id, payment_version, data]
       properties:
         id:
-          type: string
-          pattern: "^evt_[0-9a-z]{26}$"
+          $ref: "#/components/schemas/EventId"
         type:
           type: string
           enum: [chargeback.opened, chargeback.won, chargeback.lost]
