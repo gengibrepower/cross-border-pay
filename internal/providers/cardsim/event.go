@@ -31,9 +31,6 @@ const SignatureHeader = "Cardsim-Signature"
 
 var ErrBadEvent = errors.New("cardsim: malformed event")
 
-// Sign returns the signature header for body sent at t (simkit.Sign).
-func Sign(secret []byte, t time.Time, body []byte) string { return simkit.Sign(secret, t, body) }
-
 // VerifyEvent checks the signature header against body and parses the event.
 func VerifyEvent(secret []byte, header string, body []byte, now time.Time) (Event, error) {
 	if err := simkit.Verify(secret, header, body, now); err != nil {
