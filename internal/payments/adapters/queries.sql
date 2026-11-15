@@ -327,3 +327,24 @@ UPDATE chargebacks
 SET status = @status, evidence = coalesce(sqlc.narg(evidence), evidence),
     updated_at = @updated_at, closed_at = sqlc.narg(closed_at)
 WHERE id = @id;
+
+-- name: SucceededAttemptsBetween :many
+-- The daily reconciliation's side: what each provider's attempts became, by when the
+-- gateway learned it. shortcut: no index on (provider, updated_at); add one when a
+-- day's read is slow.
+SELECT id, payment_id, external_id, updated_at FROM payment_attempts
+WHERE provider = @provider AND status = 'succeeded' AND updated_at >= @since AND updated_at < @until;
+
+-- name: SucceededRefundsBetween :many
+SELECT id, external_id, updated_at FROM refunds
+WHERE provider = @provider AND status = 'succeeded' AND updated_at >= @since AND updated_at < @until;
+
+-- name: ChargebacksBetween :many
+-- A won chargeback is two movements: the debit when it opened and the reversal.
+SELECT id, external_id, status, created_at, closed_at FROM chargebacks
+WHERE provider = @provider AND (
+    (created_at >= @since AND created_at < @until)
+    OR (status = 'won' AND closed_at >= @since AND closed_at < @until));
+
+-- name: GetRefundByID :one
+SELECT * FROM refunds WHERE id = @id;

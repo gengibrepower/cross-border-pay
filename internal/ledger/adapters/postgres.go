@@ -242,3 +242,17 @@ func ruleToDB(rule domain.BalanceRule) (string, error) {
 func toUUID(id domain.AccountID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
 }
+
+// AmountsByReference is what each reference moved on the account, signed; a reference
+// that posted nothing there is absent.
+func (Ledger) AmountsByReference(ctx context.Context, db DB, account domain.AccountID, refs []string) (map[string]int64, error) {
+	rows, err := ledgerdb.New(db).AmountsByReference(ctx, ledgerdb.AmountsByReferenceParams{Refs: refs, AccountID: pgtype.UUID{Bytes: account, Valid: true}})
+	if err != nil {
+		return nil, fmt.Errorf("ledger: amounts by reference: %w", err)
+	}
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.Reference] += r.Amount
+	}
+	return out, nil
+}

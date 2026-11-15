@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
@@ -20,12 +21,14 @@ const (
 )
 
 // Line is one movement, from either side. Key is the gateway's own ID for it (attempt
-// or refund); a chargeback has none and is known by ExternalID.
+// or refund); a chargeback has none and is known by ExternalID. At is when that side
+// recorded it; Compare ignores it.
 type Line struct {
 	Kind       MovementKind
 	ExternalID string
 	Key        string
 	Amount     money.Money
+	At         time.Time
 }
 
 func (l *Line) identity() string {

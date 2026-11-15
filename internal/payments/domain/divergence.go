@@ -49,6 +49,8 @@ const (
 	AmountMismatch     DivergenceKind = "amount_mismatch"
 	PaidAfterRejection DivergenceKind = "paid_after_rejection"
 	SecondCharge       DivergenceKind = "second_charge"
+	// MissingInSystem is money a provider's statement shows for no attempt of ours.
+	MissingInSystem DivergenceKind = "missing_in_system"
 )
 
 // DivergenceOf: any other error means the money cannot be posted and the event is not
@@ -70,9 +72,11 @@ func DivergenceOf(err error) (DivergenceKind, bool) {
 
 // ReviewCase lets a person decide where the money goes (decision 8, F7).
 type ReviewCase struct {
-	Kind            DivergenceKind
-	Provider        ProviderName
-	ExternalID      string
+	Kind       DivergenceKind
+	Provider   ProviderName
+	ExternalID string
+	// ProviderKey is the key the provider named when no attempt has it.
+	ProviderKey     string
 	Payment         PaymentID
 	Attempt         AttemptID
 	Amount          money.Money

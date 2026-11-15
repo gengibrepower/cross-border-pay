@@ -20,6 +20,11 @@ type RefundID [16]byte
 
 func (id RefundID) String() string { return publicid.Encode("ref_", id) }
 
+func ParseRefundID(s string) (RefundID, bool) {
+	id, ok := publicid.Parse("ref_", s)
+	return id, ok
+}
+
 type RefundAmounts struct {
 	// Amount leaves the merchant's payable whole: the fee is not returned (F7, decision A).
 	Amount      money.Money

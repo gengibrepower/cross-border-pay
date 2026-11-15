@@ -43,3 +43,11 @@ WHERE code = ANY(@codes::text[]);
 INSERT INTO ledger_accounts (code, currency, balance_rule)
 VALUES (@code, @currency, @balance_rule)
 ON CONFLICT (code) DO NOTHING;
+
+-- name: AmountsByReference :many
+-- What each transaction moved on one account; a reference that posted nothing there
+-- has no row.
+SELECT t.reference::text AS reference, e.amount
+FROM ledger_transactions AS t
+JOIN ledger_entries AS e ON e.transaction_id = t.id
+WHERE t.reference = ANY(@refs::text[]) AND e.account_id = @account_id;

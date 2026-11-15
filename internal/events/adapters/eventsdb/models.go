@@ -198,11 +198,12 @@ type ReviewCase struct {
 	AttemptID       pgtype.UUID
 	Amount          int64
 	Currency        string
-	LedgerReference string
+	LedgerReference pgtype.Text
 	Details         string
 	Status          string
 	CreatedAt       pgtype.Timestamptz
 	ResolvedAt      pgtype.Timestamptz
+	ProviderKey     pgtype.Text
 }
 
 type Settlement struct {

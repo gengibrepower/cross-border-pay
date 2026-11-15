@@ -76,12 +76,15 @@ type reviewQueue struct {
 }
 
 func (r reviewQueue) Open(ctx context.Context, tx pgx.Tx, c *payments.ReviewCase) (bool, error) {
-	payment, attempt := [16]byte(c.Payment), [16]byte(c.Attempt)
-	opened, err := r.reviews.Open(ctx, tx, &reconciliation.Case{
-		Kind: reconciliation.CaseKind(c.Kind), Provider: string(c.Provider), ExternalID: c.ExternalID,
-		Payment: &payment, Attempt: &attempt, Amount: c.Amount, LedgerReference: c.LedgerReference,
-		Details: c.Details, CreatedAt: c.CreatedAt,
-	})
+	cs := reconciliation.Case{
+		Kind: reconciliation.CaseKind(c.Kind), Provider: string(c.Provider), ExternalID: c.ExternalID, ProviderKey: c.ProviderKey,
+		Amount: c.Amount, LedgerReference: c.LedgerReference, Details: c.Details, CreatedAt: c.CreatedAt,
+	}
+	// Money a statement shows for no attempt of ours belongs to no payment.
+	if payment, attempt := [16]byte(c.Payment), [16]byte(c.Attempt); attempt != [16]byte{} {
+		cs.Payment, cs.Attempt = &payment, &attempt
+	}
+	opened, err := r.reviews.Open(ctx, tx, &cs)
 	if err != nil {
 		return false, fmt.Errorf("review queue: %w", err)
 	}

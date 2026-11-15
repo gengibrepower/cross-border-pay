@@ -11,6 +11,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const chargebacksBetween = `-- name: ChargebacksBetween :many
+SELECT id, external_id, status, created_at, closed_at FROM chargebacks
+WHERE provider = $1 AND (
+    (created_at >= $2 AND created_at < $3)
+    OR (status = 'won' AND closed_at >= $2 AND closed_at < $3))
+`
+
+type ChargebacksBetweenParams struct {
+	Provider string
+	Since    pgtype.Timestamptz
+	Until    pgtype.Timestamptz
+}
+
+type ChargebacksBetweenRow struct {
+	ID         pgtype.UUID
+	ExternalID string
+	Status     string
+	CreatedAt  pgtype.Timestamptz
+	ClosedAt   pgtype.Timestamptz
+}
+
+// A won chargeback is two movements: the debit when it opened and the reversal.
+func (q *Queries) ChargebacksBetween(ctx context.Context, arg ChargebacksBetweenParams) ([]ChargebacksBetweenRow, error) {
+	rows, err := q.db.Query(ctx, chargebacksBetween, arg.Provider, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ChargebacksBetweenRow
+	for rows.Next() {
+		var i ChargebacksBetweenRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ExternalID,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ClosedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const chargebacksOfPayment = `-- name: ChargebacksOfPayment :one
 SELECT coalesce(sum(payer_amount), 0)::bigint AS payer_amount,
     coalesce(sum(amount), 0)::bigint AS amount,
@@ -373,6 +421,34 @@ func (q *Queries) GetPayment(ctx context.Context, arg GetPaymentParams) (Payment
 		&i.PaidAt,
 		&i.SettlementID,
 		&i.CapturedQuoteID,
+	)
+	return i, err
+}
+
+const getRefundByID = `-- name: GetRefundByID :one
+SELECT id, payment_id, provider, status, amount, currency, payer_amount, payer_currency, spread, external_id, reason, created_at, updated_at, checks, next_check_at, escalated_at FROM refunds WHERE id = $1
+`
+
+func (q *Queries) GetRefundByID(ctx context.Context, id pgtype.UUID) (Refund, error) {
+	row := q.db.QueryRow(ctx, getRefundByID, id)
+	var i Refund
+	err := row.Scan(
+		&i.ID,
+		&i.PaymentID,
+		&i.Provider,
+		&i.Status,
+		&i.Amount,
+		&i.Currency,
+		&i.PayerAmount,
+		&i.PayerCurrency,
+		&i.Spread,
+		&i.ExternalID,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Checks,
+		&i.NextCheckAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
@@ -1487,6 +1563,52 @@ func (q *Queries) SucceededAttempt(ctx context.Context, paymentID pgtype.UUID) (
 	return i, err
 }
 
+const succeededAttemptsBetween = `-- name: SucceededAttemptsBetween :many
+SELECT id, payment_id, external_id, updated_at FROM payment_attempts
+WHERE provider = $1 AND status = 'succeeded' AND updated_at >= $2 AND updated_at < $3
+`
+
+type SucceededAttemptsBetweenParams struct {
+	Provider string
+	Since    pgtype.Timestamptz
+	Until    pgtype.Timestamptz
+}
+
+type SucceededAttemptsBetweenRow struct {
+	ID         pgtype.UUID
+	PaymentID  pgtype.UUID
+	ExternalID pgtype.Text
+	UpdatedAt  pgtype.Timestamptz
+}
+
+// The daily reconciliation's side: what each provider's attempts became, by when the
+// gateway learned it. shortcut: no index on (provider, updated_at); add one when a
+// day's read is slow.
+func (q *Queries) SucceededAttemptsBetween(ctx context.Context, arg SucceededAttemptsBetweenParams) ([]SucceededAttemptsBetweenRow, error) {
+	rows, err := q.db.Query(ctx, succeededAttemptsBetween, arg.Provider, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SucceededAttemptsBetweenRow
+	for rows.Next() {
+		var i SucceededAttemptsBetweenRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PaymentID,
+			&i.ExternalID,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const succeededRefunds = `-- name: SucceededRefunds :one
 SELECT coalesce(sum(amount), 0)::bigint FROM refunds WHERE payment_id = $1 AND status = 'succeeded'
 `
@@ -1496,6 +1618,43 @@ func (q *Queries) SucceededRefunds(ctx context.Context, paymentID pgtype.UUID) (
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const succeededRefundsBetween = `-- name: SucceededRefundsBetween :many
+SELECT id, external_id, updated_at FROM refunds
+WHERE provider = $1 AND status = 'succeeded' AND updated_at >= $2 AND updated_at < $3
+`
+
+type SucceededRefundsBetweenParams struct {
+	Provider string
+	Since    pgtype.Timestamptz
+	Until    pgtype.Timestamptz
+}
+
+type SucceededRefundsBetweenRow struct {
+	ID         pgtype.UUID
+	ExternalID pgtype.Text
+	UpdatedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) SucceededRefundsBetween(ctx context.Context, arg SucceededRefundsBetweenParams) ([]SucceededRefundsBetweenRow, error) {
+	rows, err := q.db.Query(ctx, succeededRefundsBetween, arg.Provider, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SucceededRefundsBetweenRow
+	for rows.Next() {
+		var i SucceededRefundsBetweenRow
+		if err := rows.Scan(&i.ID, &i.ExternalID, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateAttempt = `-- name: UpdateAttempt :exec
