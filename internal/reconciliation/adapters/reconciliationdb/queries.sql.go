@@ -11,6 +11,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimRun = `-- name: ClaimRun :one
+INSERT INTO reconciliation_runs (provider, day, lease_until) VALUES ($1, $2, $3)
+ON CONFLICT (provider, day) DO UPDATE SET lease_until = excluded.lease_until
+WHERE reconciliation_runs.finished_at IS NULL AND reconciliation_runs.lease_until <= $4
+RETURNING provider
+`
+
+type ClaimRunParams struct {
+	Provider   string
+	Day        pgtype.Date
+	LeaseUntil pgtype.Timestamptz
+	Now        pgtype.Timestamptz
+}
+
+// No row is a day another worker holds or already finished.
+func (q *Queries) ClaimRun(ctx context.Context, arg ClaimRunParams) (string, error) {
+	row := q.db.QueryRow(ctx, claimRun,
+		arg.Provider,
+		arg.Day,
+		arg.LeaseUntil,
+		arg.Now,
+	)
+	var provider string
+	err := row.Scan(&provider)
+	return provider, err
+}
+
+const finishRun = `-- name: FinishRun :exec
+UPDATE reconciliation_runs SET finished_at = $1, divergences = $2, settled = $3, opened = $4
+WHERE provider = $5 AND day = $6
+`
+
+type FinishRunParams struct {
+	FinishedAt  pgtype.Timestamptz
+	Divergences int32
+	Settled     int32
+	Opened      int32
+	Provider    string
+	Day         pgtype.Date
+}
+
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) error {
+	_, err := q.db.Exec(ctx, finishRun,
+		arg.FinishedAt,
+		arg.Divergences,
+		arg.Settled,
+		arg.Opened,
+		arg.Provider,
+		arg.Day,
+	)
+	return err
+}
+
 const heldBetween = `-- name: HeldBetween :many
 SELECT external_id, provider_key, attempt_id, amount, currency, created_at
 FROM review_cases

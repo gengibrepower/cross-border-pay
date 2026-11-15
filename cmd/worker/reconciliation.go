@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/worker"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
+	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
+	reconciliationapp "github.com/gengibrepower/cross-border-pay/internal/reconciliation/app"
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
 )
 
@@ -69,4 +75,21 @@ func (b books) Settle(ctx context.Context, provider string, l *reconciliation.Li
 		return false, fmt.Errorf("books: %w", err)
 	}
 	return settled, nil
+}
+
+// reconciled are the providers whose statements the daily reconciliation reads.
+var reconciled = []string{string(paymentsadapters.PixSimName), string(paymentsadapters.CardSimName), string(paymentsadapters.BoletoSimName)}
+
+func reconciliationJob(pool *pgxpool.Pool, r *reconciliationapp.Reconciler, logger *slog.Logger) worker.Job {
+	runs := reconciliationadapters.NewRuns(pool)
+	return worker.Every("reconciliation", reconciliationInterval, logger, func(ctx context.Context) error {
+		n, err := r.RunDue(ctx, runs, reconciled)
+		if n > 0 {
+			logger.InfoContext(ctx, "provider days reconciled", "count", n)
+		}
+		if err != nil {
+			return fmt.Errorf("reconciliation: %w", err)
+		}
+		return nil
+	})
 }
