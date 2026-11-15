@@ -122,6 +122,8 @@ type (
 	Op        = simkit.Op
 	FaultKind = simkit.FaultKind
 	Fault     = simkit.Fault
+	Statement = simkit.Statement
+	Movement  = simkit.Movement
 )
 
 const (
@@ -133,12 +135,13 @@ const (
 	OpGetRefund     Op = "get_refund"
 	OpRespond       Op = "respond"
 	OpGetChargeback Op = "get_chargeback"
+	OpStatement        = simkit.OpStatement
 )
 
 // Ops a fault can target. A capture of a live authorization is never refused, only cut
 // short.
 var (
-	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpVoid, OpRefund, OpGetRefund, OpRespond, OpGetChargeback}
+	Ops        = []Op{OpAuthorize, OpGet, OpCapture, OpVoid, OpRefund, OpGetRefund, OpRespond, OpGetChargeback, OpStatement}
 	Rejectable = []Op{OpAuthorize, OpRefund}
 )
 

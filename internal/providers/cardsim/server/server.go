@@ -77,6 +77,7 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/authorizations/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
 	mux.HandleFunc("GET /v1/chargebacks/{id}", s.getChargeback)
+	mux.HandleFunc("GET /statements/{date}", simkit.ServeStatement(s.faults, s.logger, s.movements))
 	mux.HandleFunc("POST /v1/chargebacks/{id}/accept", s.accept)
 	mux.HandleFunc("POST /v1/chargebacks/{id}/contest", s.contest)
 	mux.HandleFunc("POST /control/authorizations/{id}/chargebacks", s.openChargeback)
@@ -374,4 +375,27 @@ func validateAuthorize(req *cardsim.Authorize) error {
 		return errors.New("token must start with tok_ and have at most 64 characters: card numbers are never accepted")
 	}
 	return nil
+}
+
+func (s *Simulator) movements() []simkit.Movement {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []simkit.Movement
+	for _, rec := range s.byKey {
+		if a := rec.auth; a.CapturedAt != nil {
+			out = append(out, simkit.Movement{Kind: simkit.Received, ID: a.ID, IdempotencyKey: a.IdempotencyKey, Amount: a.Captured, At: *a.CapturedAt})
+		}
+	}
+	for _, rec := range s.refunds {
+		if rf := rec.refund; rf.Status == cardsim.RefundCompleted {
+			out = append(out, simkit.Movement{Kind: simkit.Refunded, ID: rf.ID, IdempotencyKey: rf.IdempotencyKey, ParentID: rf.AuthorizationID, Amount: rf.Amount, At: rf.CreatedAt})
+		}
+	}
+	for _, cb := range s.chargebacks {
+		out = append(out, simkit.Movement{Kind: simkit.ChargedBack, ID: cb.ID, ParentID: cb.AuthorizationID, Amount: cb.Amount, At: cb.CreatedAt})
+		if cb.Status == cardsim.Won && cb.ClosedAt != nil {
+			out = append(out, simkit.Movement{Kind: simkit.Reversed, ID: cb.ID, ParentID: cb.AuthorizationID, Amount: cb.Amount, At: *cb.ClosedAt})
+		}
+	}
+	return out
 }

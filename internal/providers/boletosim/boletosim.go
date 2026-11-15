@@ -76,6 +76,8 @@ type (
 	Op        = simkit.Op
 	FaultKind = simkit.FaultKind
 	Fault     = simkit.Fault
+	Statement = simkit.Statement
+	Movement  = simkit.Movement
 )
 
 const (
@@ -83,10 +85,11 @@ const (
 	OpGet       Op = "get"
 	OpRefund    Op = "refund"
 	OpGetRefund Op = "get_refund"
+	OpStatement    = simkit.OpStatement
 )
 
 var (
-	Ops        = []Op{OpCreate, OpGet, OpRefund, OpGetRefund}
+	Ops        = []Op{OpCreate, OpGet, OpRefund, OpGetRefund, OpStatement}
 	Rejectable = []Op{OpCreate, OpRefund}
 )
 
