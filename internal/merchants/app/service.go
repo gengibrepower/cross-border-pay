@@ -28,9 +28,7 @@ type StoredKey struct {
 type Store interface {
 	// CreateMerchantWithKey writes both or neither.
 	CreateMerchantWithKey(ctx context.Context, name string, key *domain.NewKey) (domain.MerchantID, error)
-	// FindActiveKey returns ErrKeyNotFound for an unknown or revoked lookup.
 	FindActiveKey(ctx context.Context, lookup string) (StoredKey, error)
-	// RevokeKey returns ErrKeyNotFound if no active key has this lookup.
 	RevokeKey(ctx context.Context, lookup string) error
 }
 

@@ -71,7 +71,7 @@ func (m Money) sameCurrency(other Money) error {
 	return nil
 }
 
-// String formats for logs and errors, e.g. "-20.50 USD". The API uses JSON in minor units.
+// String is for logs and errors; the API uses JSON in minor units.
 func (m Money) String() string {
 	digits := strconv.FormatInt(m.amount, 10)
 	sign := ""

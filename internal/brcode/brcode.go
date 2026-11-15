@@ -1,5 +1,5 @@
-// Package brcode encodes and parses PIX BR Codes: EMV merchant-presented QR payloads
-// as specified by the Banco Central's Manual de Padrões para Iniciação do Pix (v2.10.0).
+// Package brcode follows the Banco Central's Manual de Padrões para Iniciação do Pix
+// (v2.10.0).
 package brcode
 
 import (
@@ -19,7 +19,6 @@ var (
 	ErrInvalidTxID  = errors.New("brcode: txid must be at most 25 letters or digits")
 )
 
-// GUI identifies the PIX arrangement inside a Merchant Account Information template.
 const GUI = "br.gov.bcb.pix"
 
 const (
@@ -62,16 +61,14 @@ const (
 	maxAmount       = 13
 )
 
-// Code is a PIX BR Code. A static code carries the receiver's Key, and optionally an
-// Amount, a TxID and free text in Info. A dynamic code carries instead the URL of the
-// payment's JSON payload, where the amount lives.
+// Code: a dynamic code carries the URL of the payment's JSON payload instead of a Key.
 type Code struct {
 	Key  string
 	URL  string
 	Info string
 	// Amount is in BRL; the zero value means the payer types the amount.
 	Amount money.Money
-	// TxID identifies the payment for reconciliation; empty means none ("***").
+	// TxID empty is written as "***".
 	TxID         string
 	MerchantName string
 	MerchantCity string
@@ -174,7 +171,7 @@ func (c *Code) validate() error {
 	return nil
 }
 
-// validateTxID applies section 2.6.2: letters and digits only, up to 25.
+// validateTxID is section 2.6.2.
 func validateTxID(s string) error {
 	if len(s) > MaxTxID {
 		return fmt.Errorf("%w: got %d characters", ErrInvalidTxID, len(s))
@@ -198,14 +195,12 @@ func printableASCII(s string) bool {
 	return true
 }
 
-// formatAmount writes BRL minor units as the decimal field 54 expects: 10150 is
-// "101.50". Integers only, never a float.
+// formatAmount uses integers only, never a float.
 func formatAmount(m money.Money) string {
 	v := m.Amount()
 	return fmt.Sprintf("%d.%02d", v/100, v%100)
 }
 
-// parseAmount reads field 54: digits, optionally a point and one or two decimals.
 func parseAmount(s string) (money.Money, error) {
 	whole, frac, hasPoint := strings.Cut(s, ".")
 	if whole == "" || !digits(whole) || (hasPoint && (frac == "" || len(frac) > 2 || !digits(frac))) {

@@ -16,23 +16,20 @@ var (
 	ErrLeaseLost  = errors.New("idempotency: lease lost to a resumed request")
 )
 
-// CleanupBatch keeps each delete of the cleanup short; the job loops until a batch
-// comes back short.
+// CleanupBatch keeps each delete short.
 const CleanupBatch = 1000
 
 type Clock interface {
 	Now() time.Time
 }
 
-// Acquired is either a key to run the request under or a response to replay.
 type Acquired struct {
 	Held   *domain.Held
 	Replay *domain.Response
 }
 
 type Store interface {
-	// Acquire inserts the key or, if it exists, applies domain.Decide to it under a
-	// row lock. It returns ErrInProgress or ErrKeyReused for those outcomes.
+	// Acquire applies domain.Decide to an existing key under a row lock.
 	Acquire(ctx context.Context, req *domain.Request, token domain.LeaseToken, now time.Time) (Acquired, error)
 	// Complete returns ErrLeaseLost if another request has resumed the key since.
 	Complete(ctx context.Context, held *domain.Held, resp *domain.Response) error
@@ -40,8 +37,7 @@ type Store interface {
 	// keeps the key and ends the lease at now, so a retry resumes from the recovery
 	// point at once instead of starting over.
 	Fail(ctx context.Context, held *domain.Held, now time.Time) (released bool, err error)
-	// DeleteExpired deletes up to limit keys created at or before cutoff, skipping keys
-	// another transaction has locked.
+	// DeleteExpired skips keys another transaction has locked.
 	DeleteExpired(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
@@ -83,7 +79,6 @@ func (s *Service) Fail(ctx context.Context, held *domain.Held) (released bool, e
 	return released, nil
 }
 
-// Cleanup deletes every key past its TTL (decision 14), batch keys at a time.
 func (s *Service) Cleanup(ctx context.Context, batch int) (int64, error) {
 	cutoff := s.clock.Now().Add(-domain.TTL)
 	var total int64

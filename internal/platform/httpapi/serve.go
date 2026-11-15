@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Serve runs the server on ln until ctx ends, then shuts it down gracefully within
-// shutdownTimeout. name labels the start and stop log lines.
 func Serve(ctx context.Context, name string, ln net.Listener, handler http.Handler, logger *slog.Logger, shutdownTimeout time.Duration) error {
 	srv := &http.Server{
 		Handler:           handler,

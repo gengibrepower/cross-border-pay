@@ -20,14 +20,11 @@ type Clock interface {
 }
 
 type EndpointStore interface {
-	// UpdateEndpoint locks the merchant, hands its endpoint to change (nil for none) and
-	// stores what change returns, in one transaction that it may repeat whole.
+	// UpdateEndpoint may repeat its transaction whole, change included.
 	UpdateEndpoint(ctx context.Context, merchant domain.MerchantID, change func(current *domain.Endpoint) (domain.Endpoint, error)) (domain.Endpoint, error)
-	// Endpoint returns ErrEndpointNotFound for a merchant without one.
 	Endpoint(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error)
 }
 
-// Endpoints registers where merchants receive webhooks.
 type Endpoints struct {
 	store  EndpointStore
 	policy ssrf.Policy
@@ -42,8 +39,7 @@ func NewEndpoints(store EndpointStore, policy ssrf.Policy, signingKey []byte, cl
 	return &Endpoints{store: store, policy: policy, key: signingKey, clock: clock}, nil
 }
 
-// Get returns the merchant's endpoint, disabled or not, or ErrEndpointNotFound. It is
-// how a merchant learns that deliveries stopped (decision 24).
+// Get is how a merchant learns that deliveries stopped (decision 24).
 func (s *Endpoints) Get(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error) {
 	e, err := s.store.Endpoint(ctx, merchant)
 	if err != nil {
@@ -52,9 +48,7 @@ func (s *Endpoints) Get(ctx context.Context, merchant domain.MerchantID) (domain
 	return e, nil
 }
 
-// Put registers or changes the merchant's endpoint, with times in the database's
-// microseconds. secret is empty unless the change shows it (domain.Apply). A URL the
-// policy refuses is ssrf.ErrInvalidURL or ssrf.ErrForbiddenURL.
+// Put keeps times in the database's microseconds.
 func (s *Endpoints) Put(ctx context.Context, merchant domain.MerchantID, c domain.Change) (e domain.Endpoint, secret string, err error) {
 	if _, err := s.policy.ValidateURL(c.URL); err != nil {
 		return domain.Endpoint{}, "", fmt.Errorf("merchants: %w", err)

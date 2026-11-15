@@ -62,8 +62,7 @@ func (p *Postgres) UpdateEndpoint(ctx context.Context, merchant domain.MerchantI
 	return saved, nil
 }
 
-// Endpoint reads the merchant's endpoint outside any transaction: the delivery worker
-// only needs where to post and which secrets sign, as of now.
+// Endpoint reads outside any transaction: the worker needs it only as of now.
 func (p *Postgres) Endpoint(ctx context.Context, merchant domain.MerchantID) (domain.Endpoint, error) {
 	row, err := merchantsdb.New(p.pool).GetWebhookEndpoint(ctx, pgtype.UUID{Bytes: merchant, Valid: true})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -75,7 +74,6 @@ func (p *Postgres) Endpoint(ctx context.Context, merchant domain.MerchantID) (do
 	return restoreEndpoint(&row), nil
 }
 
-// EndpointSucceeded ends the merchant's run of failures, if there was one.
 func (p *Postgres) EndpointSucceeded(ctx context.Context, merchant domain.MerchantID) error {
 	if err := merchantsdb.New(p.pool).RecordEndpointSuccess(ctx, pgtype.UUID{Bytes: merchant, Valid: true}); err != nil {
 		return fmt.Errorf("merchants: record endpoint success: %w", err)
@@ -83,9 +81,7 @@ func (p *Postgres) EndpointSucceeded(ctx context.Context, merchant domain.Mercha
 	return nil
 }
 
-// EndpointFailed records a failed delivery at now and reports whether this one
-// disabled the endpoint: only one of many concurrent failures does. A disabled or
-// missing endpoint is left as it is.
+// EndpointFailed: only one of many concurrent failures reports disabling.
 func (p *Postgres) EndpointFailed(ctx context.Context, merchant domain.MerchantID, reason string, now time.Time) (bool, error) {
 	disabled, err := merchantsdb.New(p.pool).RecordEndpointFailure(ctx, merchantsdb.RecordEndpointFailureParams{
 		MerchantID:    pgtype.UUID{Bytes: merchant, Valid: true},
@@ -102,8 +98,7 @@ func (p *Postgres) EndpointFailed(ctx context.Context, merchant domain.MerchantI
 	return disabled, nil
 }
 
-// utc keeps the API in UTC (section 4.9): pgx reads timestamptz in the local zone. A
-// NULL stays the zero time.
+// utc: pgx reads timestamptz in the local zone (section 4.9).
 func utc(t pgtype.Timestamptz) time.Time {
 	if !t.Valid {
 		return time.Time{}
@@ -111,7 +106,6 @@ func utc(t pgtype.Timestamptz) time.Time {
 	return t.Time.UTC()
 }
 
-// disabledReason fits the column, cut at a rune boundary.
 func disabledReason(last string) string {
 	s := fmt.Sprintf("only failures for %.0f h; last: %s", domain.DisableAfter.Hours(), last)
 	if len(s) <= maxReasonLength {

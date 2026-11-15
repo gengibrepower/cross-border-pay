@@ -24,9 +24,8 @@ const (
 	mustStayNonNegative = "must_stay_non_negative"
 )
 
-// Ledger is the Postgres ledger of decision 10. It keeps no state: every method takes
-// the connection or transaction to run on, so callers can post inside their own
-// transaction together with other writes.
+// Ledger is decision 10. Every method takes the caller's connection or transaction, so
+// a posting commits with the caller's other writes.
 type Ledger struct{}
 
 func (Ledger) CreateAccount(ctx context.Context, db DB, code string, currency money.Currency, rule domain.BalanceRule) (domain.Account, error) {
@@ -49,8 +48,6 @@ func (Ledger) CreateAccount(ctx context.Context, db DB, code string, currency mo
 	return account, nil
 }
 
-// AccountsByCode returns the accounts with these codes; a code with no account is
-// ErrUnknownAccount.
 func (Ledger) AccountsByCode(ctx context.Context, db DB, codes ...string) (map[string]domain.Account, error) {
 	rows, err := ledgerdb.New(db).AccountsByCode(ctx, codes)
 	if err != nil {
@@ -72,8 +69,7 @@ func (Ledger) AccountsByCode(ctx context.Context, db DB, codes ...string) (map[s
 	return accounts, nil
 }
 
-// EnsureAccount returns the account with this code, creating it on first use. An
-// existing account with another currency or rule is ErrInvalidAccount, never reused.
+// EnsureAccount never reuses an account with another currency or rule.
 func (l Ledger) EnsureAccount(ctx context.Context, db DB, code string, currency money.Currency, rule domain.BalanceRule) (domain.Account, error) {
 	dbRule, err := ruleToDB(rule)
 	if err != nil {

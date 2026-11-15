@@ -16,7 +16,7 @@ var (
 	ErrForbiddenURL = errors.New("ssrf: webhook URL points inside the network")
 )
 
-// MaxURLLength matches the column that stores it.
+// MaxURLLength matches the column.
 const MaxURLLength = 2048
 
 // Policy says what may be reached. AllowPrivate is for development and the GameStore
@@ -50,7 +50,6 @@ var (
 	internalNames = []string{"localhost", ".localhost", ".internal", ".local"}
 )
 
-// AllowedIP reports whether a webhook may connect to ip.
 func (p Policy) AllowedIP(ip netip.Addr) bool {
 	// ::ffff:10.0.0.1 is 10.0.0.1 to the kernel.
 	ip = ip.Unmap()
@@ -76,9 +75,7 @@ func (p Policy) AllowedIP(ip netip.Addr) bool {
 	return true
 }
 
-// ValidateURL checks a webhook URL without resolving it: syntax, scheme, no
-// credentials, and a host that is not an internal name or IP. The IPs a name resolves
-// to are checked when connecting.
+// ValidateURL does not resolve: the IPs a name resolves to are checked when connecting.
 func (p Policy) ValidateURL(raw string) (*url.URL, error) {
 	if raw == "" || len(raw) > MaxURLLength {
 		return nil, fmt.Errorf("%w: must have 1 to %d characters", ErrInvalidURL, MaxURLLength)
@@ -123,8 +120,7 @@ func internalName(host string) bool {
 	return false
 }
 
-// numericHost reports a host whose every label is a number, in decimal or 0x hex, as
-// inet_aton reads them.
+// numericHost reads labels as inet_aton does, in decimal or 0x hex.
 func numericHost(host string) bool {
 	for label := range strings.SplitSeq(host, ".") {
 		digits, hex := strings.CutPrefix(label, "0x")

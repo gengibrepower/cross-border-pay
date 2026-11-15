@@ -11,8 +11,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
-// SaveQuote stores every computed amount of q. It runs on the caller's connection or
-// transaction, so the quote commits together with whatever it prices.
+// SaveQuote runs on the caller's transaction, so the quote commits with what it prices.
 func SaveQuote(ctx context.Context, db fxdb.DBTX, q *domain.Quote) (domain.QuoteID, error) {
 	id, err := fxdb.New(db).InsertQuote(ctx, fxdb.InsertQuoteParams{
 		BaseCurrency:  q.BaseRate().Base().Code(),
@@ -36,8 +35,7 @@ func SaveQuote(ctx context.Context, db fxdb.DBTX, q *domain.Quote) (domain.Quote
 	return id.Bytes, nil
 }
 
-// LoadQuotes returns the stored quotes with these IDs; a missing ID is not an error, it
-// is just absent from the map.
+// LoadQuotes leaves a missing ID out of the map instead of failing.
 func LoadQuotes(ctx context.Context, db fxdb.DBTX, ids []domain.QuoteID) (map[domain.QuoteID]domain.Quote, error) {
 	keys := make([]pgtype.UUID, len(ids))
 	for i, id := range ids {

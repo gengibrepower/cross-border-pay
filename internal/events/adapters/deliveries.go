@@ -15,7 +15,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/events/domain"
 )
 
-// maxErrorLength matches the column that keeps the last delivery error.
+// maxErrorLength matches the column.
 const maxErrorLength = 500
 
 // Deliveries is the outbox seen by the worker that sends it. Each call is its own
@@ -28,8 +28,6 @@ func NewDeliveries(pool *pgxpool.Pool) *Deliveries {
 	return &Deliveries{pool: pool}
 }
 
-// Claim takes up to perMerchant due events of each merchant, those with the oldest
-// first, at most maxEvents in all, and leases them until leaseUntil.
 func (d *Deliveries) Claim(ctx context.Context, now, leaseUntil time.Time, perMerchant, maxEvents int) ([]domain.Delivery, error) {
 	rows, err := eventsdb.New(d.pool).ClaimDueDeliveries(ctx, eventsdb.ClaimDueDeliveriesParams{
 		Now:          timestamptz(now),
@@ -57,7 +55,6 @@ func (d *Deliveries) Claim(ctx context.Context, now, leaseUntil time.Time, perMe
 	return out, nil
 }
 
-// Delivered records a 2xx. It reports false when the event was no longer pending.
 func (d *Deliveries) Delivered(ctx context.Context, dl *domain.Delivery, statusCode int, now time.Time) (bool, error) {
 	n, err := eventsdb.New(d.pool).MarkDelivered(ctx, eventsdb.MarkDeliveredParams{
 		ID: pgtype.UUID{Bytes: dl.Event.ID, Valid: true}, StatusCode: statusInt4(statusCode), Now: timestamptz(now),
@@ -68,8 +65,6 @@ func (d *Deliveries) Delivered(ctx context.Context, dl *domain.Delivery, statusC
 	return n == 1, nil
 }
 
-// Reschedule records a failed attempt and when to try again. statusCode is 0 when no
-// answer came. It reports false when the claim was no longer current.
 func (d *Deliveries) Reschedule(ctx context.Context, dl *domain.Delivery, statusCode int, reason string, at time.Time) (bool, error) {
 	n, err := eventsdb.New(d.pool).RescheduleDelivery(ctx, eventsdb.RescheduleDeliveryParams{
 		ID: pgtype.UUID{Bytes: dl.Event.ID, Valid: true}, Attempts: int32(dl.Attempt), //nolint:gosec // G115: read from an integer column.
@@ -81,8 +76,6 @@ func (d *Deliveries) Reschedule(ctx context.Context, dl *domain.Delivery, status
 	return n == 1, nil
 }
 
-// Fail gives the event up after a failed attempt. It reports false when the claim was
-// no longer current.
 func (d *Deliveries) Fail(ctx context.Context, dl *domain.Delivery, statusCode int, reason string, now time.Time) (bool, error) {
 	n, err := eventsdb.New(d.pool).FailDelivery(ctx, eventsdb.FailDeliveryParams{
 		ID: pgtype.UUID{Bytes: dl.Event.ID, Valid: true}, Attempts: int32(dl.Attempt), //nolint:gosec // G115: read from an integer column.
@@ -104,7 +97,6 @@ func (d *Deliveries) DeleteDelivered(ctx context.Context, cutoff time.Time, limi
 	return n, nil
 }
 
-// List returns one page of the merchant's events, newest first.
 func (d *Deliveries) List(ctx context.Context, q *domain.ListQuery) ([]domain.Listed, error) {
 	rows, err := eventsdb.New(d.pool).ListOutboxEvents(ctx, eventsdb.ListOutboxEventsParams{
 		MerchantID:     pgtype.UUID{Bytes: q.Merchant, Valid: true},
@@ -126,8 +118,6 @@ func (d *Deliveries) List(ctx context.Context, q *domain.ListQuery) ([]domain.Li
 	return out, nil
 }
 
-// Redeliver makes the merchant's event due at now, from any status, in a new retry
-// window. It returns domain.ErrOutgoingNotFound for an ID the merchant has no event at.
 func (d *Deliveries) Redeliver(ctx context.Context, merchant, id [16]byte, now time.Time) (domain.Listed, error) {
 	r, err := eventsdb.New(d.pool).RedeliverOutboxEvent(ctx, eventsdb.RedeliverOutboxEventParams{
 		ID: pgtype.UUID{Bytes: id, Valid: true}, MerchantID: pgtype.UUID{Bytes: merchant, Valid: true}, Now: timestamptz(now),
@@ -144,8 +134,7 @@ func (d *Deliveries) Redeliver(ctx context.Context, merchant, id [16]byte, now t
 	}), nil
 }
 
-// outboxRow is the shape both ListOutboxEventsRow and RedeliverOutboxEventRow have;
-// sqlc gives each query its own type.
+// outboxRow exists because sqlc gives each query its own row type.
 type outboxRow struct {
 	id, merchant   pgtype.UUID
 	typ, subject   string
@@ -174,8 +163,7 @@ func listed(r *outboxRow) domain.Listed {
 	}
 }
 
-// utc keeps times in UTC (section 4.9): pgx reads timestamptz in the local zone. A NULL
-// stays the zero time.
+// utc: pgx reads timestamptz in the local zone (section 4.9).
 func utc(t pgtype.Timestamptz) time.Time {
 	if !t.Valid {
 		return time.Time{}

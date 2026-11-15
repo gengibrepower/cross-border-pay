@@ -18,7 +18,6 @@ import (
 
 const eventPrefix = "evt_"
 
-// EventsHandler serves GET /v1/events and POST /v1/events/{id}/redeliver.
 type EventsHandler struct {
 	events *app.Events
 	logger *slog.Logger
@@ -33,8 +32,8 @@ func (h *EventsHandler) Register(mux *http.ServeMux, auth func(http.Handler) htt
 	mux.Handle("POST /v1/events/{id}/redeliver", auth(http.HandlerFunc(h.redeliver)))
 }
 
-// eventResponse carries the event as the bytes every delivery sends, so the merchant
-// sees exactly the body it would receive, next to where its delivery stands.
+// eventResponse carries the bytes every delivery sends, so the merchant sees exactly
+// the body it would receive.
 type eventResponse struct {
 	Event    json.RawMessage  `json:"event"`
 	Delivery deliveryResponse `json:"delivery"`

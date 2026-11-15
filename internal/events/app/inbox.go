@@ -1,6 +1,5 @@
-// Package app receives provider events into the inbox and runs the worker that applies
-// them. It knows no provider and no module: verifiers and handlers are plugged in by
-// cmd/api and cmd/worker.
+// Package app knows no provider and no module: verifiers and handlers are plugged in
+// by cmd/api and cmd/worker.
 package app
 
 import (
@@ -18,18 +17,14 @@ import (
 
 var (
 	ErrUnknownProvider = errors.New("events: unknown provider")
-	// ErrUnauthenticated is a signature that does not prove the provider sent the event.
 	ErrUnauthenticated = errors.New("events: event not authenticated")
-	// ErrMalformedEvent is an authentic body the gateway cannot read.
-	ErrMalformedEvent = errors.New("events: malformed event")
+	ErrMalformedEvent  = errors.New("events: malformed event")
 )
 
 type Clock interface {
 	Now() time.Time
 }
 
-// Verifier checks one provider's signature and names the event. header reads a request
-// header; it returns ErrUnauthenticated or ErrMalformedEvent, wrapped.
 type Verifier interface {
 	Verify(header func(string) string, body []byte, now time.Time) (domain.Incoming, error)
 }
@@ -51,8 +46,7 @@ func NewInbox(store Store, verifiers map[string]Verifier, clock Clock, logger *s
 	return &Inbox{store: store, verifiers: verifiers, clock: clock, logger: logger}
 }
 
-// Receive verifies and stores the event; a duplicate is not an error, so the provider
-// stops redelivering it.
+// Receive: a duplicate is not an error, so the provider stops redelivering it.
 func (i *Inbox) Receive(ctx context.Context, provider string, header func(string) string, body []byte) error {
 	v, ok := i.verifiers[provider]
 	if !ok {
@@ -80,21 +74,18 @@ func (i *Inbox) Receive(ctx context.Context, provider string, header func(string
 	return nil
 }
 
-// Result is how a handler ended an event. Subject names what it changed, such as an
-// attempt; Reason explains a Retry or a Failed.
 type Result struct {
 	Outcome domain.Outcome
 	Subject string
 	Reason  string
 }
 
-// Handler applies an event inside tx, the transaction that also records its new
-// status, so the two commit together or not at all.
+// Handler runs in the transaction that records the event's new status, so the two
+// commit together or not at all.
 type Handler interface {
 	Handle(ctx context.Context, tx pgx.Tx, e *domain.Event) (Result, error)
 }
 
-// Done is an event the queue finished one attempt at.
 type Done struct {
 	Event  domain.Event
 	Result Result
@@ -102,9 +93,8 @@ type Done struct {
 }
 
 type Queue interface {
-	// ProcessNext claims the oldest due event, runs handle on it and records the
-	// result, all in one transaction. found is false when nothing is due. If handle
-	// fails, nothing is recorded and Done carries the event for Retry.
+	// ProcessNext: if handle fails, nothing is recorded and Done carries the event for
+	// Retry.
 	ProcessNext(ctx context.Context, now time.Time, handle func(context.Context, pgx.Tx, *domain.Event) (Result, error)) (d Done, found bool, err error)
 	// Retry records a failed attempt outside the rolled-back transaction.
 	Retry(ctx context.Context, e *domain.Event, reason string, now time.Time) (domain.Status, error)
@@ -124,8 +114,8 @@ func NewProcessor(queue Queue, handler Handler, clock Clock, logger *slog.Logger
 	return &Processor{queue: queue, handler: handler, clock: clock, logger: logger}
 }
 
-// Process handles up to limit due events, each in its own transaction, so one bad
-// event does not hold back the others. It returns how many it took.
+// Process gives each event its own transaction, so one bad event does not hold back
+// the others.
 func (p *Processor) Process(ctx context.Context, limit int) (int, error) {
 	var errs []error
 	n := 0

@@ -38,8 +38,7 @@ import (
 	webhooksapp "github.com/gengibrepower/cross-border-pay/internal/webhooks/app"
 )
 
-// api holds the /v1 routes, built from every module. This is the only place that
-// knows how the modules fit together.
+// api is the only place that knows how the modules fit together.
 type api struct {
 	payments   *paymentsadapters.Handler
 	events     *eventsadapters.Handler
@@ -49,14 +48,12 @@ type api struct {
 	idempotent func(http.Handler) http.Handler
 }
 
-// deps are what the API needs from outside the database: the base rate, the clock and
-// the providers, which tests replace.
+// deps are what tests replace.
 type deps struct {
-	usdbrl    string
-	clock     moduleClock
-	calendar  *calendar.Calendar
-	providers *paymentsapp.Providers
-	// disputers take the merchant's answers to chargebacks, by provider.
+	usdbrl          string
+	clock           moduleClock
+	calendar        *calendar.Calendar
+	providers       *paymentsapp.Providers
 	disputers       map[payments.ProviderName]paymentsapp.Disputer
 	providerTimeout time.Duration
 	webhookSecret   string
@@ -134,8 +131,7 @@ func (a *api) register(mux *http.ServeMux) {
 	a.outbox.Register(mux, a.auth)
 }
 
-// pixsimVerifier is the bridge that keeps events from importing the simulator: it
-// turns the simulator's signature errors into the inbox's.
+// pixsimVerifier keeps events from importing the simulator.
 type pixsimVerifier struct {
 	secret []byte
 }
@@ -152,7 +148,6 @@ func (v pixsimVerifier) Verify(header func(string) string, body []byte, now time
 	return events.Incoming{ExternalID: e.ID, Type: string(e.Type), Payload: body, Signature: sig}, nil
 }
 
-// boletosimVerifier is pixsimVerifier for the boleto simulator.
 type boletosimVerifier struct {
 	secret []byte
 }
@@ -172,7 +167,6 @@ func (v boletosimVerifier) Verify(header func(string) string, body []byte, now t
 	return events.Incoming{ExternalID: e.ID, Type: string(e.Type), Payload: body, Signature: sig}, nil
 }
 
-// cardsimVerifier is pixsimVerifier for the card simulator's chargeback events.
 type cardsimVerifier struct {
 	secret []byte
 }
@@ -192,7 +186,7 @@ func (v cardsimVerifier) Verify(header func(string) string, body []byte, now tim
 	return events.Incoming{ExternalID: e.ID, Type: string(e.Type), Payload: body, Signature: sig}, nil
 }
 
-// merchantFrom is the bridge that keeps payments from importing merchants.
+// merchantFrom keeps payments from importing merchants.
 func merchantFrom(ctx context.Context) (payments.MerchantID, bool) {
 	p, ok := merchantsadapters.PrincipalFrom(ctx)
 	return payments.MerchantID(p.MerchantID), ok
@@ -203,8 +197,7 @@ func idempotencyMerchant(ctx context.Context) (idempotency.MerchantID, bool) {
 	return idempotency.MerchantID(p.MerchantID), ok
 }
 
-// merchantOutbox is the bridge that keeps payments from importing events: it hands
-// payments' events to the events outbox, in payments' transaction.
+// merchantOutbox keeps payments from importing events.
 type merchantOutbox struct {
 	outbox eventsadapters.Outbox
 }
@@ -220,8 +213,7 @@ func (o merchantOutbox) Append(ctx context.Context, tx pgx.Tx, e *payments.Merch
 	return nil
 }
 
-// reviewQueue is the bridge that keeps payments from importing reconciliation: it opens
-// payments' review cases in reconciliation's queue, in payments' transaction.
+// reviewQueue keeps payments from importing reconciliation.
 type reviewQueue struct {
 	reviews reconciliationadapters.Reviews
 }

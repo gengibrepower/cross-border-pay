@@ -17,8 +17,6 @@ var (
 	ErrDuplicateReference = errors.New("ledger: reference already posted")
 )
 
-// Entry is a signed amount on one account: positive and negative entries of the same
-// currency cancel out inside a transaction (section 3.3).
 type Entry struct {
 	account AccountID
 	amount  money.Money
@@ -71,7 +69,7 @@ func NewTransaction(reference string, entries ...Entry) (Transaction, error) {
 
 func (t Transaction) Reference() string { return t.reference }
 
-// Entries returns a copy, so callers cannot edit a validated transaction.
+// Entries copies, so callers cannot edit a validated transaction.
 func (t Transaction) Entries() []Entry { return slices.Clone(t.entries) }
 
 // LockOrder lists each account once, ascending, the order the database locks them in

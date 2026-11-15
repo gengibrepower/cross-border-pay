@@ -1,7 +1,5 @@
-// Package cpf validates the Cadastro de Pessoas Físicas, the Brazilian taxpayer
-// number a boleto's payer is identified by (decision 54). A CPF never prints whole: its
-// String and its log value are masked, and only Digits gives the number to whoever
-// must send it on.
+// Package cpf is decision 54. A CPF never prints whole: String and the log value are
+// masked, and only Digits gives the number to whoever must send it on.
 package cpf
 
 import (
@@ -15,13 +13,12 @@ var ErrInvalid = errors.New("cpf: invalid CPF")
 
 const Length = 11
 
-// CPF is 11 digits whose last two check the first nine. The zero value is not valid.
+// CPF's zero value is not valid.
 type CPF struct {
 	digits string
 }
 
-// Parse accepts the 11 digits bare or punctuated as 123.456.789-09. Eleven equal
-// digits pass the check digits but are not issued, so they are refused too.
+// Parse refuses eleven equal digits: they pass the check digits but are not issued.
 func Parse(s string) (CPF, error) {
 	bare := strings.NewReplacer(".", "", "-", "").Replace(strings.TrimSpace(s))
 	if len(bare) != Length {
@@ -41,7 +38,7 @@ func Parse(s string) (CPF, error) {
 	return CPF{digits: bare}, nil
 }
 
-// New completes nine digits with their check digits, which is how test CPFs are made.
+// New is how test CPFs are made.
 func New(base string) (CPF, error) {
 	if len(base) != Length-2 {
 		return CPF{}, fmt.Errorf("%w: a base has %d digits", ErrInvalid, Length-2)
@@ -50,8 +47,7 @@ func New(base string) (CPF, error) {
 	return Parse(withFirst + string(checkDigit(withFirst)))
 }
 
-// checkDigit is the Receita Federal's modulo 11: the digits weigh from len+1 down to
-// 2; a remainder below 2 gives 0, any other r gives 11 - r.
+// checkDigit is the Receita Federal's modulo 11.
 func checkDigit(s string) byte {
 	sum := 0
 	for i := range len(s) {
@@ -66,10 +62,9 @@ func checkDigit(s string) byte {
 
 func (c CPF) IsZero() bool { return c.digits == "" }
 
-// Digits is the bare number, for the provider that registers the boleto.
 func (c CPF) Digits() string { return c.digits }
 
-// Masked keeps only the middle six digits, as Brazilian receipts print it.
+// Masked is how Brazilian receipts print it.
 func (c CPF) Masked() string {
 	if c.IsZero() {
 		return ""

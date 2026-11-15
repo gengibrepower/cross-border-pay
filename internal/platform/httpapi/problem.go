@@ -36,8 +36,8 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, p *Problem) {
 	_ = json.NewEncoder(w).Encode(p)
 }
 
-// WriteInternalError logs err with the request ID and answers 500 without detail, so
-// internal messages never reach the client.
+// WriteInternalError answers without detail, so internal messages never reach the
+// client.
 func WriteInternalError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
 	logger.ErrorContext(r.Context(), "internal error",
 		"error", err, "request_id", RequestID(r.Context()), "method", r.Method, "path", r.URL.Path)

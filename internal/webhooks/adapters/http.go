@@ -22,9 +22,8 @@ var ErrForbiddenAddress = errors.New("webhooks: address not allowed")
 // itself means nothing, only the status does.
 const maxDrain = 64 << 10
 
-// HTTPSender posts webhooks. The URL was checked when the merchant registered it, but
-// its name may resolve somewhere else now (DNS rebinding), so every IP is checked again
-// when connecting, after DNS, with the same policy.
+// HTTPSender checks every IP again when connecting, after DNS: the name may resolve
+// somewhere else now (DNS rebinding).
 type HTTPSender struct {
 	client *http.Client
 	policy ssrf.Policy
