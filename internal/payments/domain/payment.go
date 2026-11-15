@@ -20,16 +20,12 @@ var (
 	ErrInvalidAmount       = errors.New("payments: amount must be positive")
 	ErrInvalidReference    = errors.New("payments: reference must have 1 to 100 characters")
 	ErrInvalidPaymentID    = errors.New("payments: invalid payment ID")
-	// ErrCardRequired is a card payment without a card token, and ErrCardNotAllowed a
-	// card token on a payment of another method.
-	ErrCardRequired   = errors.New("payments: a card payment needs a card token")
-	ErrCardNotAllowed = errors.New("payments: only a card payment takes a card token")
-	// ErrInvalidCardToken is anything that is not a token, a card number included:
-	// no card number is ever accepted or stored (section 7, PCI DSS).
+	ErrCardRequired        = errors.New("payments: a card payment needs a card token")
+	ErrCardNotAllowed      = errors.New("payments: only a card payment takes a card token")
+	// No card number is ever accepted or stored (section 7, PCI DSS).
 	ErrInvalidCardToken = errors.New("payments: card token must be tok_ and 1 to 60 letters, digits or underscores")
 )
 
-// ChargeCurrency is the only currency merchants charge in; payers pay in BRL.
 var ChargeCurrency = money.USD
 
 // MerchantID is payments' own name for the merchant a payment belongs to, so this
@@ -38,8 +34,8 @@ type MerchantID [16]byte
 
 type PaymentID [16]byte
 
-// String is the public ID (decision 37): "pay_" and the UUIDv7 in Crockford base32,
-// whose alphabet is in ASCII order, so IDs sort by creation time as strings too.
+// String is decision 37: the UUIDv7 in Crockford base32, whose alphabet is in ASCII
+// order, so IDs sort by creation time as strings too.
 func (id PaymentID) String() string { return publicid.Encode("pay_", id) }
 
 func ParsePaymentID(s string) (PaymentID, error) {
@@ -61,26 +57,20 @@ const (
 // PixQuoteValidity is decision 44 for PIX.
 const PixQuoteValidity = 30 * time.Minute
 
-// CardQuoteValidity bounds a card payment captured automatically. Decision 44 prices a
-// card at the moment of its authorization, and with automatic capture (decision 18)
-// the payment is authorized and captured as it is created, so the quote is used at
-// once; a declined card leaves the payment pending and it expires as a PIX one would.
+// CardQuoteValidity is for automatic capture (decision 18), where the quote is used as
+// the payment is created; a declined card leaves it pending to expire as a PIX would.
 const CardQuoteValidity = 30 * time.Minute
 
-// CardAuthorizationValidity is how long an authorization waits for its capture
-// (decision 52). A payment captured separately keeps its quote that long: the rate is
-// locked when the card is authorized, and the capture only says how much of it to take.
+// CardAuthorizationValidity is decision 52. A separate capture keeps the quote that
+// long: the rate is locked at authorization, and the capture only says how much to take.
 const CardAuthorizationValidity = 7 * 24 * time.Hour
 
-// CardInput is the payer's card as a merchant gives it: a token, never a number, and
-// whether the merchant captures it later instead of at once.
 type CardInput struct {
 	Token         string
 	ManualCapture bool
 }
 
-// ParseMethod accepts every method the domain knows. Whether one is offered is the
-// providers' call: a method with no provider routed is ErrUnsupportedMethod there.
+// ParseMethod accepts every known method; whether one is offered is the providers' call.
 func ParseMethod(s string) (Method, error) {
 	switch m := Method(s); m {
 	case Pix, Boleto, Card:
@@ -90,7 +80,6 @@ func ParseMethod(s string) (Method, error) {
 	}
 }
 
-// Draft is a validated request for a payment, not yet stored.
 type Draft struct {
 	merchant  MerchantID
 	method    Method
@@ -101,8 +90,6 @@ type Draft struct {
 	due       calendar.Date
 }
 
-// NewDraft validates a payment request. card is required for a card payment and
-// refused for any other, and payer likewise for a boleto.
 func NewDraft(merchant MerchantID, method string, amount money.Money, reference string, card CardInput, payer PayerInput) (Draft, error) {
 	m, err := ParseMethod(method)
 	if err != nil {
@@ -153,7 +140,6 @@ func checkCard(m Method, card CardInput) error {
 	return nil
 }
 
-// ValidCardToken accepts "tok_" and 1 to 60 ASCII letters, digits or underscores.
 func ValidCardToken(token string) bool {
 	rest, ok := strings.CutPrefix(token, "tok_")
 	if !ok || len(rest) < 1 || len(rest) > 60 {
@@ -176,17 +162,13 @@ func (d *Draft) Amount() money.Money { return d.amount }
 
 func (d *Draft) Reference() string { return d.reference }
 
-// Card is the zero value unless the method is card.
 func (d *Draft) Card() CardInput { return d.card }
 
-// Boleto is the zero value unless the method is boleto; its due date is set by
-// Schedule.
+// Boleto's due date is set by Schedule.
 func (d *Draft) Boleto() BoletoInput { return BoletoInput{Payer: d.payer, Due: d.due} }
 
-// Schedule fixes the payment's terms as it is created at now and returns how long it
-// may wait for its payer: for a card captured separately, as long as the authorization
-// lasts; for a boleto, until the end of its last day to be received, with the due date
-// set on the draft.
+// Schedule returns how long the payment may wait for its payer, and sets a boleto's
+// due date on the draft.
 func (d *Draft) Schedule(cal *calendar.Calendar, now time.Time) time.Duration {
 	switch {
 	case d.method == Boleto:
@@ -202,7 +184,7 @@ func (d *Draft) Schedule(cal *calendar.Calendar, now time.Time) time.Duration {
 	}
 }
 
-// Payment is a stored payment. Its status only changes through Transition.
+// Payment's status only changes through Transition.
 type Payment struct {
 	id        PaymentID
 	merchant  MerchantID

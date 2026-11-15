@@ -88,8 +88,8 @@ var attemptTransitions = map[attemptEdge]AttemptStatus{
 	{AttemptAccepted, Ambiguous}: AttemptUnknown,
 }
 
-// attemptReflected lists duplicates: a retried send, a lookup that times out again, a
-// create response arriving after the payment event.
+// attemptReflected: a retried send, a lookup that times out again, a create response
+// after the payment event.
 var attemptReflected = map[attemptEdge]bool{
 	{AttemptSent, Send}:         true,
 	{AttemptUnknown, Ambiguous}: true,
@@ -99,8 +99,6 @@ var attemptReflected = map[attemptEdge]bool{
 	{AttemptSucceeded, Succeed}: true,
 }
 
-// TransitionAttempt returns the status after the event. changed is false for a
-// duplicate the status already reflects.
 func TransitionAttempt(from AttemptStatus, e AttemptEvent) (to AttemptStatus, changed bool, err error) {
 	if next, ok := attemptTransitions[attemptEdge{from, e}]; ok {
 		return next, true, nil

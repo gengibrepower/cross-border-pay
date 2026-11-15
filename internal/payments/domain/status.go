@@ -7,8 +7,7 @@ import (
 
 var (
 	ErrInvalidTransition = errors.New("payments: invalid transition")
-	// ErrLatePayment is a confirmation for a payment that can no longer be paid. The
-	// money still arrived, so the caller must not drop it (decision 8).
+	// ErrLatePayment: the money still arrived, so the caller must not drop it (decision 8).
 	ErrLatePayment   = errors.New("payments: confirmation after the payment closed")
 	ErrUnknownStatus = errors.New("payments: unknown status")
 )
@@ -109,8 +108,6 @@ var reflected = map[edge]bool{
 	{ChargedBack, Chargeback}:    true,
 }
 
-// Transition returns the status after the event. changed is false for a duplicate the
-// status already reflects.
 func Transition(from Status, e Event) (to Status, changed bool, err error) {
 	if next, ok := transitions[edge{from, e}]; ok {
 		return next, true, nil

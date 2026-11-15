@@ -15,12 +15,9 @@ import (
 
 var (
 	ErrInvalidChargebackID = errors.New("payments: invalid chargeback ID")
-	// ErrChargebackExceedsPayment is chargebacks taking back more than the payer paid.
-	// The acquirer holds the same bound, so it is a provider event the gateway cannot
-	// apply.
+	// The acquirer holds the same bound, so this is a provider event that cannot apply.
 	ErrChargebackExceedsPayment = errors.New("payments: chargebacks exceed what was paid")
-	// ErrChargebackClosed is an answer to a chargeback already decided, or one that
-	// contradicts what the provider decided.
+	// ErrChargebackClosed is also an answer contradicting what the provider decided.
 	ErrChargebackClosed  = errors.New("payments: chargeback is closed")
 	ErrUnknownChargeback = errors.New("payments: unknown chargeback status")
 	ErrInvalidReason     = errors.New("payments: chargeback reason must have 1 to 100 characters")
@@ -44,8 +41,8 @@ func ParseChargebackID(s string) (ChargebackID, error) {
 	return id, nil
 }
 
-// ChargebackStatus is the dispute of section 4.7: the cardholder's bank took the money
-// back; the merchant accepts, which loses it, or contests, and the issuer decides.
+// ChargebackStatus is section 4.7: the merchant accepts and loses the money, or
+// contests and the issuer decides.
 type ChargebackStatus string
 
 const (
@@ -66,8 +63,6 @@ func ParseChargebackStatus(s string) (ChargebackStatus, error) {
 
 func (s ChargebackStatus) Closed() bool { return s == Won || s == Lost }
 
-// stage orders the statuses: a dispute only moves forward, so a provider's answer
-// older than what is stored changes nothing.
 func (s ChargebackStatus) stage() int {
 	switch s {
 	case NeedsResponse:
@@ -81,11 +76,9 @@ func (s ChargebackStatus) stage() int {
 	}
 }
 
-// MoveChargeback is the status after the provider reports to. The provider decides
-// the dispute, so its word is taken as long as the dispute moves forward: a report
-// behind what is stored is an older answer and changes nothing, and a closed dispute
-// reported closed the other way is ErrChargebackClosed. Only needs_response can be
-// lost without a review, when nobody answered in time.
+// MoveChargeback takes the provider's word as long as the dispute moves forward: a
+// report behind what is stored is an older answer and changes nothing. Only
+// needs_response can be lost without a review, when nobody answered in time.
 func MoveChargeback(from, to ChargebackStatus) (ChargebackStatus, bool, error) {
 	if from.stage() < 0 || to.stage() < 0 {
 		return from, false, fmt.Errorf("%w: %q to %q", ErrUnknownChargeback, from, to)
@@ -104,7 +97,6 @@ func MoveChargeback(from, to ChargebackStatus) (ChargebackStatus, bool, error) {
 	}
 }
 
-// NewReason trims the provider's reason and bounds it.
 func NewReason(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if n := utf8.RuneCountInString(s); n < 1 || n > maxReason {
@@ -113,7 +105,6 @@ func NewReason(s string) (string, error) {
 	return s, nil
 }
 
-// NewEvidence is the merchant's answer to a chargeback, trimmed and bounded.
 func NewEvidence(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if n := utf8.RuneCountInString(s); n < 1 || n > maxEvidence {
@@ -122,17 +113,14 @@ func NewEvidence(s string) (string, error) {
 	return s, nil
 }
 
-// ChargebackAmounts is what a chargeback moves, fixed when it opens: PayerAmount is
-// what the cardholder's bank took back, in the payer's currency; Amount the share of
-// the payment the merchant loses with it, in the merchant's currency, the fee kept as
-// for a refund; and Spread the share of the spread revenue that goes with it.
+// ChargebackAmounts is fixed when the chargeback opens. Amount is the merchant's
+// share of the payment, with the fee kept as for a refund.
 type ChargebackAmounts struct {
 	PayerAmount money.Money
 	Amount      money.Money
 	Spread      money.Money
 }
 
-// NoChargebacks is the running total of a payment nobody charged back yet.
 func NoChargebacks(q *fx.Quote) ChargebackAmounts {
 	return ChargebackAmounts{
 		PayerAmount: money.Zero(q.PayerAmount().Currency()),
@@ -141,7 +129,6 @@ func NoChargebacks(q *fx.Quote) ChargebackAmounts {
 	}
 }
 
-// Add sums two chargebacks, for the running total PriceChargeback takes.
 func (c *ChargebackAmounts) Add(other *ChargebackAmounts) (ChargebackAmounts, error) {
 	payer, err := c.PayerAmount.Add(other.PayerAmount)
 	if err != nil {
@@ -158,13 +145,10 @@ func (c *ChargebackAmounts) Add(other *ChargebackAmounts) (ChargebackAmounts, er
 	return ChargebackAmounts{PayerAmount: payer, Amount: amount, Spread: spread}, nil
 }
 
-// PriceChargeback prices a chargeback of payer, the amount the bank took back, by the
-// proportion of the original payment (decision 13), as a refund is priced but from the
-// payer's side: the bank says how much BRL left, the merchant loses that share of the
-// payment. before is the sum of the payment's earlier chargebacks; refunds do not
-// count, since a refunded cardholder can still charge back and the money then leaves
-// twice (decision 7). Shares are cumulative, as PriceRefund's, so partial chargebacks
-// add up to the whole payment exactly.
+// PriceChargeback is PriceRefund from the payer's side (decision 13): the bank says how
+// much BRL left, and the merchant loses that share of the payment. before sums only
+// earlier chargebacks: a refunded cardholder can still charge back, and the money then
+// leaves twice (decision 7).
 func PriceChargeback(q *fx.Quote, before *ChargebackAmounts, payer money.Money) (ChargebackAmounts, error) {
 	if payer.Currency() != q.PayerAmount().Currency() {
 		return ChargebackAmounts{}, fmt.Errorf("payments: chargeback %s: %w: the payer paid in %s", payer, money.ErrCurrencyMismatch, q.PayerAmount().Currency())
@@ -190,7 +174,6 @@ func PriceChargeback(q *fx.Quote, before *ChargebackAmounts, payer money.Money) 
 	return ChargebackAmounts{PayerAmount: payer, Amount: amount, Spread: spread}, nil
 }
 
-// ChargebackAccounts are where a chargeback posts (section 3.3).
 type ChargebackAccounts struct {
 	ProviderReceivables ledger.AccountID
 	FXPayer             ledger.AccountID
@@ -212,12 +195,10 @@ func ChargebackReference(id ChargebackID, step ChargebackStep) string {
 	return "chargeback:" + id.String() + ":" + string(step)
 }
 
-// ChargebackDebitPosting is the money the cardholder's bank took back, posted when the
-// chargeback opens: the money is gone whatever the dispute decides. It is a refund
-// completed at once, out of the merchant's payable, which can go negative (decision
-// 27): the payer's currency bought back at rate, today's base rate, the merchant
-// paying its share and the spread returning its own, and the difference the exchange
-// result the gateway absorbs (decision 13).
+// ChargebackDebitPosting posts when the chargeback opens, since the money is gone
+// whatever the dispute decides. It is a refund completed at once at today's base rate,
+// out of a payable that can go negative (decision 27), with the exchange result the
+// gateway's (decision 13).
 func ChargebackDebitPosting(id ChargebackID, c *ChargebackAmounts, rate fx.Rate, a *ChargebackAccounts) (ledger.Transaction, error) {
 	cost, result, err := chargebackCost(id, c, rate)
 	if err != nil {
@@ -232,9 +213,8 @@ func ChargebackDebitPosting(id ChargebackID, c *ChargebackAmounts, rate fx.Rate,
 		leg{a.FXResult, result, false})
 }
 
-// ChargebackReversalPosting is a won dispute: the bank gives the money back, sold at
-// today's rate, and the merchant and the spread get back exactly what they lost; the
-// exchange result takes the difference again.
+// ChargebackReversalPosting is a won dispute: the merchant and the spread get back
+// exactly what they lost, and the exchange result takes today's difference again.
 func ChargebackReversalPosting(id ChargebackID, c *ChargebackAmounts, rate fx.Rate, a *ChargebackAccounts) (ledger.Transaction, error) {
 	cost, result, err := chargebackCost(id, c, rate)
 	if err != nil {
@@ -249,8 +229,6 @@ func ChargebackReversalPosting(id ChargebackID, c *ChargebackAmounts, rate fx.Ra
 		leg{a.FXResult, result, true})
 }
 
-// chargebackCost is the payer amount in the merchant's currency at rate, and what the
-// merchant's and the spread's shares make over it.
 func chargebackCost(id ChargebackID, c *ChargebackAmounts, rate fx.Rate) (cost, result money.Money, err error) {
 	cost, err = fx.Convert(c.PayerAmount, rate)
 	if err != nil {
@@ -267,8 +245,6 @@ func chargebackCost(id ChargebackID, c *ChargebackAmounts, rate fx.Rate) (cost, 
 	return cost, result, nil
 }
 
-// ChargebackCase is one chargeback of a payment, as the gateway keeps it: the
-// payment event Chargeback is what it does to the payment.
 type ChargebackCase struct {
 	ID         ChargebackID
 	Payment    PaymentID
