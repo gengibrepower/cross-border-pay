@@ -16,6 +16,17 @@ The one rule that can never break: **the money on record always matches the mone
 
 > **Learning project, not a real gateway.** Money, customers and payment providers are all simulated. Fees and rates are illustrative. It exists to practice the engineering behind correct financial systems.
 
+## Quick start
+
+You need [mise](https://mise.jdx.dev) and Docker.
+
+```sh
+mise install    # Go and the tools at the versions CI uses
+mise run test   # the whole suite with -race, against a real Postgres in containers
+```
+
+To run the API, the worker and the simulators by hand, see [Run it locally](#run-it-locally).
+
 ## What the project sets out to prove
 
 1. **Idempotency across the whole chain.** API, provider calls, incoming events, outgoing webhooks and jobs. Retrying never charges, posts or pays out twice.
@@ -27,14 +38,17 @@ The one rule that can never break: **the money on record always matches the mone
 
 Every number below is measured, not estimated. Every test that touches the database runs against a **real PostgreSQL 18** in a container (`testcontainers-go`), never a mocked one; domain tests do no I/O at all.
 
-| Claim | Measured |
-|---|---|
-| The ledger closes at zero under concurrency | 100,000 concurrent transfers, every run |
-| A payment is confirmed once | 1 posting out of 1,000 concurrent confirmations |
-| Refunds never pass what was paid | 4,000 concurrent refund requests |
-| A retry never charges twice | 10 concurrent requests, one key: 1 payment |
-| A killed worker loses no webhook | 100 events, killed mid-round: all delivered |
-| A settlement pays once | Same cutoff twice, or on 8 workers: 1 payout |
+The five tests the project is measured by ([docs/escopo.md §9](docs/escopo.md)):
+
+| # | Test | Measured |
+|---|---|---|
+| 1 | `TestThousandConcurrentConfirmationsPostOnce`: a payment is confirmed once | 1 ledger posting out of 1,000 concurrent confirmations |
+| 2 | `TestConcurrentPartialRefundsNeverExceedThePayment`: refunds never pass what was paid | 4,000 concurrent refund requests |
+| 3 | `TestThousandsOfConcurrentTransfers`: the ledger closes at zero | 100,000 concurrent transfers |
+| 4 | `TestWorkerKilledMidRoundDeliversEveryEventAfterRestart`: a killed worker loses no webhook | 100 events, killed mid-round: all delivered |
+| 5 | `TestSameSeedSameCharges`, and the same for card and boleto: same seed, same history | 50 keys sent at once in reverse order give the charges sent one by one gave |
+
+Beyond them, a retry never charges twice (10 concurrent requests with one key: 1 payment) and a settlement pays once (the same cutoff twice, or on 8 workers: 1 payout).
 
 Each group below opens to what every test shows and what it measured. Runs are with `-race -count=20` unless stated, and "mutants killed" are deliberate bugs each test was checked to catch.
 
@@ -104,7 +118,7 @@ API keys against real Postgres: a malformed key, an unknown one, the right looku
 
 Every request and response of `POST /v1/payments`, `GET /v1/payments/{id}`, `GET /v1/payments`, `POST /v1/payments/{id}/cancel` and `POST /v1/payments/{id}/refunds` goes through the real handler and a real Postgres and is checked against the hand-written `api/openapi.yaml` with `kin-openapi`. The GameStore payment returns R$ 101.50 with a US$ 0.60 fee and a 30-minute quote, and the `GET` returns byte for byte what the `POST` returned. Walking 7 payments in pages of 3 sees each one exactly once, newest first, and none of another merchant's; another merchant's payment, an unknown ID and a malformed ID all get the same `404`.
 
-**Result:** `POST`: 1 success and 14 error cases, and no rejected request stores a payment. `GET`: 4 `404`/`401` cases and 6 invalid-parameter cases, each with its stable `code`. 20/20 runs with `-race -count=20`. Changing `id <` to `id <=` in the cursor makes the pagination test fail.
+**Result:** `POST`: 1 success and 14 error cases, and no rejected request stores a payment. `GET`: 4 `404`/`401` cases and 6 invalid-parameter cases, each with its stable `code`. Changing `id <` to `id <=` in the cursor makes the pagination test fail.
 
 ---
 
@@ -112,7 +126,7 @@ Every request and response of `POST /v1/payments`, `GET /v1/payments/{id}`, `GET
 
 The eight cases of section 4.2 against a real Postgres: a stored response replayed as is, a different body rejected, a 4xx kept, a 5xx before any work releases the key, a 5xx after recorded work keeps it, keys of different merchants independent. A key left by a request that died is resumed from where it stopped once the lease ends, and the dead request can no longer complete or release it. The recovery point rolls back with the transaction of whoever wrote it.
 
-**Result:** 20 concurrent requests with one key: exactly 1 proceeds and 19 get `409`, 20/20 runs with `-race -count=20`. Dropping the `lock_token` from completion or the `recovery_point` from release makes the test for that case fail.
+**Result:** 20 concurrent requests with one key: exactly 1 proceeds and 19 get `409`. Dropping the `lock_token` from completion or the `recovery_point` from release makes the test for that case fail.
 
 ---
 
@@ -120,7 +134,7 @@ The eight cases of section 4.2 against a real Postgres: a stored response replay
 
 A retry gets the same 201 byte for byte, marked `Idempotent-Replayed: true`, and no new payment; the same key with another payment is a `422`; a 4xx is stored and replayed; different merchants with the same key create different payments. **Simulated crash:** the request creates the payment and dies before storing its answer; the retry gets `409` while the lease runs and, after it, `201` with that same payment, identical to the `GET`, and the database still holds 1 payment and 1 quote. In the middleware, a 5xx before any work releases the key, and a 5xx after a recovery point keeps it and lets the retry resume at once.
 
-**Result:** 10 concurrent HTTP requests with one key create exactly 1 payment, 20/20 runs with `-race -count=20`. Making `Create` ignore the recovery point makes the crash test fail.
+**Result:** 10 concurrent HTTP requests with one key create exactly 1 payment. Making `Create` ignore the recovery point makes the crash test fail.
 
 ---
 
@@ -128,7 +142,7 @@ A retry gets the same 201 byte for byte, marked `Idempotent-Replayed: true`, and
 
 Every hour, in batches of 1,000, the job deletes keys older than 24 h and nothing younger. With `FOR UPDATE SKIP LOCKED`, a key another transaction has locked is passed over without waiting and deleted on the next round. A failed round is logged and does not stop the worker.
 
-**Result:** 7 expired keys deleted in batches of 3, 20/20 runs with `-race -count=20`. Dropping `SKIP LOCKED` makes `Cleanup` wait for the lock until its deadline, and the test fails.
+**Result:** 7 expired keys deleted in batches of 3. Dropping `SKIP LOCKED` makes `Cleanup` wait for the lock until its deadline, and the test fails.
 
 </details>
 
@@ -147,7 +161,7 @@ The 5 complete examples of the Banco Central's [Manual de Padrões para Iniciaç
 
 Every (status, event) pair of the attempt state machine is checked against section 3.5, written out again inside the test; an ambiguous answer never rejects an attempt, and the payment event may arrive before the create response. Against a real Postgres, a payment has at most one live attempt (a partial unique index: only a rejection frees it), and events on one attempt are serialized by a row lock.
 
-**Result:** All 30 pairs. 20 concurrent creates for one payment leave exactly 1 attempt, and 8 concurrent accept/reject events on one attempt change it exactly once, 25 attempts per run, 20/20 runs with `-race -count=20`. Dropping the `FOR UPDATE` or the index's `WHERE` makes these tests fail.
+**Result:** All 30 pairs. 20 concurrent creates for one payment leave exactly 1 attempt, and 8 concurrent accept/reject events on one attempt change it exactly once, 25 attempts per run. Dropping the `FOR UPDATE` or the index's `WHERE` makes these tests fail.
 
 ---
 
@@ -155,7 +169,7 @@ Every (status, event) pair of the attempt state machine is checked against secti
 
 A real HTTP provider with charges in memory and faults on command: `reject`, `fail_before` (500, nothing done), `timeout_after` (the charge is created and the answer never comes) and `delay`. After a `timeout_after`, looking the charge up by our attempt ID finds it, and retrying with the same key returns that same charge. Every BR Code it issues parses with `internal/brcode`. Only an explicit refusal reaches the payments port as `Rejected`; a 500, a timeout or an unknown answer is an error, so the attempt goes to `unknown`.
 
-**Result:** Same seed and same 50 keys sent concurrently in reverse order give the same charges, byte for byte, as sent one by one; 8 malformed requests refused with `400`. 20/20 runs with `-race -count=20`. 10 mutants killed, among them seeding by arrival order, creating the charge after the hang instead of before, and reading a 500 as a refusal.
+**Result:** Same seed and same 50 keys sent concurrently in reverse order give the same charges, byte for byte, as sent one by one; 8 malformed requests refused with `400`. 10 mutants killed.
 
 ---
 
@@ -163,7 +177,7 @@ A real HTTP provider with charges in memory and faults on command: `reject`, `fa
 
 A paid charge can be refunded in parts, as a PIX devolução, once per our refund ID: the same key returns the same refund, another amount under it is `idempotency_key_reused`. The simulator holds invariant 8 on its own side: it refuses a refund of an unpaid charge, in another currency or above what is left, and stores the refusal with its reason, so a lookup by our ID finds the same decision. The same faults apply (`refund`, `get_refund`): after a `timeout_after` the money went back and the lookup finds it `completed`. The payments port gains `Refund` and `GetRefund`, with the same rule as attempts: only a refusal is a result, anything else is ambiguous.
 
-**Result:** 50 concurrent refunds of R$ 10.00 on a R$ 101.50 charge: exactly 10 completed. 20/20 runs with `-race -count=20`. 7 mutants killed, among them not checking or not consuming what is left, not storing a refusal, refunding an unpaid charge, accepting a reused key with another amount, a refund ID not derived from its key, and answering a `timeout_after`
+**Result:** 50 concurrent refunds of R$ 10.00 on a R$ 101.50 charge: exactly 10 completed. 7 mutants killed.
 
 ---
 
@@ -171,7 +185,7 @@ A paid charge can be refunded in parts, as a PIX devolução, once per our refun
 
 Paying a charge posts one `charge.paid` event to `PIXSIM_WEBHOOK_URL`, signed with HMAC-SHA256 over the timestamp and the body. `pixsim.VerifyEvent` refuses a tampered body, a wrong secret, a changed timestamp and any signature more than 5 minutes away from now, so a captured delivery cannot be replayed later. The event ID comes from the seed and a redelivery (`/control/events/{id}/deliver`) sends the same bytes signed again, so the receiver can drop duplicates by ID. Paying twice sends nothing new; a webhook that fails does not undo the payment; a payer that gives up does not cut the delivery. The gateway receives them at `POST /v1/providers/pixsim/events` (the inbox, below).
 
-**Result:** 8 forgeries refused and 5 malformed signed bodies refused, among them a decimal amount. 20/20 runs with `-race -count=20`. 17 mutants killed, among them comparing only the last signature, dropping the timestamp or the body from the MAC, deriving the event ID without the charge key, and delivering with the payer's context.
+**Result:** 8 forgeries refused and 5 malformed signed bodies refused, among them a decimal amount. 17 mutants killed.
 
 ---
 
@@ -179,7 +193,7 @@ Paying a charge posts one `charge.paid` event to `PIXSIM_WEBHOOK_URL`, signed wi
 
 Each payment gets its provider attempt and a BR Code that parses for R$ 101.50, identical in the `POST`, the `GET` and the list. A refusal is a `201` with `pix.status: failed`; a timeout after the provider acted, or a `500` from it, is a `201` with `processing` and the attempt in `unknown`, bounded by the 300 ms test timeout. **Crashes at each step:** after the first transaction (attempt `created`) the retry calls the provider once; after `sent` it does not call again and marks `unknown`; after the answer is stored it only replies. A client that disconnects mid-call does not stop it: the attempt still ends `accepted`.
 
-**Result:** 10 concurrent requests with one key and a retry: 1 provider call, 1 attempt. 20/20 runs with `-race -count=20`. 11 mutants killed, among them calling again from `sent`, dropping `WithoutCancel`, dropping the service's timeout, reading a provider error as a refusal and showing the oldest attempt instead of the latest.
+**Result:** 10 concurrent requests with one key and a retry: 1 provider call, 1 attempt. 11 mutants killed.
 
 ---
 
@@ -187,7 +201,7 @@ Each payment gets its provider attempt and a BR Code that parses for R$ 101.50, 
 
 Ambiguous attempts are looked up at the provider, never created again (decision 17). A charge the provider made while our call timed out ends `accepted` with its BR Code, or `succeeded` if paid meanwhile. Not found is retried during a 1-minute grace and then means `rejected`. A request that died after writing `sent` is picked up once it is a minute stale. Failed lookups wait 5 s, 10 s, 20 s… up to 5 min, and at 24 h the attempt is escalated and never looked up again. A worker that dies holding a claim only delays the attempt until its lease ends.
 
-**Result:** Backoff: 292 lookups over 24 h, every wait checked. 4 concurrent resolvers over 50 attempts: 50 claims and 50 lookups, one per attempt. 20/20 runs with `-race -count=20`. 10 mutants killed, among them dropping `SKIP LOCKED` (90 lookups for 50 attempts), not pushing the lease (85), rejecting on the first not found and never escalating.
+**Result:** Backoff: 292 lookups over 24 h, every wait checked. 4 concurrent resolvers over 50 attempts: 50 claims and 50 lookups, one per attempt. 10 mutants killed.
 
 </details>
 
@@ -198,7 +212,7 @@ Ambiguous attempts are looked up at the provider, never created again (decision 
 
 The webhook checks the signature, stores the event with the exact bytes and header it came with, and answers `200`, for a duplicate too; only a failure to store asks for a redelivery. A worker claims due events with `FOR UPDATE SKIP LOCKED` and applies each one in the transaction that records its status, so the effect and the status commit together or not at all. `charge.paid` succeeds the attempt it names once the amount matches the quote. One for an attempt not stored yet is retried after 5 s, 10 s, 20 s… up to 5 min, and fails at 24 h; one that contradicts the attempt (another amount or charge ID, a rejected attempt) fails at once and changes nothing. Events of one payment are applied one at a time behind its row lock, and that lock does not wait for a foreign key check.
 
-**Result:** 100 concurrent deliveries of one event: all `200`, 1 row. 5 refused requests (signature, unreadable, no ID, unknown provider, over 64 KiB), none stored. 4 processors over 50 events: each applied once. 6 divergent events leave the attempt as it was. 20/20 runs with `-race -count=20`. 25 mutants killed, among them dropping `SKIP LOCKED`, the `ON CONFLICT` or the `pending` guard of a late retry, recording the status after the handler failed, stopping the batch at the first error, skipping the amount check, and `FOR UPDATE` in place of `FOR NO KEY UPDATE`
+**Result:** 100 concurrent deliveries of one event: all `200`, 1 row. 5 refused requests (signature, unreadable, no ID, unknown provider, over 64 KiB), none stored. 4 processors over 50 events: each applied once. 6 divergent events leave the attempt as it was. 25 mutants killed.
 
 ---
 
@@ -206,7 +220,7 @@ The webhook checks the signature, stores the event with the exact bytes and head
 
 Confirmation (`payments` + `ledger`): an attempt that becomes `succeeded`, by the provider's event or by the resolver, moves the payment to `paid` and posts section 3.3's transaction in that same database transaction. 1,000 confirmations of one charge run at once, half through each path. A ledger that cannot post leaves the attempt and the payment as they were; a payment already `paid` is not posted again; each merchant is owed on its own account, created by its first confirmation. Every path locks the payment, then the attempt, then the accounts: a test holds the payment's lock and checks with `NOWAIT` that a waiting confirmation has not taken the attempt's.
 
-**Result:** **Exactly 1 ledger transaction and 1 `payment.paid` out of 1,000 confirmations**, with the GameStore balances to the cent (R$ 101.50 in, US$ 19.40 owed, US$ 0.60 fee, US$ 0.30 spread), 20/20 runs with `-race -count=20`. Any quote confirms into a balanced transaction with no zero leg: 100 cases per run, 20/20 runs. 50 concurrent first confirmations of one merchant create 1 account. 14 mutants killed, among them locking the attempt before the payment, `FOR KEY SHARE` on the payment, posting a payment already paid, dropping the ledger reference and one payable shared by all merchants.
+**Result:** **Exactly 1 ledger transaction and 1 `payment.paid` out of 1,000 confirmations**, with the GameStore balances to the cent (R$ 101.50 in, US$ 19.40 owed, US$ 0.60 fee, US$ 0.30 spread). Any quote confirms into a balanced transaction with no zero leg: 100 cases per run, 20/20 runs. 50 concurrent first confirmations of one merchant create 1 account. 14 mutants killed.
 
 ---
 
@@ -214,7 +228,7 @@ Confirmation (`payments` + `ledger`): an attempt that becomes `succeeded`, by th
 
 The confirmation appends `payment.paid` to `outbox_events` in its own transaction (section 4.5), with `payment_version` bumped by the same `UPDATE` that changes the status. The payload is stored as the exact bytes every delivery will send and sign, and validated against the `PaymentEvent` schema in `api/openapi.yaml`; its `payment_id`, `status` and `amount` match the `GET` of the payment. An outbox that refuses the event undoes the attempt, the payment and the ledger posting. Delivery is in the "Webhook delivery" row.
 
-**Result:** 1 event per payment under the 1,000 concurrent confirmations above, 20/20 runs with `-race -count=20`. 10 mutants killed, among them not appending the event, ignoring the outbox's error, not bumping the version, the stale version in the payload, the payer's BRL amount in `data`, and storing the payload as `jsonb`
+**Result:** 1 event per payment under the 1,000 concurrent confirmations above. 10 mutants killed.
 
 </details>
 
@@ -225,7 +239,7 @@ The confirmation appends `payment.paid` to `outbox_events` in its own transactio
 
 A job claims pending payments whose quote has expired (`FOR NO KEY UPDATE SKIP LOCKED`, then a 1-minute lease) and asks the provider before deciding: paid on time means confirmed, otherwise expired with `payment.expired` in the outbox. On time is the provider's `paid_at` against the quote's `expires_at`, never when the news reached us, and `confirm` applies the same rule to events, so the job and the event agree whichever comes first. A provider that does not answer decides nothing: the payment waits for the lease. **The race:** the payer pays 2 s before expiry and the event has not arrived when the job runs; the job finds the payment and confirms it, and the event that comes 3 s later is a no-op. Paid 1 s late, by job or by event, it is never confirmed: the money is held for review (next row).
 
-**Result:** 4 concurrent jobs over 50 payments: each expired once, with one lookup each. 20/20 runs with `-race -count=20`. 17 mutants killed, among them judging lateness by our clock, expiring without asking the provider or after a failed lookup, treating the expiry instant as on time, `Expire` without re-checking status or deadline under the lock, dropping `SKIP LOCKED` and not pushing the lease.
+**Result:** 4 concurrent jobs over 50 payments: each expired once, with one lookup each. 17 mutants killed.
 
 ---
 
@@ -233,7 +247,7 @@ A job claims pending payments whose quote has expired (`FOR NO KEY UPDATE SKIP L
 
 A pending payment becomes `canceled` with `payment.canceled` in the outbox. Like the expiry job, the cancel asks the provider first: a payer who already paid while the news was on its way is confirmed and the cancel answers `409 payment_not_cancelable`. A provider that does not answer gets `503 provider_unavailable` and nothing changes. Canceling twice answers `200` with no second event, so no `Idempotency-Key` is needed. Money sent after the cancel is late money: held for review, the payment stays canceled. **The race:** the cancel and an on-time confirmation take the same payment lock, so exactly one wins.
 
-**Result:** `TestCancelAndConfirmationRace`: 400 rounds of cancel × confirmation, 20/20 runs with `-race -count=20`: 356 canceled with the money held, 44 paid with one posting, never both. 3 mutants killed: canceling without asking the provider, reading the status without the lock, a second event on a repeated cancel.
+**Result:** `TestCancelAndConfirmationRace`: 400 rounds of cancel × confirmation: 356 canceled with the money held, 44 paid with one posting, never both. 3 mutants killed.
 
 ---
 
@@ -241,7 +255,7 @@ A pending payment becomes `canceled` with `payment.canceled` in the outbox. Like
 
 Money the provider confirmed always enters the ledger; what is in doubt is only where it goes. A payment that cannot confirm its payment (late, another amount, for a rejected attempt, or a second charge) is posted from `provider_receivables:BRL` to `divergence:BRL` and opens a review case in `review_cases` (the `reconciliation` module, in the same transaction). The payment is untouched and the attempt `succeeded` when the state machine allows it. One case per provider charge: its unique key is the first barrier and the ledger's unique reference the second, so the event, the resolver and the expiry job post once together. The amount check now runs in the domain for all three paths; before, only the event compared amounts, and the resolver confirmed any payment the provider reported as paid. An event that cannot be held (another currency) is `failed` and writes nothing: a savepoint undoes what it wrote before, since the inbox commits the failed status.
 
-**Result:** Paid 1 s late, by job first, by event first and both at once: 1 case and R$ 101.50 held each time, ledger summing to zero per currency. 20 concurrent deliveries of one divergent event: 1 case, 1 posting. Through the worker with the simulator's own event: payment `expired`, attempt `succeeded`, R$ 101.50 on `divergence:BRL`. 20/20 runs with `-race -count=20`. 16 mutants killed, among them posting when the case was already open, dropping the amount check, holding the quoted amount instead of the paid one, no savepoint, the expiry job stopping after settling, and confirming on any change of a succeeded attempt.
+**Result:** Paid 1 s late, by job first, by event first and both at once: 1 case and R$ 101.50 held each time, ledger summing to zero per currency. 20 concurrent deliveries of one divergent event: 1 case, 1 posting. Through the worker with the simulator's own event: payment `expired`, attempt `succeeded`, R$ 101.50 on `divergence:BRL`. 16 mutants killed.
 
 </details>
 
@@ -252,7 +266,7 @@ Money the provider confirmed always enters the ledger; what is in doubt is only 
 
 A refund is priced by the proportion of the original payment: US$ 10.00 of the GameStore returns R$ 50.75 to the payer and US$ 0.15 of the spread. It posts in three steps: the hold takes the refunded dollars from the merchant into "refunds in flight" when the refund is created; the completion sends the reais back from the provider, buys them back at today's base rate and puts the difference into the exchange result (at 5.5000 the gateway gains US$ 0.92, at 4.5000 it loses US$ 1.13); a refusal releases the hold. **The rounding bug it avoids:** rounding each refund on its own, two halves of R$ 101.51 are R$ 50.76 each, R$ 101.52 in all; each share is cumulative instead, what all refunds so far should have returned minus what the earlier ones did, so they add up to the exact total. The refund state machine is every (status, event) pair checked against a table written out again in the test.
 
-**Result:** `TestRefundsOfAnyPaymentAddUp`: 10,000 random payments (rate, spread, fee, amount) with up to 12 refunds each, some refused afterwards: what counts never passes what was paid, every posting balances per currency, and refunding the rest returns exactly the reais and the spread. 20/20 runs with `-race -count=20`. 14 mutants killed, among them rounding each refund on its own (reais or spread), an off-by-one in invariant 8, refusing a full refund, the exchange result with its sign flipped, the cost ignoring today's rate, and an ambiguous answer rejecting a refund.
+**Result:** `TestRefundsOfAnyPaymentAddUp`: 10,000 random payments (rate, spread, fee, amount) with up to 12 refunds each, some refused afterwards: what counts never passes what was paid, every posting balances per currency, and refunding the rest returns exactly the reais and the spread. 14 mutants killed.
 
 ---
 
@@ -260,7 +274,7 @@ A refund is priced by the proportion of the original payment: US$ 10.00 of the G
 
 Invariant 8 through the whole API: the refund locks the payment (`FOR NO KEY UPDATE`), sums the refunds that still count (all but the refused), prices the new one and posts its hold in one transaction; the provider is called after the commit, and its answer posts the money gone back or releases the hold, moving the payment to `partially_refunded` or `refunded` with `refund.succeeded` or `refund.failed` in the outbox. 40 refunds of random amounts hit one paid payment at once, over HTTP with their own `Idempotency-Key`s. A refusal by the provider is a `201` with `failed`, the hold back with the merchant; a timeout leaves the refund `pending`, the hold kept; a retry with the same key replays the answer; a request that died after its first transaction resumes without calling the provider twice, and after `sent` does not call it at all.
 
-**Result:** **4,000 concurrent refund requests** (5 payments × 40 per run, 20/20 runs with `-race -count=20`): never more than US$ 20.00 or R$ 101.50 refunded per payment, every refund the gateway accepted completed at the provider, and every refusal still would not fit in what was left. Afterwards the books close to the cent: nothing in flight, the merchant owes back exactly what was refunded, the provider holds what was not returned. 11 mutants killed, among them pricing without the payment's lock, counting only succeeded refunds or also refused ones, never reaching `refunded`, not posting the hold or the release, resuming by creating a second refund, calling again after `sent`, and reading a timeout as a refusal.
+**Result:** **4,000 concurrent refund requests** (5 payments × 40 per run): never more than US$ 20.00 or R$ 101.50 refunded per payment, every refund the gateway accepted completed at the provider, and every refusal still would not fit in what was left. Afterwards the books close to the cent: nothing in flight, the merchant owes back exactly what was refunded, the provider holds what was not returned. 11 mutants killed.
 
 ---
 
@@ -268,7 +282,7 @@ Invariant 8 through the whole API: the refund locks the payment (`FOR NO KEY UPD
 
 A refund left without an answer does not wait for the merchant to retry: the same queue as attempts (`next_check_at` as schedule and lease, `SKIP LOCKED`) finishes what the request left. A refund `created` for 1 min, from a request that died before calling the provider, is sent, and only by whoever moves it to `sent`, so a worker and a retried request never both call the provider. A stale `sent` becomes `unknown` and is never sent again; `unknown` is looked up with the attempts' backoff. "Not found" rejects the refund only 1 min after its last change, not its creation: a refund sent late may be arriving right now. Rejected, the hold goes back to the merchant with `refund.failed`; completed, it posts as the request would, with `refund.succeeded`. With no answer in 24 h it goes to a person, the hold kept.
 
-**Result:** 8 tests against the simulator and Postgres, 20/20 runs with `-race -count=20`. 10 mutants killed, among them sending after losing the race to `sent`, counting the grace from creation, rejecting on any lookup error, not queuing `created`, not restarting the schedule on a status change and never escalating.
+**Result:** 8 tests against the simulator and Postgres. 10 mutants killed.
 
 ---
 
@@ -276,7 +290,7 @@ A refund left without an answer does not wait for the merchant to retry: the sam
 
 Once per merchant and cutoff date in `America/Sao_Paulo`, what is available becomes a payout in USD: it leaves `merchant_payable` for `settlements_paid`, and the payments that became available point at the settlement, each in exactly one. A PIX paid on local day P is available on P+1 (boleto P+2, card P+30, calendar days). Available is the payable's balance less what is still pending, each pending payment at its net less the refunds that count; so a refund of a pending payment comes out of it, and one of a payment already settled comes out of the next payout. A negative available pays nothing and waits for more money. The transaction locks the payments first and the payable after, the order of every path, and with the payable locked nothing else posts to it; `UNIQUE (merchant_id, cutoff_date)` makes a second run pay nothing.
 
-**Result:** **F7's criterion**: running the same cutoff twice, or on 8 workers at once, makes one payout. A model of 4 rounds × 6 days with random payments and refunds before and after each cutoff checks every payout to the cent and with the right payments; 4 workers settling while payments are confirmed and refunded end with everything paid once and the payable at zero. 20/20 runs with `-race -count=20`. 11 mutants killed, among them ignoring what is pending, availability a day early or late, the cutoff in UTC, pending without refunds or with the rejected ones, paying a negative available, listing settled payments again and locking the payable before the payments (deadlock)
+**Result:** **F7's criterion**: running the same cutoff twice, or on 8 workers at once, makes one payout. A model of 4 rounds × 6 days with random payments and refunds before and after each cutoff checks every payout to the cent and with the right payments; 4 workers settling while payments are confirmed and refunded end with everything paid once and the payable at zero. 11 mutants killed.
 
 ---
 
@@ -284,7 +298,7 @@ Once per merchant and cutoff date in `America/Sao_Paulo`, what is available beco
 
 The balance splits the merchant's payable as the settlement job does at that moment: pending is the net of the payments not available yet less their refunds, available is the rest, negative after a refund or chargeback of settled money that exceeds what came in since; reserved is the rolling reserve below. Both sums come from one `REPEATABLE READ` snapshot without the payable's lock, so a read never waits on a confirmation or holds up a settlement. The list shows the settlements newest cutoff first, each with its payments, read in the same snapshot as the page; the cursor is the cutoff date, unique per merchant, on the `UNIQUE (merchant_id, cutoff_date)` index; the payments come from a new partial index on `payments.settlement_id` (migration 00020)
 
-**Result:** A balance checked at 9 points across 3 São Paulo days, among them 23:30 local, when the date in UTC has already turned, always adding up to the payable. 3 settlements in pages of 1: each seen once, newest first, with the same amount and payments as stored, none of another merchant's settled in the same runs. 5 invalid parameters and 2 `401`s. 20/20 runs with `-race -count=20`. 11 mutants killed, among them available without the pending, availability a day early or late, the cutoff in UTC, the cursor with `<=`, the list without the merchant filter, the payments of every settlement, and an error for a merchant with no payable yet.
+**Result:** A balance checked at 9 points across 3 São Paulo days, among them 23:30 local, when the date in UTC has already turned, always adding up to the payable. 3 settlements in pages of 1: each seen once, newest first, with the same amount and payments as stored, none of another merchant's settled in the same runs. 5 invalid parameters and 2 `401`s. 11 mutants killed.
 
 ---
 
@@ -303,7 +317,7 @@ Each payout holds 10% of what is available on `merchant_reserve` for 90 days, an
 
 `PUT /v1/webhook-endpoint` stores the merchant's URL, refused when it is not `https` or points inside a network: loopback, private ranges, link-local and cloud metadata (`169.254.169.254`, also as `::ffff:169.254.169.254`), CGNAT, reserved ranges, `localhost`/`.internal`/`.local` names and numeric hosts such as `2130706433`, which some resolvers read as `127.0.0.1`. No DNS at registration: a name can resolve elsewhere later, so delivery checks the IP after DNS (row below). The signing secret is not stored: it is derived from a key outside the database, the merchant and a version; rotating is conditional on the current version, so a retried rotation shows the same secret instead of rotating twice.
 
-**Result:** 35 IPs at the edges of each range and 31 URLs, each under the strict and the development policy. 20 concurrent rotations from one version: 1 rotation, the same secret in all 20 answers. A URL change that read the version before a concurrent rotation does not undo it, forced by holding the change open until the rotation waits on the lock. No `whsec_` in the stored row or the logs. 20/20 runs with `-race -count=20`. 22 mutants killed, among them dropping the merchant's lock, the `::ffff:` unmapping, the private or CGNAT check, the numeric-host check, metadata opened in development, a retried rotation rotating again, and `Cache-Control: no-store`
+**Result:** 35 IPs at the edges of each range and 31 URLs, each under the strict and the development policy. 20 concurrent rotations from one version: 1 rotation, the same secret in all 20 answers. A URL change that read the version before a concurrent rotation does not undo it, forced by holding the change open until the rotation waits on the lock. No `whsec_` in the stored row or the logs. 22 mutants killed.
 
 ---
 
@@ -311,7 +325,7 @@ Each payout holds 10% of what is available on `merchant_reserve` for 90 days, an
 
 The worker claims due outbox events with `FOR UPDATE SKIP LOCKED` and a lease (`next_attempt_at` pushed past the timeout + 1 min), commits and only then posts, outside any transaction (section 4.3); the result goes into another short transaction. `attempts` fences the claim: once the lease ran out and another worker took the event, the first can no longer reschedule or fail it, while a 2xx, being a fact, is still recorded. Every post carries `Webhook-Signature: t=…,v1=…` (HMAC-SHA256 of the timestamp and the stored body), with a second `v1` from the previous secret for 24 h after a rotation. Only a 2xx is success: redirects are not followed, and the IP is checked again at `connect`, after DNS, under the same policy as registration. A failure waits a draw from [0, 30 s · 2ⁿ⁻¹], up to 6 h (decision 23), and becomes `failed` 72 h after creation. Each round takes up to 4 events per merchant, merchants with the oldest event first.
 
-**Result:** **Cited test 4:** the worker is killed mid-way through the second round over 100 events of 5 merchants, with 10 posts received by the merchant and never answered; after the restart and the lease running out, all 100 are delivered, the 10 cut off twice and the other 90 once, and the cut-off ones get no retry or error recorded. 4 workers over 300 events of 10 merchants: each posted once, no bad signature. 13 decision cases, 7 forgeries refused, 10 addresses through the post-DNS check. 20/20 runs with `-race -count=20`. 21 mutants killed, among them dropping `FOR UPDATE SKIP LOCKED`, the per-merchant cap, the `attempts` fence, the lease margin, the 2xx's decoupled context, `CheckRedirect`, the post-DNS check, the timestamp in the MAC and the previous secret's deadline.
+**Result:** **Cited test 4:** the worker is killed mid-way through the second round over 100 events of 5 merchants, with 10 posts received by the merchant and never answered; after the restart and the lease running out, all 100 are delivered, the 10 cut off twice and the other 90 once, and the cut-off ones get no retry or error recorded. 4 workers over 300 events of 10 merchants: each posted once, no bad signature. 13 decision cases, 7 forgeries refused, 10 addresses through the post-DNS check. 21 mutants killed.
 
 ---
 
@@ -319,7 +333,7 @@ The worker claims due outbox events with `FOR UPDATE SKIP LOCKED` and a lease (`
 
 Each round tells each merchant's breaker once: a 2xx ends the run of failures, and a failure 72 h after the first one with no success between disables the endpoint, in one conditional `UPDATE`, so only one of many concurrent failures disables and warns. Disabled, the endpoint gets no post: its events wait with the usual backoff and fail at 72 h, and failures cut short by shutdown do not count. The notice is `GET /v1/webhook-endpoint`, which shows `failing_since`, `disabled_at` and `disabled_reason`, plus an `ERROR` log line for the operator; any `PUT`, with the same URL too, turns it back on. An hourly job deletes, in batches of 1,000 with `SKIP LOCKED`, events delivered more than 30 days ago; `pending` and `failed` stay. The `GET` test found a bug from #32: times read from the database came out in the local zone (`-03:00`); they now come out in UTC (section 4.9).
 
-**Result:** 20 concurrent failures at the 72 h mark: 1 disables. No post to a disabled destination, and delivery resumes after the `PUT`. A round with 2xx and 500 mixed ends the run. 5 delivered at the cutoff deleted over 3 batches; the one delivered 1 µs after it, the `failed` and the `pending` stay. 20/20 runs with `-race -count=20`. 15 mutants killed, among them `<` instead of `<=` at the mark, every failure restarting the run, a success turning a disabled destination back on, posting to a disabled destination, counting shutdown failures, the cleanup deleting `failed`, a 3-day retention and reading without UTC.
+**Result:** 20 concurrent failures at the 72 h mark: 1 disables. No post to a disabled destination, and delivery resumes after the `PUT`. A round with 2xx and 500 mixed ends the run. 5 delivered at the cutoff deleted over 3 batches; the one delivered 1 µs after it, the `failed` and the `pending` stay. 15 mutants killed.
 
 ---
 
@@ -327,7 +341,7 @@ Each round tells each merchant's breaker once: a 2xx ends the run of failures, a
 
 The list shows the merchant's events, newest first, with an opaque cursor and a `delivery_status` filter: each with the exact body every delivery sends and where its delivery stands (attempts, next attempt, last status and error). Redelivery works from any status: `failed` is retried, `delivered` sent again, `pending` sent without waiting for its backoff; it answers `202`, with no `Idempotency-Key`, since repeating it only queues the event again. It opens a new retry window: the backoff restarts at 30 s and the 72 h count from it, without resetting `attempts`, which keeps fencing claims. A post in flight before the redelivery cannot push the "now" back to its own backoff. With no endpoint or a disabled one, `409`; another merchant's event, an unknown one or a malformed ID, the same `404`. `evt_`/`pay_`/`att_` now come from one place, `internal/platform/publicid`.
 
-**Result:** 7 events in pages of 3: each seen once, newest first, none of another merchant's, each `event` equal to the stored bytes. 6 invalid parameters refused. Redelivery from all 3 statuses. An event that failed its whole window (over 20 attempts), redelivered, waits 30 s after its first failure, stays `pending` until 72 h after the redelivery and is delivered. 20/20 runs with `-race -count=20`. 15 mutants killed, among them redelivery not reopening the deadline or not restarting the backoff, dropping the window fence, redelivering another merchant's event, the cursor with `<=`, backoff by the total attempt and rewriting the event's JSON.
+**Result:** 7 events in pages of 3: each seen once, newest first, none of another merchant's, each `event` equal to the stored bytes. 6 invalid parameters refused. Redelivery from all 3 statuses. An event that failed its whole window (over 20 attempts), redelivered, waits 30 s after its first failure, stays `pending` until 72 h after the redelivery and is delivered. 15 mutants killed.
 
 </details>
 
@@ -346,7 +360,7 @@ An acquirer over real HTTP, with authorizations in memory and the faults of `int
 
 `method: card` with `card.token` is authorized and captured as the payment is created, so the `201` is already `paid` with `card.status: captured`, the GameStore's books posted and `payment.paid` in the outbox, byte for byte the same as the `GET` and as a retry. The payments module picks the provider by method (`pix` → `pixsim`, `card` → `cardsim`) and, once an attempt exists, by the name stored with it, so a refund goes back through the acquirer that captured. The token is stored with the attempt, refused by a `CHECK` unless it is a token, so a request that died before calling the acquirer is completed by its retry. A decline is a `201` pending with `declined`; a lost answer is `processing`, and the resolver finds the capture by the attempt's key.
 
-**Result:** 6 tests against a real Postgres and both simulators: captured on create, 3 declines, 5 refused requests that store nothing (a card number among them), the resolver confirming a lost capture with 1 authorization, a resumed create authorizing once with the stored token, and a card refund posting as a PIX one. 6 mutants killed: not rereading the paid payment, not capturing at once, the token not sent or not stored, a decline read as an error and the refund routed by method instead of by the paid attempt.
+**Result:** 6 tests against a real Postgres and both simulators: captured on create, 3 declines, 5 refused requests that store nothing (a card number among them), the resolver confirming a lost capture with 1 authorization, a resumed create authorizing once with the stored token, and a card refund posting as a PIX one. 6 mutants killed.
 
 
 ---
@@ -366,7 +380,7 @@ An acquirer over real HTTP, with authorizations in memory and the faults of `int
 
 The 44-digit barcode and 47-digit linha digitável of Febraban's layout, with each field's modulo 10 check digit and the general modulo 11, and the due date factor restarted at 1000 on 22 February 2025: one count from 3 July 2000, repeating every 9,000 days, read as the date nearest today. The calendar is a table versioned in the code (`BR-2024`, with 20 November national under Lei 14.759/2023), with Carnival, Good Friday and Corpus Christi computed from Easter and 31 December without banking; a `Date` has no time or zone, and the day that counts is `America/Sao_Paulo`'s. The payer's CPF is checked by its two digits and never printed whole: `String` and `slog` show `***.982.247-**`.
 
-**Result:** Banco do Brasil's published example (R$ 1.00, factor 3737) matches digit for digit both ways; every one-digit change of the linha digitável is caught; 100 random boletos a round go through the line and back; business days checked by property over 100 years and Easter against 11 published years from 1961 to 2285. The CPF property test found that the Receita's modulo 11 lets a few one-digit errors in the base through, since remainders 0 and 1 both give 0, so the test now claims only what the algorithm guarantees. 5 mutants killed: the modulo 10 weights, the factor counted a day late, the CPF's second digit ignored, Corpus Christi forgotten, and a due date on a holiday not moved to the next banking day.
+**Result:** Banco do Brasil's published example (R$ 1.00, factor 3737) matches digit for digit both ways; every one-digit change of the linha digitável is caught; 100 random boletos a round go through the line and back; business days checked by property over 100 years and Easter against 11 published years from 1961 to 2285. The CPF property test found that the Receita's modulo 11 lets a few one-digit errors in the base through, since remainders 0 and 1 both give 0, so the test now claims only what the algorithm guarantees. 5 mutants killed.
 
 ---
 
@@ -382,7 +396,7 @@ A bank over real HTTP with the other two's `simkit`: it registers a boleto once 
 
 `method: boleto` with `payer` (name, CPF and an optional e-mail) comes back `201` pending with `boleto.status: ready`, the barcode, the printed linha digitável and a `due_date` three calendar days later in São Paulo; the quote lasts until the end of the bank's last day to receive it. The payer and the due date are stored with the attempt (migration 00023, with `CHECK`s that keep them together and apart from the card), so a retry registers the same boleto, and so is the returned barcode, so the `GET` shows the boleto the payer may already have printed; the linha digitável is derived from it. The CPF is in no response. `boleto.paid` reaches the inbox at `POST /v1/providers/boletosim/events` and the worker confirms the payment as any other, but only on an attempt `boletosim` holds: an event naming another provider's attempt fails. A lapsed boleto is refused by the bank and the payment expires through the expiry job; a lost answer stays `processing` until the resolver finds the boleto by its key.
 
-**Result:** 5 contract tests against a real Postgres and the simulator, plus 1 worker test and 2 domain ones: the boleto ready, the same on `GET`, with the payer stored and the CPF absent from the response; paid at the bank, confirmed by the event with the GameStore's books and half refunded back through the bank; refused after its due date and expired with nothing posted; a lost answer resolved with 1 registration at the bank; 7 refused requests that never call the bank; and a `boleto.paid` naming a PIX attempt left `failed`. Due dates on a Saturday, on a holiday and at 23:30 on a Friday in São Paulo. 20/20 runs with `-race`. 8 mutants killed: a masked CPF sent to the bank, the due date or the barcode not stored, a payer accepted on PIX, an event changing the barcode accepted, the worker without the boleto handler, the API without its verifier, and an event applied to another provider's attempt (that last one a real flaw, found while writing the test: with a single provider it never showed).
+**Result:** 5 contract tests against a real Postgres and the simulator, plus 1 worker test and 2 domain ones: the boleto ready, the same on `GET`, with the payer stored and the CPF absent from the response; paid at the bank, confirmed by the event with the GameStore's books and half refunded back through the bank; refused after its due date and expired with nothing posted; a lost answer resolved with 1 registration at the bank; 7 refused requests that never call the bank; and a `boleto.paid` naming a PIX attempt left `failed`. Due dates on a Saturday, on a holiday and at 23:30 on a Friday in São Paulo. 20/20 runs with `-race`. 8 mutants killed. One was a real flaw, found while writing the test: an event applied to another provider's attempt, which never showed with a single provider.
 
 </details>
 
@@ -401,7 +415,7 @@ The acquirer opens a chargeback on a captured authorization by control endpoint,
 
 `chargeback.opened` reaches the inbox at `POST /v1/providers/cardsim/events`, and the worker moves the payment to `charged_back`, stores the chargeback and takes the money back in one transaction: the reais leave the acquirer's receivable, the merchant loses the same share of the payment in USD, fee kept, priced cumulatively like refunds, and the gateway's exchange result absorbs today's rate. The merchant learns of it by `chargeback.opened`, with the chargeback's ID. Accept and contest go to the acquirer first, outside the transaction, and a lost answer is a `503` that changed nothing. A won dispute posts the reversal and sends `chargeback.won`; a lost one sends `chargeback.lost`. Each moves the payment's version. A refunded payment can still be charged back, and the money leaves twice until the dispute is won (decision 7). A chargeback of a capture still being confirmed, or a close before its opening, is retried; the same opening under another event ID is applied once.
 
-**Result:** **F8's criterion:** the GameStore paid by card, paid out on day 30 with US$ 1.94 held, charged back: the balance goes to −US$ 20.00, the next run takes the reserve and leaves −US$ 18.06, and the won dispute brings it back to US$ 1.94, with the acquirer's receivable back at R$ 101.50 and every event matching `ChargebackEvent`. 8 contract tests, plus 6 domain tests and 1 worker test: the above; accepted and lost; refunded then charged back, the payable at −US$ 1.20 until won; two halves at US$ 10.00 each; pending money charged back from pending; 404s, evidence refused and a `503` retried; a replayed opening and an early close; a chargeback before the capture is confirmed, applied after. Pricing and postings by property: chargebacks in any pieces add up to the payment and the whole spread, every posting balanced at any rate. 20/20 runs with `-race -count=20`. 5 mutants killed, among them pending money without its chargebacks, the reversal never posted and an early chargeback failed instead of retried. One was a real bug, found by writing the test: the replayed opening was priced before it was recognized, and a whole chargeback seen twice failed as exceeding the payment.
+**Result:** **F8's criterion:** the GameStore paid by card, paid out on day 30 with US$ 1.94 held, charged back: the balance goes to −US$ 20.00, the next run takes the reserve and leaves −US$ 18.06, and the won dispute brings it back to US$ 1.94, with the acquirer's receivable back at R$ 101.50 and every event matching `ChargebackEvent`. 8 contract tests, plus 6 domain tests and 1 worker test: the above; accepted and lost; refunded then charged back, the payable at −US$ 1.20 until won; two halves at US$ 10.00 each; pending money charged back from pending; 404s, evidence refused and a `503` retried; a replayed opening and an early close; a chargeback before the capture is confirmed, applied after. Pricing and postings by property: chargebacks in any pieces add up to the payment and the whole spread, every posting balanced at any rate. 5 mutants killed. One was a real bug, found by writing the test: the replayed opening was priced before it was recognized, and a whole chargeback seen twice failed as exceeding the payment.
 
 </details>
 
@@ -751,11 +765,20 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F6 | Outbox and webhooks; GameStore end to end over HTTP | ✅ done |
 | F7 | Refunds and settlement | ✅ done |
 | F8 | Card, boleto, chargebacks | ✅ done |
-| F9 | Polish: less code, comments only for the why, no behavior change ([plan](docs/polimento.md)) | 🚧 in progress |
+| F9 | Polish: less code, comments only for the why, no behavior change ([plan](docs/polimento.md)) | ✅ done |
 | F10 | Chaos test across the three simulators and daily reconciliation | planned |
 | F11 | `docker compose up` with everything and a GameStore demo script | planned |
 
 On 14 November 2026, after F8, the Efí sandbox, the public deploy, load tests and the payer page were cut (decision 58): F0–F8 already prove the four axes, and the time goes into a smaller codebase instead.
+
+What F9 changed, in lines (`wc -l`, without the code sqlc generates):
+
+| | Before | After |
+|---|---|---|
+| Production Go | 17,147 | 16,427 |
+| Comments in production Go | 1,630 | 924 |
+| Test Go | 19,009 | 18,894 |
+| `api/openapi.yaml` | 1,505 | 1,493 |
 
 ## Run it locally
 
