@@ -198,10 +198,7 @@ func (c *contract) crashedCreateOf(merchantKey, idempotencyKey, body, method str
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		c.t.Fatal(err)
-	}
+	rate := contractRate(c.t)
 	draft, err := payments.NewDraft(payments.MerchantID(principal.MerchantID), method, money.New(2000, money.USD), "order-123", card, payments.PayerInput{})
 	if err != nil {
 		c.t.Fatal(err)

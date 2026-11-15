@@ -121,26 +121,30 @@ Marque `[x]` ao terminar e anote o número da PR.
   passagem cinco comentários errados: o `Register` truncado, o `ParseMethod` que
   recusaria boleto e cartão, o CNAB como evidência da F9, o provedor real da F9 e a
   conciliação da F9, que agora é F10.
-- [ ] **3. Duplicação no código de produção.**
-  - `HandlePixSimEvent` e `HandleBoletoSimEvent` (`payments/adapters/events.go`) são o
-    mesmo código com tipos diferentes. Basta uma função que receba o que muda.
-  - Os adapters `pixsim.go`, `boletosim.go` e `cardsim.go` em `payments/adapters`:
-    comparar e extrair o que se repete.
-  - Os servidores dos simuladores (`providers/*/server`) já usam o `simkit`. Ver o que
-    ainda se repete: roteamento, faults, entrega de eventos.
-  - `payments/adapters/http.go` (575 linhas) e os outros `*_http.go`: mapeamento de erro
-    para problema repetido em cada handler.
-  - Construtores com seis ou mais parâmetros repetidos (`clock`, `logger`,
-    `providerTimeout`): ver se um struct de dependências comum encurta.
+- [x] **3. Duplicação no código de produção.** Medido em 16/11/2026: não compensa.
+  - `HandlePixSimEvent` e `HandleBoletoSimEvent`: o que muda está em quase toda linha
+    (tipo, constante "paid", status, chave, `BRCode`/`Barcode`, mensagem). A versão
+    unificada mais enxuta tem 35 linhas contra 34.
+  - Adapters e servidores dos simuladores: cada um tem seus próprios tipos. Unificar o
+    `Refund` no `simkit` muda o JSON (`charge_id`, `boleto_id`, `authorization_id`), o que
+    a regra 1 não deixa.
+  - Erro → problema nos `*_http.go`: já é uma linha por erro, com mensagem própria de
+    cada endpoint. Só dois `case` se repetem (uns 5 linhas).
+  - Struct de dependências nos construtores: 41 chamadas, quase todas em testes, passam a
+    montar o struct; o total não diminui.
+  - O `dupl` só acha esses handlers e `confirmationAccounts`/`refundAccounts`, que têm a
+    mesma forma com contas diferentes.
 - [ ] **4. Testes.**
-  - `cmd/api` tem 4.903 linhas. Os helpers estão espalhados: `processInbox` e
+  - [x] (#68) `cmd/api` tem 4.903 linhas. Os helpers estão espalhados: `processInbox` e
     `boletoEvents` estão em `contract_boleto_test.go` mas roteiam os três provedores, e
     devem ir para `contract_test.go` com outro nome.
-  - Taxa fixa de 5,0000 repetida em `contractRates`, `testRates` (worker) e duas vezes em
-    `contract_refund_resolver_test.go`: deixar uma só.
-  - Testes quase iguais que viram tabela.
-  - Helpers de corpo e de requisição repetidos entre arquivos: `postChargeback`,
-    `postRefund`, `getRequest` e semelhantes.
+  - [x] (#68) Taxa fixa de 5,0000 repetida em `contractRates`, `testRates` (worker) e duas
+    vezes em `contract_refund_resolver_test.go`: deixar uma só. Eram seis cópias no
+    `cmd/api` e duas no `cmd/worker`; ficou uma por pacote.
+  - [ ] Testes quase iguais que viram tabela.
+  - [x] (#68) Helpers de corpo e de requisição repetidos entre arquivos: `postChargeback`,
+    `postRefund`, `getRequest` e semelhantes. Os oito viraram uma linha sobre
+    `apiRequest`, e o `getPayment` saiu.
 - [ ] **5. OpenAPI.** Respostas `404`, `409` e `503` com o mesmo bloco inline repetido em
   cada caminho: mover para `components/responses` e referenciar. Os testes de contrato
   validam contra o arquivo, então qualquer erro aparece.
@@ -167,6 +171,8 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 15/11/2026 | 2. Comentários: `boleto` | #65 | 16.673 | 1.170 | 19.009 | 47 → 35 no pacote |
 | 15/11/2026 | 2. Comentários: providers | #66 | 16.615 | 1.112 | 19.009 | 115 → 57 no grupo |
 | 15/11/2026 | 2. Comentários: demais pacotes | #67 | 16.427 | 924 | 19.009 | item 2 fechado |
+| 16/11/2026 | 3. Duplicação | — | 16.427 | 924 | 19.009 | medido, não compensa |
+| 16/11/2026 | 4. Testes: helpers do `cmd/api` | #68 | 16.427 | 924 | 18.956 | −53 no teste |
 
 ## 8. Como retomar numa sessão nova
 
