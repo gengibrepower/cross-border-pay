@@ -8,8 +8,7 @@ import (
 
 const (
 	minFactor = 1000
-	// cycle is how many dates the factors 1000 to 9999 name before they repeat.
-	cycle = 9000
+	cycle     = 9000
 )
 
 // cycleStart is a date of factor 1000. The factor counted days from 7 October 1997 and
@@ -17,9 +16,8 @@ const (
 // 9,000 days after the first 1000, so one count from that day covers both bases.
 var cycleStart = mustDate("2000-07-03")
 
-// DueFactor is the four digits that stand for the due date. 0000 means a boleto with
-// no due date, which decision 53 does not issue, so a date before the first 1000 is
-// out of range.
+// DueFactor refuses a date before the first 1000: 0000 is a boleto with no due date,
+// which decision 53 does not issue.
 func DueFactor(due calendar.Date) (int, error) {
 	if due.IsZero() || due.Before(cycleStart) {
 		return 0, fmt.Errorf("%w: %s", ErrInvalidDue, due)
@@ -27,7 +25,6 @@ func DueFactor(due calendar.Date) (int, error) {
 	return minFactor + due.DaysSince(cycleStart)%cycle, nil
 }
 
-// dueNear is the date of factor nearest to near.
 func dueNear(factor int, near calendar.Date) calendar.Date {
 	offset := factor - minFactor
 	cycles := (near.DaysSince(cycleStart) - offset + cycle/2) / cycle

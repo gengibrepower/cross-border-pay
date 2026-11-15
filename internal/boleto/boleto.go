@@ -36,23 +36,19 @@ const (
 	BarcodeLength = 44
 	LineLength    = 47
 	FreeFieldLen  = 25
-	// MaxAmount is ten digits of centavos.
-	MaxAmount = 99_999_999_99
-	// currencyReal is the only currency code Febraban defines in use.
-	currencyReal = '9'
+	MaxAmount     = 99_999_999_99
+	currencyReal  = '9'
 )
 
 // Boleto is what a barcode says. The beneficiary and the "nosso número" live in the
 // free field, whose layout is the issuing bank's.
 type Boleto struct {
-	// Bank is the three-digit COMPE code of the issuing bank.
 	Bank      string
 	Due       calendar.Date
 	Amount    money.Money
 	FreeField string
 }
 
-// Barcode is the 44 digits the boleto's barcode carries.
 func Barcode(b *Boleto) (string, error) {
 	switch {
 	case len(b.Bank) != 3 || !digits(b.Bank):
@@ -85,8 +81,7 @@ func Line(barcode string) (string, error) {
 	return f1 + string(mod10(f1)) + f2 + string(mod10(f2)) + f3 + string(mod10(f3)) + barcode[4:19], nil
 }
 
-// BarcodeFromLine turns a linha digitável, with or without its dots and spaces, back
-// into the barcode, checking each field's digit and then the general one.
+// BarcodeFromLine accepts the line with or without its dots and spaces.
 func BarcodeFromLine(line string) (string, error) {
 	line = strings.NewReplacer(".", "", " ", "").Replace(line)
 	if len(line) != LineLength || !digits(line) {
@@ -127,9 +122,8 @@ func Parse(barcode string, near calendar.Date) (Boleto, error) {
 	}, nil
 }
 
-// FormatLine writes a linha digitável the way a boleto prints it,
-// AAAAA.AAAAA BBBBB.BBBBBB CCCCC.CCCCCC D EEEEEEEEEEEEEE. Anything that is not 47
-// digits is returned as it came.
+// FormatLine prints AAAAA.AAAAA BBBBB.BBBBBB CCCCC.CCCCCC D EEEEEEEEEEEEEE, and
+// returns anything that is not 47 digits as it came.
 func FormatLine(line string) string {
 	if len(line) != LineLength || !digits(line) {
 		return line

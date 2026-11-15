@@ -1,8 +1,6 @@
 package boleto
 
-// mod10 is the check digit of each field of the line: from the right, digits weigh 2,
-// 1, 2, ...; a product above 9 counts as the sum of its digits; the digit is what takes
-// the total to the next multiple of 10.
+// mod10 is the check digit of each field of the line.
 func mod10(s string) byte {
 	sum := 0
 	weight := 2
@@ -14,9 +12,8 @@ func mod10(s string) byte {
 	return byte('0' + (10-sum%10)%10)
 }
 
-// mod11 is the general check digit of the barcode, over its other 43 digits: from the
-// right, digits weigh 2 to 9 and back to 2; the digit is 11 minus the remainder by 11,
-// and 1 when that gives 0, 10 or 11, since a 0 would not be read.
+// mod11 is the barcode's general check digit. 10 and 11 become 1, since a 0 would not
+// be read.
 func mod11(s string) byte {
 	sum := 0
 	weight := 2
