@@ -52,7 +52,7 @@ func TestMain(m *testing.M) {
 	}
 	bin = dir
 	build := exec.CommandContext(context.Background(), "go", "build", //nolint:gosec // G204: a fixed go build into a directory TestMain made.
-		"-race", "-o", dir+string(os.PathSeparator), "./cmd/api", "./cmd/worker", "./cmd/pixsim", "./cmd/migrate", "./cmd/admin")
+		"-race", "-o", dir+string(os.PathSeparator), "./cmd/api", "./cmd/worker", "./cmd/pixsim", "./cmd/cardsim", "./cmd/boletosim", "./cmd/migrate", "./cmd/admin")
 	build.Dir = ".."
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
@@ -187,14 +187,17 @@ func eventually(t *testing.T, within time.Duration, what string, cond func() boo
 	}
 }
 
-// stack is the gateway as deployed: the simulator, the API and the worker, each its
-// own process, on a database migrated by cmd/migrate.
+// stack is the gateway as deployed: the three simulators, the API and the worker, each
+// its own process, on a database migrated by cmd/migrate.
 type stack struct {
 	t        *testing.T
 	pool     *pgxpool.Pool
 	dbURL    string
 	api      string
 	pixsim   string
+	cardsim  string
+	boleto   string
+	worker   map[string]string
 	charges  *chargeRecorder
 	inbox    *eventRecorder
 	procs    []*process
@@ -202,6 +205,12 @@ type stack struct {
 }
 
 func newStack(t *testing.T) *stack {
+	t.Helper()
+	return newSeededStack(t, "7")
+}
+
+// newSeededStack's simulators all draw from seed.
+func newSeededStack(t *testing.T, seed string) *stack {
 	t.Helper()
 	pool := pgtest.NewEmptyPool(t)
 	s := &stack{t: t, pool: pool, dbURL: pool.Config().ConnString()}
@@ -211,16 +220,27 @@ func newStack(t *testing.T) *stack {
 	// forwards once the API is up, and keeps each event ID for redeliveries.
 	s.inbox = newEventRecorder(t)
 	pixsim := start(t, "pixsim", map[string]string{
-		"PIXSIM_ADDR": "127.0.0.1:0", "PIXSIM_SEED": "7",
+		"PIXSIM_ADDR": "127.0.0.1:0", "PIXSIM_SEED": seed,
 		"PIXSIM_WEBHOOK_URL": s.inbox.URL + "/v1/providers/pixsim/events", "PIXSIM_WEBHOOK_SECRET": pixsimSecret,
 	})
 	s.pixsim = pixsim.addr(t)
+	cardsim := start(t, "cardsim", map[string]string{
+		"CARDSIM_ADDR": "127.0.0.1:0", "CARDSIM_SEED": seed,
+		"CARDSIM_WEBHOOK_URL": s.inbox.URL + "/v1/providers/cardsim/events", "CARDSIM_WEBHOOK_SECRET": cardsimSecret,
+	})
+	s.cardsim = cardsim.addr(t)
+	boletosim := start(t, "boletosim", map[string]string{
+		"BOLETOSIM_ADDR": "127.0.0.1:0", "BOLETOSIM_SEED": seed,
+		"BOLETOSIM_WEBHOOK_URL": s.inbox.URL + "/v1/providers/boletosim/events", "BOLETOSIM_WEBHOOK_SECRET": boletosimSecret,
+	})
+	s.boleto = boletosim.addr(t)
 	// The gateway reaches the simulator through a recorder that notes each charge's
 	// ID by its BR Code, which is what a payer holding the code needs to pay it.
 	s.charges = newChargeRecorder(t, s.pixsim)
 
 	common := map[string]string{
 		"DATABASE_URL": s.dbURL, "PIXSIM_URL": s.charges.URL, "PIXSIM_WEBHOOK_SECRET": pixsimSecret,
+		"CARDSIM_URL": s.cardsim, "BOLETOSIM_URL": s.boleto,
 		"BOLETOSIM_WEBHOOK_SECRET": boletosimSecret,
 		"CARDSIM_WEBHOOK_SECRET":   cardsimSecret,
 		"WEBHOOK_SIGNING_KEY":      signingKey, "WEBHOOK_ALLOW_PRIVATE": "true", "WEBHOOK_TIMEOUT": webhookTimeout,
@@ -235,7 +255,8 @@ func newStack(t *testing.T) *stack {
 	s.inbox.forwardTo(s.api)
 	worker := start(t, "worker", common)
 	worker.waitLog(t, `"job":"webhooks"`)
-	s.procs = []*process{api, worker, pixsim}
+	s.worker = common
+	s.procs = []*process{api, worker, pixsim, cardsim, boletosim}
 	s.merchant = newMerchantServer(t)
 	return s
 }
