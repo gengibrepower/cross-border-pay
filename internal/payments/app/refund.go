@@ -18,7 +18,6 @@ var (
 	// refunded in full.
 	ErrPaymentNotRefundable = errors.New("payments: only a paid payment can be refunded")
 	ErrRefundNotFound       = errors.New("payments: refund not found")
-	ErrChargebackNotFound   = errors.New("payments: chargeback not found")
 )
 
 // RefundRequested is the recovery point of a refund whose row and hold are stored: a

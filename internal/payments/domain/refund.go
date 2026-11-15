@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	ErrInvalidRefundID = errors.New("payments: invalid refund ID")
 	// ErrRefundExceedsPayment is invariant 8: refunds never return more than was paid.
 	ErrRefundExceedsPayment = errors.New("payments: refunds would exceed the amount paid")
 	// ErrRefundTooSmall is a refund whose share of what the payer paid rounds to nothing.
@@ -21,14 +20,6 @@ var (
 type RefundID [16]byte
 
 func (id RefundID) String() string { return publicid.Encode("ref_", id) }
-
-func ParseRefundID(s string) (RefundID, error) {
-	id, ok := publicid.Parse("ref_", s)
-	if !ok {
-		return RefundID{}, fmt.Errorf("%w: %q", ErrInvalidRefundID, s)
-	}
-	return id, nil
-}
 
 // RefundAmounts is what one refund moves, fixed when it is created and stored with it.
 type RefundAmounts struct {

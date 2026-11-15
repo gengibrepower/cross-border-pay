@@ -86,7 +86,9 @@ find . -name '*_test.go' | xargs cat | wc -l
 - **deadcode**: lista funções inalcançáveis. O modo automático bloqueia o Claude de baixar
   a ferramenta, então **o Claude deve pedir ao Felipe para rodar** no prompt, com `!` na
   frente, para a saída cair na conversa:
-  `! go run golang.org/x/tools/cmd/deadcode@v0.28.0 -test ./...`
+  `! go run golang.org/x/tools/cmd/deadcode@v0.52.0 -test ./...`
+
+  A v0.28.0 não lê o Go 1.27 e quebra com `unexpected expr: *ast.KeyValueExpr`.
 - **`dupl`** do golangci-lint, ligado só localmente para achar blocos repetidos:
   `golangci-lint run --enable-only dupl ./...`
 
@@ -107,11 +109,9 @@ lock, inverter um sinal, pular uma verificação de idempotência. Depois desfa�
 Marque `[x]` ao terminar e anote o número da PR.
 
 - [x] **0. Escopo.** Decisão 58 no `docs/escopo.md` e status nos READMEs.
-- [ ] **1. Código morto.** Pedir ao Felipe para rodar o `deadcode` (seção 4) e apagar o que
-  não for usado. Já se sabe:
-  - `ErrChargebackNotDisputable` já saiu;
-  - erros declarados num arquivo e usados em outro, como `ErrChargebackNotFound` em
-    `app/refund.go`, que ficaria melhor em `app/chargeback.go`.
+- [x] **1. Código morto.** (#58) O `deadcode` achou `TransactionID.String`, `ParseRefundID`
+  e os `Sign` do `boletosim` e do `cardsim`; com o `ParseRefundID` saiu o
+  `ErrInvalidRefundID`. O `ErrChargebackNotFound` foi para `app/chargeback.go`.
 - [ ] **2. Comentários.** Pacote por pacote, do maior para o menor: `payments/domain`
   (300), `payments/app` (238), `payments/adapters` (209), `providers/cardsim` (72),
   `simkit` (64), `webhooks/app` (48), `boleto` (47). Alvo: menos da metade das 1.630
@@ -152,6 +152,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | Data | Item | PR | Produção | Comentários | Teste | Observação |
 |---|---|---|---|---|---|---|
 | 14/11/2026 | Linha de base | — | 17.147 | 1.630 | 19.009 | master `b8619b2` |
+| 15/11/2026 | 1. Código morto | #58 | 17.131 | 1.628 | 19.009 | `deadcode` só achou 4 funções |
 
 ## 8. Como retomar numa sessão nova
 

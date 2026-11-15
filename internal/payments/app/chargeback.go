@@ -10,6 +10,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
+var ErrChargebackNotFound = errors.New("payments: chargeback not found")
+
 // Disputer is a provider that takes the merchant's answer to a chargeback, by the ID
 // the provider gave it. Each answer returns the chargeback's status after it; answering
 // again the same way returns it as it is. domain.ErrChargebackClosed is the provider
