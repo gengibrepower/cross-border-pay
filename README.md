@@ -485,7 +485,7 @@ sequenceDiagram
 
 ## Key decisions
 
-The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11](docs/escopo.md) (Portuguese). Below are the choices made while building it, each with the alternative it beat, grouped by area:
+The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11](docs/escopo.md) (Portuguese). Below are the choices made while building it, each with the alternative it beat, grouped by area:
 
 <details>
 <summary><b>Architecture and testing</b> · 5 decisions</summary>
@@ -496,7 +496,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Testing:** Real Postgres in every integration test; determinism only in the provider simulator, controlled by a seed.<br>*Discarded:* Mocked database or fully simulated world: loses real lock and isolation bugs.
 
-- **End-to-end test:** `api`, `worker` and `pixsim` built with `-race` and run as processes, with Postgres from `testcontainers` and a fake merchant checking every signature; all three stop on `SIGTERM` and must exit cleanly.<br>*Discarded:* `docker compose` with a Dockerfile per binary: closer to the deploy, but brings F10 forward and is slower and flakier in CI. Wiring everything in one process: duplicates the `main` wiring and stops testing real config, signals and HTTP.
+- **End-to-end test:** `api`, `worker` and `pixsim` built with `-race` and run as processes, with Postgres from `testcontainers` and a fake merchant checking every signature; all three stop on `SIGTERM` and must exit cleanly.<br>*Discarded:* `docker compose` with a Dockerfile per binary: closer to the deploy, but brings F11 forward and is slower and flakier in CI. Wiring everything in one process: duplicates the `main` wiring and stops testing real config, signals and HTTP.
 
 - **HTTP:** Standard library `net/http` router; hand-written OpenAPI validated in contract tests.<br>*Discarded:* Frameworks and generated code: more to explain, little gained with Go's method+path patterns.
 
@@ -568,7 +568,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Capture idempotency:** None needed: an authorization is captured once, so the same capture is answered as it is and another amount is a `409`, even after a capture the acquirer may not have received.<br>*Discarded:* An Idempotency-Key: a second key with another amount could capture twice.
 
-- **Boleto confirmation:** The simulator's signed `boleto.paid`, through the same inbox as PIX; the CNAB 240 return file arrives in F9 as the reconciliation's evidence.<br>*Discarded:* Waiting for CNAB: F8's boleto would depend on F9's parser, and a real bank announces the payment before the next day's file anyway.
+- **Boleto confirmation:** The simulator's signed `boleto.paid`, through the same inbox as PIX; the CNAB 240 return file may come in F10 as the reconciliation's evidence.<br>*Discarded:* Waiting for CNAB: F8's boleto would depend on a later parser, and a real bank announces the payment before the next day's file anyway.
 
 - **Boleto due date:** Three calendar days in `America/Sao_Paulo` (decision 44), received until the end of the first banking day on or after it; the quote lasts until then, and the date is stored with the attempt.<br>*Discarded:* Computing the due date on every call: a create resumed after midnight would ask for another boleto with the same key. Three business days: decision 44 says calendar days, and the banking day already enters the last day to receive.
 
@@ -594,7 +594,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **PIX txid:** Chosen by the simulator (25 characters from the seed) and returned with the charge; our attempt ID travels as the `Idempotency-Key`<br>*Discarded:* Packing the 26-character attempt ID into 25 by dropping the UUIDv7 version and variant bits: lossless, but cleverness with nothing gained.
 
-- **Simulator event signature:** `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t.body)>`, compared with `hmac.Equal` and a 5-minute tolerance; several `v1` allowed, so a secret can rotate.<br>*Discarded:* Signing only the body: a captured delivery replays forever. A plain shared token in a header: proves nothing about the body. mTLS: the real provider's job (F9), not the simulator's.
+- **Simulator event signature:** `Pixsim-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t.body)>`, compared with `hmac.Equal` and a 5-minute tolerance; several `v1` allowed, so a secret can rotate.<br>*Discarded:* Signing only the body: a captured delivery replays forever. A plain shared token in a header: proves nothing about the body. mTLS: a real provider's job, not the simulator's.
 
 - **BR Code:** Own codec, printable ASCII only; the simulator issues the static code with amount and txid.<br>*Discarded:* A third-party library: a dependency for ~380 lines testable against the manual. A dynamic code in the simulator: the amount lives in a signed JSON (JWS) hosted at the URL, unrelated to what F5 proves.
 
@@ -619,7 +619,7 @@ The full list of 57 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Invariant 7, one confirmation per payment:** Two barriers: the payment's lock with the state machine (`paid` + `confirm` is a no-op), and a unique ledger reference `payment:<id>:confirm` that refuses a second post if the first barrier ever breaks.<br>*Discarded:* Trusting the status alone: one bug in a path and the money is counted twice.
 
-- **Who owns the review queue:** The `reconciliation` module (section 2.1), with only `review_cases` for now; payments opens cases through a port bridged in `cmd`, as with the outbox.<br>*Discarded:* A table in payments: F9 would need a second queue or a data migration. The inbox's `failed`: it holds no ledger posting, and the expiry job has no event.
+- **Who owns the review queue:** The `reconciliation` module (section 2.1), with only `review_cases` for now; payments opens cases through a port bridged in `cmd`, as with the outbox.<br>*Discarded:* A table in payments: F10's reconciliation would need a second queue or a data migration. The inbox's `failed`: it holds no ledger posting, and the expiry job has no event.
 
 - **Payment of a closed payment:** Late or another amount: the attempt `succeeded` (the provider has the money), the payment untouched, the money held.<br>*Discarded:* Undoing everything, as before: the money stayed outside the ledger, and a late event left the attempt halfway.
 
@@ -751,8 +751,11 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F6 | Outbox and webhooks; GameStore end to end over HTTP | ✅ done |
 | F7 | Refunds and settlement | ✅ done |
 | F8 | Card, boleto, chargebacks | ✅ done |
-| F9 | Hostile simulator, CNAB 240 reconciliation, Efí sandbox | planned |
-| F10 | Public production deploy | planned |
+| F9 | Polish: less code, comments only for the why, no behavior change ([plan](docs/polimento.md)) | 🚧 in progress |
+| F10 | Chaos test across the three simulators and daily reconciliation | planned |
+| F11 | `docker compose up` with everything and a GameStore demo script | planned |
+
+On 14 November 2026, after F8, the Efí sandbox, the public deploy, load tests and the payer page were cut (decision 58): F0–F8 already prove the four axes, and the time goes into a smaller codebase instead.
 
 ## Run it locally
 
@@ -931,10 +934,6 @@ e2e/          GameStore walkthrough against the real binaries
 ## Stack
 
 Go 1.27 · PostgreSQL 18 · `pgx/v5` · `sqlc` · `goose` (as a library) · `log/slog` · `testcontainers-go` · `rapid` (property-based tests) · `golangci-lint` v2 + `gofumpt` · GitHub Actions · mise
-
-## Hosting (planned, F10)
-
-A Linux VM running the same Docker Compose stack, with Caddy for automatic HTTPS, on Azure. Backups with tested restores, CI deploys, OpenTelemetry + Prometheus + Grafana with a public dashboard, k6 load numbers in `docs/benchmarks.md`, and a rate-limited demo account.
 
 ## Regulation
 
