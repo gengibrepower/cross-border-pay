@@ -1,3 +1,26 @@
+# The whole gateway, locally: `docker compose up -d`. `mise run db` starts only postgres.
+# Every secret here is for development only; a real deployment sets its own.
+x-gateway: &gateway
+  build: .
+  image: cross-border-pay
+  restart: unless-stopped
+  environment: &env
+    DATABASE_URL: postgres://cbp:cbp@postgres:5432/cbp?sslmode=disable
+    PIXSIM_URL: http://pixsim:8090
+    CARDSIM_URL: http://cardsim:8091
+    BOLETOSIM_URL: http://boletosim:8092
+    PIXSIM_WEBHOOK_SECRET: dev-pixsim-webhook-secret
+    CARDSIM_WEBHOOK_SECRET: dev-cardsim-webhook-secret
+    BOLETOSIM_WEBHOOK_SECRET: dev-boletosim-webhook-secret
+    WEBHOOK_SIGNING_KEY: dev-webhook-signing-key-0123456789abcdef
+    # Lets webhooks reach a merchant inside this network, such as the demo.
+    WEBHOOK_ALLOW_PRIVATE: "true"
+
+x-after-migrate: &after-migrate
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
 services:
   postgres:
     image: postgres:18.6-alpine
@@ -14,6 +37,51 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  migrate:
+    <<: *gateway
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: [*gateway, *after-migrate]
+    command: ["api"]
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  worker:
+    <<: [*gateway, *after-migrate]
+    command: ["worker"]
+
+  pixsim:
+    <<: *gateway
+    command: ["pixsim"]
+    environment:
+      PIXSIM_WEBHOOK_URL: http://api:8080/v1/providers/pixsim/events
+      PIXSIM_WEBHOOK_SECRET: dev-pixsim-webhook-secret
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  cardsim:
+    <<: *gateway
+    command: ["cardsim"]
+    environment:
+      CARDSIM_WEBHOOK_URL: http://api:8080/v1/providers/cardsim/events
+      CARDSIM_WEBHOOK_SECRET: dev-cardsim-webhook-secret
+    ports:
+      - "127.0.0.1:8091:8091"
+
+  boletosim:
+    <<: *gateway
+    command: ["boletosim"]
+    environment:
+      BOLETOSIM_WEBHOOK_URL: http://api:8080/v1/providers/boletosim/events
+      BOLETOSIM_WEBHOOK_SECRET: dev-boletosim-webhook-secret
+    ports:
+      - "127.0.0.1:8092:8092"
 
 volumes:
   pgdata:
