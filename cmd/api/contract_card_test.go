@@ -56,13 +56,6 @@ func cardOf(t *testing.T, rec *httptest.ResponseRecorder) cardPayment {
 	return p
 }
 
-func getPayment(t *testing.T, key, id string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:8080/v1/payments/"+id, http.NoBody)
-	req.Header.Set("Authorization", "Bearer "+key)
-	return req
-}
-
 // Decision 18: a card is authorized and captured as the payment is created, so the
 // answer is already paid, with the GameStore's books posted as for a PIX payment.
 func TestCardPaymentIsPaidOnCreate(t *testing.T) {
@@ -76,7 +69,7 @@ func TestCardPaymentIsPaidOnCreate(t *testing.T) {
 	if !p.Quote.ExpiresAt.Equal(t0.Add(payments.CardQuoteValidity)) {
 		t.Errorf("quote expires %v, want %v", p.Quote.ExpiresAt, t0.Add(payments.CardQuoteValidity))
 	}
-	if got := c.do(getPayment(t, key, p.ID), true); !bytes.Equal(got.Body.Bytes(), rec.Body.Bytes()) {
+	if got := c.do(getRequest(t, key, "/v1/payments/"+p.ID), true); !bytes.Equal(got.Body.Bytes(), rec.Body.Bytes()) {
 		t.Errorf("GET differs from the POST:\n%s\n%s", got.Body, rec.Body)
 	}
 	if again := c.do(postPayment(t, key, "order-123", cardBody(cardsim.TokenApproved)), true); !bytes.Equal(again.Body.Bytes(), rec.Body.Bytes()) {
@@ -173,7 +166,7 @@ func TestAmbiguousCardIsConfirmedByTheResolver(t *testing.T) {
 	if n, err := resolver.Resolve(t.Context(), 10); err != nil || n != 1 {
 		t.Fatalf("Resolve() = %d, %v; want 1 claimed", n, err)
 	}
-	got := cardOf(t, c.do(getPayment(t, key, p.ID), true))
+	got := cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if got.Status != "paid" || got.Card.Status != "captured" {
 		t.Errorf("after the resolver = %+v, want paid and captured", got)
 	}

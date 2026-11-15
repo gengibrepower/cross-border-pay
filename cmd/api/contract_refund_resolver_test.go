@@ -10,7 +10,6 @@ import (
 
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
-	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -21,10 +20,7 @@ import (
 // provider and clock.
 func (c *contract) refundResolver() *paymentsapp.RefundResolver {
 	c.t.Helper()
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		c.t.Fatal(err)
-	}
+	rate := contractRate(c.t)
 	store := paymentsadapters.NewPostgres(c.pool, paymentSinks())
 	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.deps.providers, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
 	return paymentsapp.NewRefundResolver(refunder, store)
@@ -279,10 +275,7 @@ func TestRefundSentByAnotherPathIsNotSentAgain(t *testing.T) {
 	c.crashedRefund(key, id, "r1", 1000)
 	c.clock.Advance(payments.SentStaleAfter)
 
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	rate := contractRate(t)
 	store := &sentFirst{Postgres: paymentsadapters.NewPostgres(c.pool, paymentSinks())}
 	refunder := paymentsapp.NewRefunder(fxadapters.NewFixedRates(rate), store, c.deps.providers, c.clock, slog.New(slog.DiscardHandler), providerTimeout)
 	if n := c.resolveRefunds(paymentsapp.NewRefundResolver(refunder, store.Postgres)); n != 1 {
@@ -328,10 +321,7 @@ func TestRefundResolverTakesStaleSentRefunds(t *testing.T) {
 	key := c.merchantKey()
 	id := c.paidPayment(key)
 	store, crashed := c.crashedRefund(key, id, "r1", 1000)
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	rate := contractRate(t)
 	if _, _, err := store.ApplyRefund(t.Context(), crashed.ID(), &payments.RefundUpdate{Event: payments.SendRefund}, rate, c.clock.Now()); err != nil {
 		t.Fatal(err)
 	}

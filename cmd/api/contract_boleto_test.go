@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,13 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/gengibrepower/cross-border-pay/internal/boleto"
 	"github.com/gengibrepower/cross-border-pay/internal/calendar"
-	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
-	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
-	events "github.com/gengibrepower/cross-border-pay/internal/events/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
@@ -70,40 +64,6 @@ func boletoOf(t *testing.T, rec *httptest.ResponseRecorder) boletoPayment {
 	return p
 }
 
-// processInbox runs the worker's step for the events the simulator delivered, with
-// the same handler the worker gives the boleto simulator's events.
-func (c *contract) processInbox() {
-	c.t.Helper()
-	p := eventsapp.NewProcessor(eventsadapters.NewPostgres(c.pool), boletoEvents{c: c}, c.clock, slog.New(slog.DiscardHandler))
-	if _, err := p.Process(c.t.Context(), 10); err != nil {
-		c.t.Fatal(err)
-	}
-}
-
-type boletoEvents struct{ c *contract }
-
-// Handle routes by provider, as the worker's bridge does; an event about something not
-// stored yet is retried.
-func (h boletoEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (eventsapp.Result, error) {
-	sinks := paymentSinks()
-	sinks.Rates = contractRates(h.c.t)
-	handle := paymentsadapters.HandleBoletoSimEvent
-	switch e.Provider {
-	case string(paymentsadapters.CardSimName):
-		handle = paymentsadapters.HandleCardSimEvent
-	case string(paymentsadapters.PixSimName):
-		handle = paymentsadapters.HandlePixSimEvent
-	}
-	subject, err := handle(ctx, tx, &sinks, e.Payload, h.c.clock.Now())
-	switch {
-	case errors.Is(err, paymentsapp.ErrEventEarly), errors.Is(err, paymentsapp.ErrAttemptNotFound):
-		return eventsapp.Result{Subject: subject, Outcome: events.Retry, Reason: err.Error()}, nil
-	case err != nil:
-		return eventsapp.Result{Subject: subject, Outcome: events.Failed, Reason: err.Error()}, nil
-	}
-	return eventsapp.Result{Subject: subject, Outcome: events.Processed}, nil
-}
-
 // t0 is Sunday 1 November 2026, 09:00 in São Paulo: due on Wednesday 4, three days
 // later, and received until the end of it (decision 44).
 func TestBoletoPaymentReturnsAPayableBoleto(t *testing.T) {
@@ -125,7 +85,7 @@ func TestBoletoPaymentReturnsAPayableBoleto(t *testing.T) {
 	if back, err := boleto.BarcodeFromLine(p.Boleto.DigitableLine); err != nil || back != p.Boleto.Barcode {
 		t.Errorf("linha digitável %q is barcode %q, %v; want %q", p.Boleto.DigitableLine, back, err, p.Boleto.Barcode)
 	}
-	if got := c.do(getPayment(t, key, p.ID), true); !bytes.Equal(got.Body.Bytes(), rec.Body.Bytes()) {
+	if got := c.do(getRequest(t, key, "/v1/payments/"+p.ID), true); !bytes.Equal(got.Body.Bytes(), rec.Body.Bytes()) {
 		t.Errorf("GET differs from the POST:\n%s\n%s", got.Body, rec.Body)
 	}
 
@@ -162,7 +122,7 @@ func TestPaidBoletoConfirmsThePayment(t *testing.T) {
 		t.Fatalf("event status = %s, want processed", got[0].status)
 	}
 
-	paid := boletoOf(t, c.do(getPayment(t, key, p.ID), true))
+	paid := boletoOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if paid.Status != "paid" || paid.Boleto.Status != "ready" || paid.Boleto.Barcode != p.Boleto.Barcode {
 		t.Errorf("after the event = %+v, want paid with the same boleto", paid)
 	}
@@ -195,7 +155,7 @@ func TestOverdueBoletoIsRefusedAndThePaymentExpires(t *testing.T) {
 	if n, err := expirer.Expire(t.Context(), paymentsapp.ExpiryBatch); err != nil || n != 1 {
 		t.Fatalf("Expire() = %d, %v; want 1", n, err)
 	}
-	got := boletoOf(t, c.do(getPayment(t, key, p.ID), true))
+	got := boletoOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if got.Status != "expired" || got.Boleto.Status != "ready" {
 		t.Errorf("after expiry = %+v, want expired", got)
 	}
@@ -223,7 +183,7 @@ func TestLostBoletoAnswerIsResolved(t *testing.T) {
 	if n, err := resolver.Resolve(t.Context(), 10); err != nil || n != 1 {
 		t.Fatalf("Resolve() = %d, %v; want 1 claimed", n, err)
 	}
-	got := boletoOf(t, c.do(getPayment(t, key, p.ID), true))
+	got := boletoOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if got.Boleto.Status != "ready" || len(got.Boleto.Barcode) != boleto.BarcodeLength {
 		t.Errorf("after the resolver = %+v, want ready", *got.Boleto)
 	}

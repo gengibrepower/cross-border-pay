@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gengibrepower/cross-border-pay/internal/money"
@@ -17,16 +15,6 @@ import (
 
 func manualCardBody(token string) string {
 	return fmt.Sprintf(`{"amount": {"value": 2000, "currency": "USD"}, "method": "card", "reference": "order-123", "card": {"token": %q, "capture_method": "manual"}}`, token)
-}
-
-func captureRequest(t *testing.T, key, id, body string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost:8080/v1/payments/"+id+"/capture", strings.NewReader(body))
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	return req
 }
 
 // authorized is a manual card payment of the GameStore's US$ 20.00, authorized only.
@@ -102,7 +90,7 @@ func TestPartialCapture(t *testing.T) {
 		captured.Fee.Value != 45 || captured.NetAmount.Value != 1455 {
 		t.Fatalf("partial capture = %+v %+v, want US$ 15.00: R$ 76.12, fee US$ 0.45, net US$ 14.55", got, captured)
 	}
-	if again := cardOf(t, c.do(getPayment(t, key, p.ID), true)); again.Card.Captured.Amount.Value != 1500 {
+	if again := cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true)); again.Card.Captured.Amount.Value != 1500 {
 		t.Errorf("GET shows %d captured, want 1500", again.Card.Captured.Amount.Value)
 	}
 	at, err := c.card.Get(t.Context(), c.attemptOf(p.ID).id.String())
@@ -154,7 +142,7 @@ func TestLostCaptureIsConfirmedByTheResolver(t *testing.T) {
 	if n, err := resolver.Resolve(t.Context(), 10); err != nil || n != 1 {
 		t.Fatalf("Resolve() = %d, %v; want 1 claimed", n, err)
 	}
-	got = cardOf(t, c.do(getPayment(t, key, p.ID), true))
+	got = cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if got.Status != "paid" || got.Card.Captured == nil || got.Card.Captured.Amount.Value != 1500 {
 		t.Errorf("after the resolver = %+v, want paid for US$ 15.00", got)
 	}
@@ -180,7 +168,7 @@ func TestUncertainCaptureIsRetriedOnlyForTheSameAmount(t *testing.T) {
 	if n, err := resolver.Resolve(t.Context(), 10); err != nil || n != 1 {
 		t.Fatalf("Resolve() = %d, %v; want 1 claimed", n, err)
 	}
-	if got := cardOf(t, c.do(getPayment(t, key, p.ID), true)); got.Status != "pending" || got.Card.Status != "authorized" {
+	if got := cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true)); got.Status != "pending" || got.Card.Status != "authorized" {
 		t.Fatalf("after the resolver = %+v, want pending and authorized again", got)
 	}
 	if rec := c.do(captureRequest(t, key, p.ID, `{"amount": {"value": 2000, "currency": "USD"}}`), true); rec.Code != http.StatusConflict || problemCode(t, rec) != "capture_amount_conflict" {
@@ -226,7 +214,7 @@ func TestUncapturedAuthorizationExpires(t *testing.T) {
 	if n, err := expirer.Expire(t.Context(), paymentsapp.ExpiryBatch); err != nil || n != 1 {
 		t.Fatalf("Expire() = %d, %v; want 1", n, err)
 	}
-	got := cardOf(t, c.do(getPayment(t, key, p.ID), true))
+	got := cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+p.ID), true))
 	if got.Status != "expired" || got.Card.Status != "released" {
 		t.Errorf("after expiry = %+v, want expired and released", got)
 	}
@@ -272,7 +260,7 @@ func TestCaptureErrors(t *testing.T) {
 	if n := c.count("ledger_entries WHERE true"); n == 0 {
 		t.Error("the card captured at once posted nothing")
 	}
-	if got := cardOf(t, c.do(getPayment(t, key, manual.ID), true)); got.Status != "pending" || got.Card.Status != "authorized" {
+	if got := cardOf(t, c.do(getRequest(t, key, "/v1/payments/"+manual.ID), true)); got.Status != "pending" || got.Card.Status != "authorized" {
 		t.Errorf("after refused captures = %+v, want still pending and authorized", got)
 	}
 }

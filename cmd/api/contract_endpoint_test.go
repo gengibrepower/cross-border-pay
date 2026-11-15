@@ -15,16 +15,6 @@ import (
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
 )
 
-func putEndpoint(t *testing.T, key, body string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "http://localhost:8080/v1/webhook-endpoint", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	return req
-}
-
 type endpoint struct {
 	URL           string `json:"url"`
 	SecretVersion int    `json:"secret_version"`

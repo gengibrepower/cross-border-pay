@@ -2,22 +2,12 @@ package main
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
-
-func cancelRequest(t *testing.T, key, path string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost:8080"+path+"/cancel", http.NoBody)
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	return req
-}
 
 func (c *contract) statusOf(publicID string) (status string, version int) {
 	c.t.Helper()

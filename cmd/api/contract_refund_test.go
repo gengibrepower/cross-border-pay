@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	idempotencyadapters "github.com/gengibrepower/cross-border-pay/internal/idempotency/adapters"
 	idempotencyapp "github.com/gengibrepower/cross-border-pay/internal/idempotency/app"
 	idempotency "github.com/gengibrepower/cross-border-pay/internal/idempotency/domain"
@@ -22,17 +21,6 @@ import (
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
-
-func postRefund(t *testing.T, key, path, idempotencyKey, body string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost:8080"+path+"/refunds", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-	if idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", idempotencyKey)
-	}
-	return req
-}
 
 func usdBody(cents int64) string {
 	return fmt.Sprintf(`{"amount": {"value": %d, "currency": "USD"}}`, cents)
@@ -438,10 +426,7 @@ func TestResumedRefundFromSentDoesNotCallAgain(t *testing.T) {
 	key := c.merchantKey()
 	id := c.paidPayment(key)
 	store, crashed := c.crashedRefund(key, id, "r1", 1000)
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	rate := contractRate(t)
 	if _, _, err := store.ApplyRefund(t.Context(), crashed.ID(), &payments.RefundUpdate{Event: payments.SendRefund}, rate, c.clock.Now()); err != nil {
 		t.Fatal(err)
 	}

@@ -14,24 +14,12 @@ import (
 
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
 	events "github.com/gengibrepower/cross-border-pay/internal/events/domain"
-	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
-	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 )
-
-// contractRates is the base rate the contract's quotes use, 5.0000 BRL per USD.
-func contractRates(t *testing.T) fxadapters.FixedRates {
-	t.Helper()
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fxadapters.NewFixedRates(rate)
-}
 
 // cardPaid is the GameStore's US$ 20.00 by card, captured on create: R$ 101.50.
 func (c *contract) cardPaid(key string) string {
@@ -99,14 +87,6 @@ func chargebackOf(t *testing.T, rec *httptest.ResponseRecorder) chargebackBody {
 		t.Fatal(err)
 	}
 	return cb
-}
-
-func postChargeback(t *testing.T, key, path, body string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost:8080"+path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-	return req
 }
 
 func (c *contract) contest(key, id string) *httptest.ResponseRecorder {

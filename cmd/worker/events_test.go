@@ -45,8 +45,8 @@ func newInboxEnv(t *testing.T) *inboxEnv {
 	c := clock.NewFake(t0)
 	store := eventsadapters.NewPostgres(pool)
 	return &inboxEnv{
-		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, paymentSinks(testRates(t))),
-		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, sinks: paymentSinks(testRates(t))}, c, slog.New(slog.DiscardHandler)),
+		t: t, pool: pool, clock: c, store: store, payments: paymentsadapters.NewPostgres(pool, paymentSinks(fxadapters.NewFixedRates(testRate(t)))),
+		processor: eventsapp.NewProcessor(store, paymentEvents{clock: c, sinks: paymentSinks(fxadapters.NewFixedRates(testRate(t)))}, c, slog.New(slog.DiscardHandler)),
 	}
 }
 
@@ -59,11 +59,7 @@ func (e *inboxEnv) attempt() (payments.AttemptID, money.Money) {
 	if err := e.pool.QueryRow(ctx, "INSERT INTO merchants (name) VALUES ('m') RETURNING id").Scan(&merchant); err != nil {
 		e.t.Fatal(err)
 	}
-	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	q, err := fx.NewQuote(money.New(2000, money.USD), rate, fx.DefaultPricing, t0, t0.Add(payments.PixQuoteValidity))
+	q, err := fx.NewQuote(money.New(2000, money.USD), testRate(e.t), fx.DefaultPricing, t0, t0.Add(payments.PixQuoteValidity))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -326,12 +322,12 @@ func TestWorkerRoutesCardSimEvents(t *testing.T) {
 	}
 }
 
-// testRates is the base rate of the GameStore example, 5.0000 BRL per USD.
-func testRates(t *testing.T) fxadapters.FixedRates {
+// testRate is the base rate of the GameStore example, 5.0000 BRL per USD.
+func testRate(t *testing.T) fx.Rate {
 	t.Helper()
 	rate, err := fx.ParseRate(money.USD, money.BRL, "5.0000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fxadapters.NewFixedRates(rate)
+	return rate
 }

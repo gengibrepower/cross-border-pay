@@ -15,15 +15,6 @@ import (
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-func getRequest(t *testing.T, key, path string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:8080"+path, http.NoBody)
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	return req
-}
-
 func (c *contract) createPayment(key string) (id string, body []byte) {
 	c.t.Helper()
 	rec := c.do(postPayment(c.t, key, rand.Text(), gameStore), true)

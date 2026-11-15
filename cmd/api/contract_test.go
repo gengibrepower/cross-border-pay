@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,12 +20,19 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/legacy"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gengibrepower/cross-border-pay/internal/calendar"
+	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
+	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
+	events "github.com/gengibrepower/cross-border-pay/internal/events/domain"
+	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
+	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
 	merchantsadapters "github.com/gengibrepower/cross-border-pay/internal/merchants/adapters"
 	merchantsapp "github.com/gengibrepower/cross-border-pay/internal/merchants/app"
 	merchants "github.com/gengibrepower/cross-border-pay/internal/merchants/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	paymentsdomain "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -211,7 +219,7 @@ func newContract(t *testing.T) *contract {
 		t.Fatal(err)
 	}
 	c.deps = &deps{
-		usdbrl: "5.0000", clock: fake, calendar: &cal, providers: providers, providerTimeout: providerTimeout,
+		usdbrl: contractUSDBRL, clock: fake, calendar: &cal, providers: providers, providerTimeout: providerTimeout,
 		disputers:     map[paymentsdomain.ProviderName]paymentsapp.Disputer{paymentsadapters.CardSimName: paymentsadapters.NewCardSim(c.card)},
 		webhookSecret: webhookSecret, boletoSecret: boletoSecret, cardSecret: cardSecret,
 		signingKey: []byte(signingKey), webhooks: ssrf.Policy{},
@@ -278,10 +286,64 @@ func (c *contract) do(req *http.Request, validRequest bool) *httptest.ResponseRe
 	return rec
 }
 
-func postPayment(t *testing.T, key, idempotencyKey, body string) *http.Request {
+// contractUSDBRL is the base rate the contract's quotes use.
+const contractUSDBRL = "5.0000"
+
+func contractRate(t *testing.T) fx.Rate {
 	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://localhost:8080/v1/payments", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	rate, err := fx.ParseRate(money.USD, money.BRL, contractUSDBRL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rate
+}
+
+// processInbox runs the worker's step for the events the simulator delivered, with
+// the handlers the worker gives each provider's events.
+func (c *contract) processInbox() {
+	c.t.Helper()
+	p := eventsapp.NewProcessor(eventsadapters.NewPostgres(c.pool), providerEvents{c: c}, c.clock, slog.New(slog.DiscardHandler))
+	if _, err := p.Process(c.t.Context(), 10); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+type providerEvents struct{ c *contract }
+
+// Handle routes by provider, as the worker's bridge does; an event about something not
+// stored yet is retried.
+func (h providerEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (eventsapp.Result, error) {
+	sinks := paymentSinks()
+	sinks.Rates = fxadapters.NewFixedRates(contractRate(h.c.t))
+	handle := paymentsadapters.HandleBoletoSimEvent
+	switch e.Provider {
+	case string(paymentsadapters.CardSimName):
+		handle = paymentsadapters.HandleCardSimEvent
+	case string(paymentsadapters.PixSimName):
+		handle = paymentsadapters.HandlePixSimEvent
+	}
+	subject, err := handle(ctx, tx, &sinks, e.Payload, h.c.clock.Now())
+	switch {
+	case errors.Is(err, paymentsapp.ErrEventEarly), errors.Is(err, paymentsapp.ErrAttemptNotFound):
+		return eventsapp.Result{Subject: subject, Outcome: events.Retry, Reason: err.Error()}, nil
+	case err != nil:
+		return eventsapp.Result{Subject: subject, Outcome: events.Failed, Reason: err.Error()}, nil
+	}
+	return eventsapp.Result{Subject: subject, Outcome: events.Processed}, nil
+}
+
+// apiRequest leaves out the headers of an empty key or idempotency key, and an empty
+// body is no body, without Content-Type.
+func apiRequest(t *testing.T, method, path, key, idempotencyKey, body string) *http.Request {
+	t.Helper()
+	var reader io.Reader = http.NoBody
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), method, "http://localhost:8080"+path, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -289,6 +351,34 @@ func postPayment(t *testing.T, key, idempotencyKey, body string) *http.Request {
 		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 	return req
+}
+
+func postPayment(t *testing.T, key, idempotencyKey, body string) *http.Request {
+	return apiRequest(t, http.MethodPost, "/v1/payments", key, idempotencyKey, body)
+}
+
+func getRequest(t *testing.T, key, path string) *http.Request {
+	return apiRequest(t, http.MethodGet, path, key, "", "")
+}
+
+func cancelRequest(t *testing.T, key, path string) *http.Request {
+	return apiRequest(t, http.MethodPost, path+"/cancel", key, "", "")
+}
+
+func captureRequest(t *testing.T, key, id, body string) *http.Request {
+	return apiRequest(t, http.MethodPost, "/v1/payments/"+id+"/capture", key, "", body)
+}
+
+func postRefund(t *testing.T, key, path, idempotencyKey, body string) *http.Request {
+	return apiRequest(t, http.MethodPost, path+"/refunds", key, idempotencyKey, body)
+}
+
+func postChargeback(t *testing.T, key, path, body string) *http.Request {
+	return apiRequest(t, http.MethodPost, path, key, "", body)
+}
+
+func putEndpoint(t *testing.T, key, body string) *http.Request {
+	return apiRequest(t, http.MethodPut, "/v1/webhook-endpoint", key, "", body)
 }
 
 const gameStore = `{"amount": {"value": 2000, "currency": "USD"}, "method": "pix", "reference": "order-123"}`
