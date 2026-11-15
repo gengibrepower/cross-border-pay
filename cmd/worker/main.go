@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	eventsadapters "github.com/gengibrepower/cross-border-pay/internal/events/adapters"
 	eventsapp "github.com/gengibrepower/cross-border-pay/internal/events/app"
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
@@ -35,6 +36,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/boletosim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
+	reconciliationadapters "github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters"
+	reconciliationapp "github.com/gengibrepower/cross-border-pay/internal/reconciliation/app"
 	webhooksadapters "github.com/gengibrepower/cross-border-pay/internal/webhooks/adapters"
 	webhooksapp "github.com/gengibrepower/cross-border-pay/internal/webhooks/app"
 )
@@ -46,6 +49,7 @@ const (
 	refundResolverInterval  = time.Second
 	// A cutoff already settled is not taken again.
 	settlementInterval     = time.Minute
+	reconciliationInterval = time.Minute
 	inboxInterval          = time.Second
 	expiryInterval         = time.Second
 	webhookInterval        = time.Second
@@ -124,8 +128,19 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 		return fmt.Errorf("webhooks: %w", err)
 	}
 
+	cal, err := calendar.Brazil()
+	if err != nil {
+		return fmt.Errorf("calendar: %w", err)
+	}
+	reconciler := reconciliationapp.NewReconciler(statements{
+		string(paymentsadapters.PixSimName):    pixsimClient,
+		string(paymentsadapters.CardSimName):   cardsimClient,
+		string(paymentsadapters.BoletoSimName): boletosimClient,
+	}, books{store}, reconciliationadapters.NewCases(pool), &cal, clock.System{})
+
 	logger.Info("worker started")
-	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, jobs(pool, resolver, refunds, expirer, settler, inbox, deliverer, logger)...); err != nil {
+	all := append(jobs(pool, resolver, refunds, expirer, settler, inbox, deliverer, logger), reconciliationJob(pool, reconciler, logger))
+	if err := worker.Run(ctx, logger, cfg.ShutdownTimeout, all...); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
 	logger.Info("worker stopped")

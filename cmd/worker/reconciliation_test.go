@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
@@ -22,15 +26,19 @@ func (f fixedStatement) Statement(_ context.Context, date calendar.Date) (simkit
 	return simkit.Statement{Date: date, Movements: f}, nil
 }
 
-func (e *inboxEnv) reconcile(movements ...simkit.Movement) reconciliationapp.Report {
+func (e *inboxEnv) reconciler(source statementSource) *reconciliationapp.Reconciler {
 	e.t.Helper()
 	cal, err := calendar.Brazil()
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	r := reconciliationapp.NewReconciler(statements{"pixsim": fixedStatement(movements)}, books{e.payments},
+	return reconciliationapp.NewReconciler(statements{"pixsim": source}, books{e.payments},
 		reconciliationadapters.NewCases(e.pool), &cal, e.clock)
-	rep, err := r.Reconcile(e.t.Context(), "pixsim", cal.Today(t0))
+}
+
+func (e *inboxEnv) reconcile(movements ...simkit.Movement) reconciliationapp.Report {
+	e.t.Helper()
+	rep, err := e.reconciler(fixedStatement(movements)).Reconcile(e.t.Context(), "pixsim", calendar.On(t0, time.UTC))
 	if err != nil {
 		e.t.Fatalf("Reconcile() error = %v", err)
 	}
@@ -177,5 +185,85 @@ func TestReconciliationLeavesAnotherProvidersAttempt(t *testing.T) {
 	}
 	if got := e.balance("divergence:BRL"); got != 0 {
 		t.Errorf("divergence:BRL = %d, want nothing held", got)
+	}
+}
+
+// failingOnce is a statement whose 2026-10-30 fails the first time it is read, so the
+// days after it still run.
+type failingOnce struct {
+	fixedStatement
+	failed atomic.Bool
+}
+
+func (f *failingOnce) Statement(ctx context.Context, date calendar.Date) (simkit.Statement, error) {
+	if date.String() == "2026-10-30" && f.failed.CompareAndSwap(false, true) {
+		return simkit.Statement{}, errors.New("provider down")
+	}
+	return f.fixedStatement.Statement(ctx, date)
+}
+
+func (e *inboxEnv) runDue(r *reconciliationapp.Reconciler) (int, error) {
+	return r.RunDue(e.t.Context(), reconciliationadapters.NewRuns(e.pool), []string{"pixsim"})
+}
+
+// Decision 6: four workers on the same days reconcile each once, and running again
+// does nothing.
+func TestDailyReconciliationRunsEachDayOnce(t *testing.T) {
+	e := newInboxEnv(t)
+	e.clock.Advance(24 * time.Hour)
+	r := e.reconciler(fixedStatement{received("someone-else", "ch_1", money.New(500, money.BRL))})
+
+	var wg sync.WaitGroup
+	var done atomic.Int64
+	for range 4 {
+		wg.Go(func() {
+			n, err := e.runDue(r)
+			if err != nil {
+				t.Errorf("RunDue() error = %v", err)
+			}
+			done.Add(int64(n))
+		})
+	}
+	wg.Wait()
+	if n := done.Load(); n != reconciliationapp.Window {
+		t.Fatalf("%d days reconciled by four workers, want %d", n, reconciliationapp.Window)
+	}
+	e.clock.Advance(reconciliationapp.RunLease)
+	if n, err := e.runDue(r); n != 0 || err != nil {
+		t.Errorf("RunDue() again = %d, %v; want nothing left, finished days stay done", n, err)
+	}
+	var finished, divergences, settled int
+	var last time.Time
+	err := e.pool.QueryRow(t.Context(), `SELECT count(*) FILTER (WHERE finished_at IS NOT NULL), sum(divergences), sum(settled), max(day)
+		FROM reconciliation_runs WHERE provider = 'pixsim'`).Scan(&finished, &divergences, &settled, &last)
+	if err != nil || finished != reconciliationapp.Window || divergences != 1 || settled != 1 {
+		t.Errorf("runs: %d finished, %d divergences, %d settled (%v); want %d, 1, 1", finished, divergences, settled, err, reconciliationapp.Window)
+	}
+	if got := last.Format(time.DateOnly); got != "2026-11-01" {
+		t.Errorf("last day reconciled = %s, want 2026-11-01: today is not closed yet", got)
+	}
+	if got := e.balance("divergence:BRL"); got != -500 {
+		t.Errorf("divergence:BRL = %d, want 500 held once", got)
+	}
+}
+
+// A day whose statement failed is taken again once its lease ends, not before.
+func TestDailyReconciliationRetriesAFailedDay(t *testing.T) {
+	e := newInboxEnv(t)
+	e.clock.Advance(24 * time.Hour)
+	r := e.reconciler(&failingOnce{fixedStatement: fixedStatement{received("someone-else", "ch_1", money.New(500, money.BRL))}})
+
+	if n, err := e.runDue(r); n != reconciliationapp.Window-1 || err == nil {
+		t.Fatalf("RunDue() = %d, %v; want the other days and the error", n, err)
+	}
+	if n, err := e.runDue(r); n != 0 || err != nil {
+		t.Fatalf("RunDue() within the lease = %d, %v; want nothing", n, err)
+	}
+	e.clock.Advance(reconciliationapp.RunLease)
+	if n, err := e.runDue(r); n != 1 || err != nil {
+		t.Fatalf("RunDue() after the lease = %d, %v; want the failed day", n, err)
+	}
+	if got := e.balance("divergence:BRL"); got != -500 {
+		t.Errorf("divergence:BRL = %d, want 500 held", got)
 	}
 }

@@ -10,10 +10,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
 
 	"github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters/reconciliationdb"
+	"github.com/gengibrepower/cross-border-pay/internal/reconciliation/app"
 	"github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
 )
 
@@ -84,6 +86,40 @@ func (c *Cases) Held(ctx context.Context, provider string, since, until time.Tim
 	}
 	return out, nil
 }
+
+// Runs are the daily reconciliations, one per provider and day.
+type Runs struct {
+	pool *pgxpool.Pool
+}
+
+func NewRuns(pool *pgxpool.Pool) *Runs { return &Runs{pool: pool} }
+
+func (r *Runs) Claim(ctx context.Context, provider string, day calendar.Date, now, leaseUntil time.Time) (bool, error) {
+	_, err := reconciliationdb.New(r.pool).ClaimRun(ctx, reconciliationdb.ClaimRunParams{
+		Provider: provider, Day: dateOf(day),
+		LeaseUntil: pgtype.Timestamptz{Time: leaseUntil, Valid: true}, Now: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reconciliation: claim %s %s: %w", provider, day, err)
+	}
+	return true, nil
+}
+
+func (r *Runs) Finish(ctx context.Context, provider string, day calendar.Date, rep *app.Report, now time.Time) error {
+	err := reconciliationdb.New(r.pool).FinishRun(ctx, reconciliationdb.FinishRunParams{
+		Provider: provider, Day: dateOf(day), FinishedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		Divergences: int32(rep.Divergences), Settled: int32(rep.Settled), Opened: int32(rep.Opened), //nolint:gosec // a day's counts fit
+	})
+	if err != nil {
+		return fmt.Errorf("reconciliation: finish %s %s: %w", provider, day, err)
+	}
+	return nil
+}
+
+func dateOf(d calendar.Date) pgtype.Date { return pgtype.Date{Time: d.StartIn(time.UTC), Valid: true} }
 
 func optionalUUID(id *[16]byte) pgtype.UUID {
 	if id == nil {

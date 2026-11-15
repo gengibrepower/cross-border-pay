@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -136,4 +137,43 @@ func caseOf(provider string, d *domain.Divergence, day calendar.Date, now time.T
 		Kind: domain.CaseKind(d.Kind), Provider: provider, ExternalID: external, ProviderKey: l.Key,
 		Amount: l.Amount, Details: details, CreatedAt: now,
 	}
+}
+
+// RunLease is how long a worker holds a day before another may take it again.
+const RunLease = 10 * time.Minute
+
+type Runs interface {
+	// Claim is false for a day another worker holds or already finished.
+	Claim(ctx context.Context, provider string, day calendar.Date, now, leaseUntil time.Time) (bool, error)
+	Finish(ctx context.Context, provider string, day calendar.Date, rep *Report, now time.Time) error
+}
+
+// RunDue reconciles each closed day of the last Window not yet done, so a worker that
+// was down for days catches up. A day that fails stays for when its lease ends.
+func (r *Reconciler) RunDue(ctx context.Context, runs Runs, providers []string) (int, error) {
+	now := r.clock.Now()
+	yesterday := r.calendar.Today(now).AddDays(-1)
+	var done int
+	var errs []error
+	for _, provider := range providers {
+		for day := yesterday.AddDays(1 - Window); !day.After(yesterday); day = day.AddDays(1) {
+			ok, err := runs.Claim(ctx, provider, day, now, now.Add(RunLease))
+			if err != nil {
+				return done, errors.Join(append(errs, err)...)
+			}
+			if !ok {
+				continue
+			}
+			rep, err := r.Reconcile(ctx, provider, day)
+			if err == nil {
+				err = runs.Finish(ctx, provider, day, &rep, r.clock.Now())
+			}
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			done++
+		}
+	}
+	return done, errors.Join(errs...)
 }

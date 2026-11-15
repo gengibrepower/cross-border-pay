@@ -170,6 +170,16 @@ type Quote struct {
 	ExpiresAt     pgtype.Timestamptz
 }
 
+type ReconciliationRun struct {
+	Provider    string
+	Day         pgtype.Date
+	LeaseUntil  pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+	Divergences int32
+	Settled     int32
+	Opened      int32
+}
+
 type Refund struct {
 	ID            pgtype.UUID
 	PaymentID     pgtype.UUID
