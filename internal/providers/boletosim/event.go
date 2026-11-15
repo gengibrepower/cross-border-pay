@@ -12,12 +12,10 @@ import (
 
 type EventType string
 
-// BoletoPaid is the bank's notice that the payer paid. A real bank tells it in the
-// CNAB return file the next day; the simulator posts it at once, and the CNAB file is
-// the reconciliation's evidence (F9).
+// BoletoPaid is posted at once; a real bank tells it in the next day's CNAB return file.
 const BoletoPaid EventType = "boleto.paid"
 
-// Event is what the simulator posts to the webhook URL. Its ID is unique per fact.
+// Event's ID is unique per fact.
 type Event struct {
 	ID        string    `json:"id"`
 	Type      EventType `json:"type"`
@@ -29,7 +27,6 @@ const SignatureHeader = "Boletosim-Signature"
 
 var ErrBadEvent = errors.New("boletosim: malformed event")
 
-// VerifyEvent checks the signature header against body and parses the event.
 func VerifyEvent(secret []byte, header string, body []byte, now time.Time) (Event, error) {
 	if err := simkit.Verify(secret, header, body, now); err != nil {
 		return Event{}, err

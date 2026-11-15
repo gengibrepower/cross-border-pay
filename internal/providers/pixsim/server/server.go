@@ -1,5 +1,5 @@
-// Package server is the PIX simulator: a provider that keeps its charges in memory,
-// derives every random choice from a seed and fails on command.
+// Package server is the PIX simulator: in memory, every random choice from a seed,
+// failing on command.
 package server
 
 import (
@@ -17,23 +17,19 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
-// HangLimit bounds a TimeoutAfter fault, in case the caller never gives up.
 const HangLimit = simkit.HangLimit
 
-// DeliveryTimeout bounds one webhook delivery.
 const DeliveryTimeout = simkit.DeliveryTimeout
 
 const idLength = 20
 
 type Config struct {
 	Seed uint64
-	// PixKey, MerchantName and MerchantCity are the receiver written into every BR
-	// Code: the gateway's own collection account.
+	// PixKey, MerchantName and MerchantCity are the gateway's collection account.
 	PixKey       string
 	MerchantName string
 	MerchantCity string
-	// WebhookURL receives an event, signed with WebhookSecret, for every fact the
-	// gateway must learn about. Empty means no events are sent.
+	// Without WebhookURL the simulator sends nothing.
 	WebhookURL    string
 	WebhookSecret []byte
 }
@@ -41,9 +37,8 @@ type Config struct {
 type Clock = simkit.Clock
 
 type record struct {
-	req    pixsim.CreateCharge
-	charge pixsim.Charge
-	// refunded is what completed refunds returned of the charge, in minor units.
+	req      pixsim.CreateCharge
+	charge   pixsim.Charge
 	refunded int64
 }
 
@@ -200,9 +195,8 @@ func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
 	simkit.WriteJSON(w, http.StatusOK, rf)
 }
 
-// storeRefund decides the refund once per key and keeps it, rejected too, so a caller
-// that lost the answer finds the same decision with GetRefund. The simulator holds
-// its own line on invariant 8: it never returns more than the charge took in.
+// storeRefund keeps a rejected refund too, so a caller that lost the answer finds the
+// same decision, and holds invariant 8 on its own side.
 func (s *Simulator) storeRefund(key, chargeID string, req *pixsim.CreateRefund, reject bool) (pixsim.Refund, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,9 +237,8 @@ func (s *Simulator) storeRefund(key, chargeID string, req *pixsim.CreateRefund, 
 	return rf, nil
 }
 
-// pay plays the payer. A static PIX code can be paid at any time, so a charge past
-// its expiry is paid too: that is the late payment of decision 8. Only the payment
-// itself sends charge.paid; paying a paid charge again is no new fact.
+// pay: a static PIX code can be paid at any time, so a charge past its expiry is paid
+// too, the late payment of decision 8. Paying a paid charge again is no new fact.
 func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	key, ok := s.keyByID[r.PathValue("id")]
@@ -283,9 +276,7 @@ func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// store creates the charge once per key. Every random choice comes from a generator
-// seeded by the simulator's seed and the key, so a seed gives the same charges
-// whatever order concurrent requests arrive in.
+// store seeds every random choice with the simulator's seed and the key.
 func (s *Simulator) store(key string, req *pixsim.CreateCharge, reject bool) (pixsim.Charge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

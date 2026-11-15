@@ -1,7 +1,5 @@
-// Package server is the boleto simulator: a bank that keeps its boletos in memory,
-// derives every random choice from a seed and fails on command. It receives a boleto
-// until the end of the first banking day on or after its due date and refuses it
-// after (decision 53), by the calendar of decision 21.
+// Package server is the boleto simulator: in memory, every random choice from a seed,
+// failing on command, and receiving by the calendar of decision 21.
 package server
 
 import (
@@ -37,12 +35,10 @@ const (
 
 type Config struct {
 	Seed uint64
-	// Bank is the COMPE code printed on every boleto, and Beneficiary the gateway's
-	// account at it.
+	// Beneficiary is the gateway's account at Bank.
 	Bank        string
 	Beneficiary string
-	// WebhookURL receives an event, signed with WebhookSecret, for every boleto paid.
-	// Empty means no events are sent.
+	// Without WebhookURL the simulator sends nothing.
 	WebhookURL    string
 	WebhookSecret []byte
 }
@@ -50,9 +46,8 @@ type Config struct {
 type Clock = simkit.Clock
 
 type record struct {
-	req    boletosim.CreateBoleto
-	boleto boletosim.Boleto
-	// refunded is what completed refunds returned, in minor units.
+	req      boletosim.CreateBoleto
+	boleto   boletosim.Boleto
 	refunded int64
 }
 
@@ -166,8 +161,7 @@ func (s *Simulator) validate(req *boletosim.CreateBoleto) error {
 	return nil
 }
 
-// store registers the boleto once per key. Every random choice comes from a generator
-// seeded by the simulator's seed and the key.
+// store seeds every random choice with the simulator's seed and the key.
 func (s *Simulator) store(key string, req *boletosim.CreateBoleto, reject bool) (boletosim.Boleto, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,8 +201,8 @@ func (s *Simulator) store(key string, req *boletosim.CreateBoleto, reject bool) 
 	return b, nil
 }
 
-// current is the boleto as of now; the caller holds s.mu. A boleto never paid whose
-// last day went by has expired, whoever asks first: every read checks the date.
+// current: the caller holds s.mu. Every read checks the date, so an overdue boleto
+// has expired whoever asks first.
 func (s *Simulator) current(rec *record) boletosim.Boleto {
 	if rec.boleto.Status == boletosim.Registered && !s.payable(rec.boleto.DueDate) {
 		rec.boleto.Status = boletosim.Expired
@@ -216,8 +210,7 @@ func (s *Simulator) current(rec *record) boletosim.Boleto {
 	return rec.boleto
 }
 
-// payable is whether today, at the bank, is no later than the first banking day on or
-// after the due date: a boleto due on a Saturday is still received on Monday.
+// payable: a boleto due on a Saturday is still received on Monday (decision 53).
 func (s *Simulator) payable(due calendar.Date) bool {
 	return !s.calendar.Today(s.clock.Now()).After(s.calendar.OnOrAfter(due))
 }
@@ -242,8 +235,7 @@ func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
 	simkit.WriteJSON(w, http.StatusOK, b)
 }
 
-// pay plays the payer. Only the payment itself sends boleto.paid; paying a paid boleto
-// again is no new fact.
+// pay: paying a paid boleto again is no new fact.
 func (s *Simulator) pay(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	key, ok := s.keyByID[r.PathValue("id")]
@@ -339,8 +331,7 @@ func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
 	simkit.WriteJSON(w, http.StatusOK, rf)
 }
 
-// storeRefund decides the refund once per key and keeps it, rejected too. The bank
-// never returns more than the boleto took in (invariant 8).
+// storeRefund keeps a rejected refund too, and holds invariant 8 on its own side.
 func (s *Simulator) storeRefund(key, boletoID string, req *boletosim.CreateRefund, reject bool) (boletosim.Refund, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

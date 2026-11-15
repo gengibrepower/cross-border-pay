@@ -119,7 +119,7 @@ Marque `[x]` ao terminar e anote o número da PR.
   Feito: `payments/domain` 300 → 159 (#59); `payments/app` 238 → 141 (#60);
   `payments/adapters` 209 → 122 (#61); `providers/cardsim` 108 → 43, com o `server/` (#62);
   `simkit` 64 → 26 (#63); `webhooks/app` 48 → 30 (#64);
-  `boleto` 47 → 35 (#65). A lista acabou com 1.170 linhas no total, acima do alvo: falta
+  `boleto` 47 → 35 (#65); `pixsim`, `boletosim`, seus servidores e `cmd/*sim` 115 → 57 (#66). A lista acabou com 1.170 linhas no total, acima do alvo: falta
   decidir se o corte segue por pacotes fora da lista (`pixsim`, `boletosim`) ou se o alvo
   muda.
 - [ ] **3. Duplicação no código de produção.**
@@ -166,6 +166,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 15/11/2026 | 2. Comentários: `simkit` | #63 | 16.703 | 1.200 | 19.009 | 64 → 26 no pacote |
 | 15/11/2026 | 2. Comentários: `webhooks/app` | #64 | 16.685 | 1.182 | 19.009 | 48 → 30 no pacote |
 | 15/11/2026 | 2. Comentários: `boleto` | #65 | 16.673 | 1.170 | 19.009 | 47 → 35 no pacote |
+| 15/11/2026 | 2. Comentários: providers | #66 | 16.615 | 1.112 | 19.009 | 115 → 57 no grupo |
 
 ## 8. Como retomar numa sessão nova
 
