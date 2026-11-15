@@ -28,27 +28,27 @@ READMEs. A página do pagador (decisão 55) saiu junto.
 
 Contagem com `wc -l`, sem o código gerado pelo sqlc (`*db/`).
 
-| O quê | Linhas |
-|---|---|
-| Go de produção | 17.147 |
-| Comentários no Go de produção | 1.630 (~10%) |
-| Go de teste | 19.009 |
-| Código gerado pelo sqlc | 4.796 |
-| SQL: migrations / queries | 631 / 633 |
-| `README.md` / `README.pt-BR.md` | 951 / 951 |
-| `api/openapi.yaml` | 1.505 |
-| Todos os arquivos versionados | 46.994 |
+| O quê | Linhas | Depois (16/11/2026) |
+|---|---|---|
+| Go de produção | 17.147 | 16.427 |
+| Comentários no Go de produção | 1.630 (~10%) | 924 (~6%) |
+| Go de teste | 19.009 | 18.894 |
+| Código gerado pelo sqlc | 4.796 | 4.796 |
+| SQL: migrations / queries | 631 / 633 | 631 / 633 |
+| `README.md` / `README.pt-BR.md` | 951 / 951 | 973 / 973 (95 KB → 90 KB) |
+| `api/openapi.yaml` | 1.505 | 1.493 |
+| Todos os arquivos versionados | 46.994 | 46.404 |
 
 Maiores pacotes (produção / comentários / teste):
 
-| Pacote | Produção | Comentários | Teste |
-|---|---|---|---|
-| `internal/payments/adapters` | 3.577 | 209 | 1.937 |
-| `internal/payments/domain` | 2.009 | 300 | 1.831 |
-| `internal/payments/app` | 1.396 | 238 | 82 |
-| `internal/providers/cardsim/server` | 634 | 37 | 0 |
-| `internal/providers/simkit` | 553 | 64 | 229 |
-| `cmd/api` | 390 | 15 | 4.903 |
+| Pacote | Produção | Comentários | Teste | Depois (16/11/2026) |
+|---|---|---|---|---|
+| `internal/payments/adapters` | 3.577 | 209 | 1.937 | 3.490 / 122 / 1.937 |
+| `internal/payments/domain` | 2.009 | 300 | 1.831 | 1.859 / 159 / 1.831 |
+| `internal/payments/app` | 1.396 | 238 | 82 | 1.300 / 141 / 82 |
+| `internal/providers/cardsim/server` | 634 | 37 | 0 | 618 / 21 / 0 |
+| `internal/providers/simkit` | 553 | 64 | 229 | 515 / 26 / 229 |
+| `cmd/api` | 390 | 15 | 4.903 | 382 / 7 / 4.792 |
 
 Para medir de novo, rode da raiz:
 
@@ -160,10 +160,15 @@ Marque `[x]` ao terminar e anote o número da PR.
   de expiração pega um cartão `authorized` por mais de 7 dias sem captura (decisão 52).
   Se não pegar, teste e correção. Pega: `TestUncapturedAuthorizationExpires` cobre, e
   falha quando o prazo do `Schedule` muda. Nada a corrigir.
-- [ ] **7. READMEs.** O começo deve se entender em 30 segundos: o que é, como rodar e os 5
+- [x] **7. READMEs.** (#71) O começo deve se entender em 30 segundos: o que é, como rodar e os 5
   testes mais fortes. As seções de resultado ficam mais curtas e as decisões mais
   enxutas. Os números de linhas da seção 2 entram lá, antes e depois.
-- [ ] **8. Medir de novo** e preencher o registro abaixo.
+  Feito: "Quick start" de dois comandos e a tabela dos 5 testes citados no topo; nas
+  seções de resultado saíram as listas de mutantes (fica o número e os bugs reais achados)
+  e o "20/20 runs" repetido, que já é o padrão dito no começo (95 KB → 90 KB). As
+  decisões ficaram: cada uma já é escolha + alternativa descartada em duas linhas, e
+  cortar a alternativa tira o porquê. A F9 ficou `pronta` no Status, com os números.
+- [x] **8. Medir de novo** e preencher o registro abaixo. (#71) Coluna "Depois" na seção 2.
 
 ## 7. Registro de progresso
 
@@ -184,6 +189,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 16/11/2026 | 4. Testes: helpers do `cmd/api` | #68 | 16.427 | 924 | 18.956 | −53 no teste |
 | 16/11/2026 | 4. Testes: `decode[T]` | #69 | 16.427 | 924 | 18.894 | item 4 fechado |
 | 16/11/2026 | 5. OpenAPI e 6. expiração do cartão | #70 | 16.427 | 924 | 18.894 | spec −12; item 6 já coberto |
+| 16/11/2026 | 7. READMEs e 8. medição final | #71 | 16.427 | 924 | 18.894 | F9 fechada: produção −4,2%, comentários −43%, teste −0,6% |
 
 ## 8. Como retomar numa sessão nova
 

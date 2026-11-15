@@ -16,6 +16,17 @@ A regra que nunca pode quebrar: **o dinheiro registrado sempre bate com o dinhei
 
 > **Projeto de aprendizado, não um gateway real.** Dinheiro, clientes e provedores de pagamento são todos simulados. Taxas e cotações são ilustrativas. O projeto existe para praticar a engenharia por trás de sistemas financeiros corretos.
 
+## Começo rápido
+
+Precisa de [mise](https://mise.jdx.dev) e Docker.
+
+```sh
+mise install    # Go e as ferramentas nas versões que o CI usa
+mise run test   # a suíte inteira com -race, contra um Postgres real em container
+```
+
+Para subir a API, o worker e os simuladores à mão, veja [Rodando localmente](#rodando-localmente).
+
 ## O que o projeto se propõe a provar
 
 1. **Idempotência em toda a cadeia.** API, chamadas ao provedor, eventos recebidos, webhooks enviados e jobs. Repetir nunca cobra, lança ou repassa duas vezes.
@@ -27,14 +38,17 @@ A regra que nunca pode quebrar: **o dinheiro registrado sempre bate com o dinhei
 
 Todos os números abaixo são medidos, não estimados. Todo teste que toca o banco roda contra um **PostgreSQL 18 real** em container (`testcontainers-go`), nunca contra um banco mockado; os testes de domínio não fazem I/O nenhum.
 
-| Garantia | Medido |
-|---|---|
-| O ledger fecha em zero sob concorrência | 100.000 transferências concorrentes, em toda execução |
-| Uma cobrança é confirmada uma vez | 1 lançamento em 1.000 confirmações concorrentes |
-| Estornos nunca passam do pago | 4.000 pedidos de estorno concorrentes |
-| Repetir nunca cobra duas vezes | 10 requests concorrentes, uma key: 1 cobrança |
-| Worker morto não perde webhook | 100 eventos, morto no meio da rodada: todos entregues |
-| A liquidação paga uma vez | Mesmo corte duas vezes, ou em 8 workers: 1 repasse |
+Os cinco testes pelos quais o projeto se mede ([docs/escopo.md §9](docs/escopo.md)):
+
+| # | Teste | Medido |
+|---|---|---|
+| 1 | `TestThousandConcurrentConfirmationsPostOnce`: uma cobrança é confirmada uma vez | 1 lançamento em 1.000 confirmações concorrentes |
+| 2 | `TestConcurrentPartialRefundsNeverExceedThePayment`: estornos nunca passam do pago | 4.000 pedidos de estorno concorrentes |
+| 3 | `TestThousandsOfConcurrentTransfers`: o ledger fecha em zero | 100.000 transferências concorrentes |
+| 4 | `TestWorkerKilledMidRoundDeliversEveryEventAfterRestart`: worker morto não perde webhook | 100 eventos, morto no meio da rodada: todos entregues |
+| 5 | `TestSameSeedSameCharges`, e o mesmo para cartão e boleto: mesma seed, mesmo histórico | 50 keys mandadas ao mesmo tempo em ordem inversa dão as cobranças que mandadas uma a uma deram |
+
+Além deles, repetir nunca cobra duas vezes (10 requests concorrentes com uma key: 1 cobrança) e a liquidação paga uma vez (o mesmo corte duas vezes, ou em 8 workers: 1 repasse).
 
 Cada grupo abaixo abre com o que cada teste mostra e o que mediu. As execuções são com `-race -count=20`, salvo quando indicado, e "mutantes mortos" são bugs de propósito que cada teste foi conferido para pegar.
 
@@ -104,7 +118,7 @@ API keys contra Postgres real: chave malformada, chave desconhecida, lookup cert
 
 Cada request e resposta de `POST /v1/payments`, `GET /v1/payments/{id}`, `GET /v1/payments`, `POST /v1/payments/{id}/cancel` e `POST /v1/payments/{id}/refunds` passa pelo handler real e por um Postgres real e é conferido contra o `api/openapi.yaml` escrito à mão, com o `kin-openapi`. A cobrança da GameStore devolve R$ 101,50, taxa de US$ 0,60 e cotação de 30 minutos, e o `GET` devolve byte a byte o que o `POST` devolveu. Percorrer 7 cobranças em páginas de 3 vê cada uma exatamente uma vez, da mais nova para a mais antiga, e nenhuma de outro lojista; a cobrança de outro lojista, um ID desconhecido e um ID malformado recebem o mesmo `404`.
 
-**Resultado:** `POST`: 1 caso de sucesso e 14 de erro, e nenhum request recusado grava cobrança. `GET`: 4 casos de `404`/`401` e 6 de parâmetro inválido, cada um com seu `code` estável. 20/20 rodadas com `-race -count=20`. Trocar `id <` por `id <=` no cursor faz o teste de paginação falhar.
+**Resultado:** `POST`: 1 caso de sucesso e 14 de erro, e nenhum request recusado grava cobrança. `GET`: 4 casos de `404`/`401` e 6 de parâmetro inválido, cada um com seu `code` estável. Trocar `id <` por `id <=` no cursor faz o teste de paginação falhar.
 
 ---
 
@@ -112,7 +126,7 @@ Cada request e resposta de `POST /v1/payments`, `GET /v1/payments/{id}`, `GET /v
 
 Os oito casos da seção 4.2 contra Postgres real: resposta guardada devolvida igual, corpo diferente recusado, 4xx guardado, 5xx sem trabalho feito libera a key, 5xx depois de trabalho registrado mantém a key, keys de lojistas diferentes independentes. Uma key largada por um request que morreu é retomada do ponto em que ele parou quando a lease vence, e o request morto não consegue mais concluir nem liberar a key. O ponto de retomada desfaz junto com a transação de quem o gravou.
 
-**Resultado:** 20 requests simultâneos com a mesma key: exatamente 1 segue e 19 recebem `409`, 20/20 rodadas com `-race -count=20`. Tirar o `lock_token` da conclusão ou o `recovery_point` da liberação faz o teste do caso correspondente falhar.
+**Resultado:** 20 requests simultâneos com a mesma key: exatamente 1 segue e 19 recebem `409`. Tirar o `lock_token` da conclusão ou o `recovery_point` da liberação faz o teste do caso correspondente falhar.
 
 ---
 
@@ -120,7 +134,7 @@ Os oito casos da seção 4.2 contra Postgres real: resposta guardada devolvida i
 
 A repetição recebe o mesmo 201 byte a byte, marcado com `Idempotent-Replayed: true`, e nenhuma cobrança nova; a mesma key com outra cobrança é `422`; um 4xx é guardado e devolvido de novo; lojistas diferentes com a mesma key criam cobranças diferentes. **Queda simulada:** o request cria a cobrança e morre sem guardar a resposta; a repetição recebe `409` enquanto a lease vale e, depois dela, `201` com a mesma cobrança, idêntica ao `GET`, e o banco continua com 1 cobrança e 1 cotação. No middleware, um 5xx sem trabalho feito libera a key, e um 5xx depois de um ponto de retomada a mantém e deixa a repetição retomar na hora.
 
-**Resultado:** 10 requests HTTP simultâneos com a mesma key criam exatamente 1 cobrança, 20/20 rodadas com `-race -count=20`. Fazer o `Create` ignorar o ponto de retomada faz o teste da queda falhar.
+**Resultado:** 10 requests HTTP simultâneos com a mesma key criam exatamente 1 cobrança. Fazer o `Create` ignorar o ponto de retomada faz o teste da queda falhar.
 
 ---
 
@@ -128,7 +142,7 @@ A repetição recebe o mesmo 201 byte a byte, marcado com `Idempotent-Replayed: 
 
 O job apaga, a cada hora e em lotes de 1.000, as keys com mais de 24 h, e nenhuma mais nova. Com `FOR UPDATE SKIP LOCKED`, uma key travada por outra transação é pulada sem espera e apagada na rodada seguinte. Uma rodada que falha vai para o log e não derruba o worker.
 
-**Resultado:** 7 keys vencidas apagadas em lotes de 3, 20/20 rodadas com `-race -count=20`. Tirar o `SKIP LOCKED` faz o `Cleanup` esperar o lock até estourar o prazo, e o teste falha.
+**Resultado:** 7 keys vencidas apagadas em lotes de 3. Tirar o `SKIP LOCKED` faz o `Cleanup` esperar o lock até estourar o prazo, e o teste falha.
 
 </details>
 
@@ -147,7 +161,7 @@ Os 5 exemplos completos do [Manual de Padrões para Iniciação do Pix v2.10.0](
 
 Cada par (estado, evento) da máquina de estados da tentativa é comparado com a seção 3.5, reescrita dentro do teste; uma resposta ambígua nunca recusa a tentativa, e o evento de pagamento pode chegar antes da resposta da criação. Contra Postgres real, uma cobrança tem no máximo uma tentativa viva (índice único parcial: só a recusa libera), e os eventos de uma tentativa são serializados por lock de linha.
 
-**Resultado:** Os 30 pares. 20 criações simultâneas para a mesma cobrança deixam exatamente 1 tentativa, e 8 eventos accept/reject simultâneos na mesma tentativa a mudam exatamente uma vez, 25 tentativas por rodada, 20/20 rodadas com `-race -count=20`. Tirar o `FOR UPDATE` ou o `WHERE` do índice faz esses testes falharem.
+**Resultado:** Os 30 pares. 20 criações simultâneas para a mesma cobrança deixam exatamente 1 tentativa, e 8 eventos accept/reject simultâneos na mesma tentativa a mudam exatamente uma vez, 25 tentativas por rodada. Tirar o `FOR UPDATE` ou o `WHERE` do índice faz esses testes falharem.
 
 ---
 
@@ -155,7 +169,7 @@ Cada par (estado, evento) da máquina de estados da tentativa é comparado com a
 
 Um provedor HTTP real, com cobranças em memória e falhas sob comando: `reject`, `fail_before` (500 sem fazer nada), `timeout_after` (a cobrança é criada e a resposta nunca chega) e `delay`. Depois de um `timeout_after`, a busca pelo ID da nossa tentativa encontra a cobrança, e repetir com a mesma key devolve essa mesma cobrança. Todo BR Code emitido é lido pelo `internal/brcode`. Só a recusa explícita chega à porta de pagamentos como `Rejected`; um 500, um timeout ou uma resposta desconhecida é erro, e a tentativa vai para `unknown`.
 
-**Resultado:** Mesma seed e as mesmas 50 keys enviadas em paralelo e em ordem inversa geram as mesmas cobranças, byte a byte, que enviadas uma a uma; 8 requests malformados recusados com `400`. 20/20 rodadas com `-race -count=20`. 10 mutantes mortos, entre eles semear pela ordem de chegada, criar a cobrança depois do travamento em vez de antes e ler um 500 como recusa.
+**Resultado:** Mesma seed e as mesmas 50 keys enviadas em paralelo e em ordem inversa geram as mesmas cobranças, byte a byte, que enviadas uma a uma; 8 requests malformados recusados com `400`. 10 mutantes mortos.
 
 ---
 
@@ -163,7 +177,7 @@ Um provedor HTTP real, com cobranças em memória e falhas sob comando: `reject`
 
 Uma cobrança paga pode ser devolvida em partes, como uma devolução PIX, uma vez por ID do nosso estorno: a mesma key devolve o mesmo estorno, e outro valor com ela é `idempotency_key_reused`. O simulador mantém a invariante 8 do lado dele: recusa devolver cobrança não paga, em outra moeda ou acima do que resta, e guarda a recusa com o motivo, então a consulta pelo nosso ID encontra a mesma decisão. As mesmas falhas valem (`refund`, `get_refund`): depois de um `timeout_after` o dinheiro voltou e a consulta o encontra `completed`. A porta de pagamentos ganha `Refund` e `GetRefund`, com a mesma regra das tentativas: só a recusa é resultado, o resto é ambíguo.
 
-**Resultado:** 50 devoluções simultâneas de R$ 10,00 numa cobrança de R$ 101,50: exatamente 10 concluídas. 20/20 rodadas com `-race -count=20`. 7 mutantes mortos, entre eles não conferir ou não consumir o que resta, não guardar a recusa, devolver cobrança não paga, aceitar key repetida com outro valor, ID de devolução que não sai da key e responder a um `timeout_after`
+**Resultado:** 50 devoluções simultâneas de R$ 10,00 numa cobrança de R$ 101,50: exatamente 10 concluídas. 7 mutantes mortos.
 
 ---
 
@@ -171,7 +185,7 @@ Uma cobrança paga pode ser devolvida em partes, como uma devolução PIX, uma v
 
 Pagar uma cobrança envia um evento `charge.paid` para `PIXSIM_WEBHOOK_URL`, assinado com HMAC-SHA256 sobre o timestamp e o corpo. O `pixsim.VerifyEvent` recusa corpo adulterado, segredo errado, timestamp trocado e qualquer assinatura a mais de 5 minutos de agora, então uma entrega capturada não pode ser reenviada depois. O ID do evento sai da seed, e a reentrega (`/control/events/{id}/deliver`) manda os mesmos bytes assinados de novo, para que o receptor descarte duplicatas pelo ID. Pagar duas vezes não envia nada novo; um webhook que falha não desfaz o pagamento; um pagador que desiste não corta a entrega. O gateway os recebe em `POST /v1/providers/pixsim/events` (o inbox, abaixo).
 
-**Resultado:** 8 falsificações recusadas e 5 corpos assinados malformados recusados, entre eles um valor decimal. 20/20 rodadas com `-race -count=20`. 17 mutantes mortos, entre eles comparar só a última assinatura, tirar o timestamp ou o corpo do MAC, derivar o ID do evento sem a key da cobrança e entregar com o contexto do pagador.
+**Resultado:** 8 falsificações recusadas e 5 corpos assinados malformados recusados, entre eles um valor decimal. 17 mutantes mortos.
 
 ---
 
@@ -179,7 +193,7 @@ Pagar uma cobrança envia um evento `charge.paid` para `PIXSIM_WEBHOOK_URL`, ass
 
 Cada cobrança ganha sua tentativa no provedor e um BR Code que é lido como R$ 101,50, idêntico no `POST`, no `GET` e na lista. Uma recusa é `201` com `pix.status: failed`; um timeout depois de o provedor agir, ou um `500` dele, é `201` com `processing` e a tentativa em `unknown`, limitado pelo timeout de 300 ms do teste. **Quedas em cada passo:** depois da primeira transação (tentativa `created`), a repetição chama o provedor uma vez; depois de `sent`, não chama de novo e marca `unknown`; depois da resposta gravada, só responde. Um cliente que desconecta no meio da chamada não a interrompe: a tentativa termina `accepted`.
 
-**Resultado:** 10 requests simultâneos com a mesma key e uma repetição: 1 chamada ao provedor, 1 tentativa. 20/20 rodadas com `-race -count=20`. 11 mutantes mortos, entre eles chamar de novo a partir de `sent`, tirar o `WithoutCancel`, tirar o timeout do serviço, ler erro do provedor como recusa e mostrar a tentativa mais antiga em vez da mais recente.
+**Resultado:** 10 requests simultâneos com a mesma key e uma repetição: 1 chamada ao provedor, 1 tentativa. 11 mutantes mortos.
 
 ---
 
@@ -187,7 +201,7 @@ Cada cobrança ganha sua tentativa no provedor e um BR Code que é lido como R$ 
 
 Tentativas ambíguas são consultadas no provedor, nunca criadas de novo (decisão 17). Uma cobrança que o provedor criou enquanto a nossa chamada estourava o tempo termina `accepted` com o BR Code, ou `succeeded` se foi paga no meio-tempo. "Não encontrada" é repetida durante 1 minuto de carência e depois vira `rejected`. Um request que morreu depois de gravar `sent` é retomado quando passa 1 minuto parado. Consultas que falham esperam 5 s, 10 s, 20 s… até 5 min, e às 24 h a tentativa é escalada e não é mais consultada. Um worker que morre segurando uma tentativa só a atrasa até a lease vencer.
 
-**Resultado:** Backoff: 292 consultas ao longo de 24 h, cada espera conferida. 4 resolvedores simultâneos sobre 50 tentativas: 50 reivindicações e 50 consultas, uma por tentativa. 20/20 rodadas com `-race -count=20`. 10 mutantes mortos, entre eles tirar o `SKIP LOCKED` (90 consultas para 50 tentativas), não empurrar a lease (85), recusar no primeiro "não encontrada" e nunca escalar.
+**Resultado:** Backoff: 292 consultas ao longo de 24 h, cada espera conferida. 4 resolvedores simultâneos sobre 50 tentativas: 50 reivindicações e 50 consultas, uma por tentativa. 10 mutantes mortos.
 
 </details>
 
@@ -198,7 +212,7 @@ Tentativas ambíguas são consultadas no provedor, nunca criadas de novo (decis�
 
 O webhook confere a assinatura, grava o evento com os bytes e o cabeçalho exatos com que chegou e responde `200`, também para duplicata; só uma falha ao gravar pede reentrega. Um worker reivindica os eventos vencidos com `FOR UPDATE SKIP LOCKED` e aplica cada um na transação que grava o seu status, então o efeito e o status entram juntos ou não entram. O `charge.paid` leva a tentativa que ele nomeia a `succeeded` quando o valor bate com a cotação. Um para tentativa ainda não gravada é repetido após 5 s, 10 s, 20 s… até 5 min, e falha em 24 h; um que contradiz a tentativa (outro valor ou outro ID de cobrança, tentativa recusada) falha na hora e não muda nada. Eventos de um mesmo pagamento são aplicados um por vez atrás do lock da linha dele, e esse lock não espera a checagem de chave estrangeira.
 
-**Resultado:** 100 entregas concorrentes do mesmo evento: todas `200`, 1 linha. 5 requests recusados (assinatura, ilegível, sem ID, provedor desconhecido, acima de 64 KiB), nenhum gravado. 4 processadores sobre 50 eventos: cada um aplicado 1 vez. 6 eventos divergentes deixam a tentativa como estava. 20/20 rodadas com `-race -count=20`. 25 mutantes mortos, entre eles tirar o `SKIP LOCKED`, o `ON CONFLICT` ou a guarda de `pending` do retry atrasado, gravar o status depois de o handler falhar, parar o lote no primeiro erro, pular a checagem de valor e usar `FOR UPDATE` no lugar de `FOR NO KEY UPDATE`
+**Resultado:** 100 entregas concorrentes do mesmo evento: todas `200`, 1 linha. 5 requests recusados (assinatura, ilegível, sem ID, provedor desconhecido, acima de 64 KiB), nenhum gravado. 4 processadores sobre 50 eventos: cada um aplicado 1 vez. 6 eventos divergentes deixam a tentativa como estava. 25 mutantes mortos.
 
 ---
 
@@ -206,7 +220,7 @@ O webhook confere a assinatura, grava o evento com os bytes e o cabeçalho exato
 
 Confirmação (`payments` + `ledger`): uma tentativa que vira `succeeded`, pelo evento do provedor ou pelo resolvedor, leva a cobrança a `paid` e lança a transação da seção 3.3 nessa mesma transação de banco. 1.000 confirmações da mesma cobrança rodam ao mesmo tempo, metade por cada caminho. Um ledger que não consegue lançar deixa a tentativa e a cobrança como estavam; uma cobrança já `paid` não é lançada de novo; cada lojista tem a sua própria conta a receber, criada na primeira confirmação dele. Todo caminho trava a cobrança, depois a tentativa, depois as contas: um teste segura o lock da cobrança e confere com `NOWAIT` que a confirmação que espera não pegou o da tentativa.
 
-**Resultado:** **Exatamente 1 transação contábil e 1 `payment.paid` para 1.000 confirmações**, com os saldos do GameStore ao centavo (R$ 101,50 de entrada, US$ 19,40 devidos, US$ 0,60 de taxa, US$ 0,30 de spread), 20/20 rodadas com `-race -count=20`. Qualquer cotação confirma numa transação balanceada e sem perna zerada: 100 casos por rodada, 20/20 rodadas. 50 primeiras confirmações concorrentes de um lojista criam 1 conta. 14 mutantes mortos, entre eles travar a tentativa antes da cobrança, `FOR KEY SHARE` na cobrança, lançar cobrança já paga, tirar a referência do ledger e uma conta a receber única para todos os lojistas.
+**Resultado:** **Exatamente 1 transação contábil e 1 `payment.paid` para 1.000 confirmações**, com os saldos do GameStore ao centavo (R$ 101,50 de entrada, US$ 19,40 devidos, US$ 0,60 de taxa, US$ 0,30 de spread). Qualquer cotação confirma numa transação balanceada e sem perna zerada: 100 casos por rodada, 20/20 rodadas. 50 primeiras confirmações concorrentes de um lojista criam 1 conta. 14 mutantes mortos.
 
 ---
 
@@ -214,7 +228,7 @@ Confirmação (`payments` + `ledger`): uma tentativa que vira `succeeded`, pelo 
 
 A confirmação grava `payment.paid` em `outbox_events` na própria transação (seção 4.5), com o `payment_version` incrementado pelo mesmo `UPDATE` que muda o status. O payload é guardado com os bytes exatos que toda entrega vai enviar e assinar, e validado contra o schema `PaymentEvent` do `api/openapi.yaml`; o `payment_id`, o `status` e o `amount` dele batem com o `GET` da cobrança. Uma outbox que recusa o evento desfaz a tentativa, a cobrança e o lançamento. A entrega está na linha "Entrega de webhooks".
 
-**Resultado:** 1 evento por cobrança sob as 1.000 confirmações concorrentes acima, 20/20 rodadas com `-race -count=20`. 10 mutantes mortos, entre eles não gravar o evento, ignorar o erro da outbox, não incrementar a versão, a versão antiga no payload, o valor em BRL do pagador no `data` e guardar o payload como `jsonb`
+**Resultado:** 1 evento por cobrança sob as 1.000 confirmações concorrentes acima. 10 mutantes mortos.
 
 </details>
 
@@ -225,7 +239,7 @@ A confirmação grava `payment.paid` em `outbox_events` na própria transação 
 
 Um job reivindica cobranças pendentes com cotação vencida (`FOR NO KEY UPDATE SKIP LOCKED`, depois uma lease de 1 minuto) e consulta o provedor antes de decidir: paga em dia vira confirmada; senão, expirada com `payment.expired` na outbox. Em dia é o `paid_at` do provedor contra o `expires_at` da cotação, nunca a hora em que a notícia chegou, e o `confirm` aplica a mesma regra aos eventos, então o job e o evento concordam, chegue quem chegar primeiro. Um provedor que não responde não decide nada: a cobrança espera a lease. **A corrida:** o pagador paga 2 s antes de vencer e o evento ainda não chegou quando o job roda; o job acha o pagamento e confirma, e o evento que chega 3 s depois é no-op. Pago 1 s atrasado, pelo job ou pelo evento, nunca é confirmado: o dinheiro fica retido para revisão (próxima linha).
 
-**Resultado:** 4 jobs simultâneos sobre 50 cobranças: cada uma expirada 1 vez, com uma consulta cada. 20/20 rodadas com `-race -count=20`. 17 mutantes mortos, entre eles julgar o atraso pelo nosso relógio, expirar sem consultar o provedor ou depois de uma consulta que falhou, tratar o instante de vencimento como em dia, `Expire` sem reconferir status ou prazo sob o lock, tirar o `SKIP LOCKED` e não empurrar a lease.
+**Resultado:** 4 jobs simultâneos sobre 50 cobranças: cada uma expirada 1 vez, com uma consulta cada. 17 mutantes mortos.
 
 ---
 
@@ -233,7 +247,7 @@ Um job reivindica cobranças pendentes com cotação vencida (`FOR NO KEY UPDATE
 
 Uma cobrança pendente vira `canceled` com `payment.canceled` na outbox. Como o job de expiração, o cancelamento consulta o provedor antes: um pagador que já pagou enquanto a notícia vinha a caminho é confirmado, e o cancelamento responde `409 payment_not_cancelable`. Provedor que não responde dá `503 provider_unavailable` e nada muda. Cancelar duas vezes responde `200` sem segundo evento, então não precisa de `Idempotency-Key`. Dinheiro enviado depois do cancelamento é dinheiro atrasado: retido para revisão, e a cobrança continua cancelada. **A corrida:** o cancelamento e uma confirmação em dia disputam o mesmo lock da cobrança, então exatamente um vence.
 
-**Resultado:** `TestCancelAndConfirmationRace`: 400 rodadas de cancelamento × confirmação, 20/20 execuções com `-race -count=20`: 356 canceladas com o dinheiro retido, 44 pagas com um lançamento, nunca os dois. 3 mutantes mortos: cancelar sem consultar o provedor, ler o status sem o lock, um segundo evento num cancelamento repetido.
+**Resultado:** `TestCancelAndConfirmationRace`: 400 rodadas de cancelamento × confirmação, 20/20 execuções com `-race -count=20`: 356 canceladas com o dinheiro retido, 44 pagas com um lançamento, nunca os dois. 3 mutantes mortos.
 
 ---
 
@@ -241,7 +255,7 @@ Uma cobrança pendente vira `canceled` com `payment.canceled` na outbox. Como o 
 
 Dinheiro confirmado pelo provedor entra sempre no ledger; a dúvida é só para onde. Um pagamento que não pode confirmar a cobrança (atrasado, com outro valor, numa tentativa recusada ou numa segunda cobrança) é lançado de `provider_receivables:BRL` para `divergence:BRL` e abre um caso de revisão em `review_cases` (módulo `reconciliation`, na mesma transação). A cobrança não muda, e a tentativa vira `succeeded` quando a máquina de estados permite. Um caso por cobrança no provedor: a chave única é a primeira barreira e a referência única do ledger a segunda, então o evento, o resolvedor e o job de expiração lançam uma vez só, juntos. A conferência de valor agora roda no domínio para os três caminhos; antes, só o evento comparava valores, e o resolvedor confirmava qualquer pagamento que o provedor dissesse estar pago. Um evento que não pode ser retido (outra moeda) fica `failed` e não grava nada: um savepoint desfaz o que ele gravou antes, já que o inbox commita o status de falha.
 
-**Resultado:** Pago 1 s atrasado, com o job primeiro, com o evento primeiro e com os dois ao mesmo tempo: 1 caso e R$ 101,50 retidos em cada um, com o ledger fechando em zero por moeda. 20 entregas simultâneas do mesmo evento divergente: 1 caso, 1 lançamento. Pelo worker com o evento do próprio simulador: cobrança `expired`, tentativa `succeeded`, R$ 101,50 em `divergence:BRL`. 20/20 rodadas com `-race -count=20`. 16 mutantes mortos, entre eles lançar com o caso já aberto, tirar a conferência de valor, reter o valor cotado em vez do pago, tirar o savepoint, o job de expiração parar depois de liquidar e confirmar a cada mudança de uma tentativa já `succeeded`
+**Resultado:** Pago 1 s atrasado, com o job primeiro, com o evento primeiro e com os dois ao mesmo tempo: 1 caso e R$ 101,50 retidos em cada um, com o ledger fechando em zero por moeda. 20 entregas simultâneas do mesmo evento divergente: 1 caso, 1 lançamento. Pelo worker com o evento do próprio simulador: cobrança `expired`, tentativa `succeeded`, R$ 101,50 em `divergence:BRL`. 16 mutantes mortos.
 
 </details>
 
@@ -252,7 +266,7 @@ Dinheiro confirmado pelo provedor entra sempre no ledger; a dúvida é só para 
 
 O estorno sai pela proporção da cobrança original: US$ 10,00 da GameStore devolvem R$ 50,75 ao pagador e US$ 0,15 do spread. Ele lança em três passos: a reserva tira os dólares estornados do lojista para "estornos em andamento" quando o estorno é criado; a conclusão devolve os reais do provedor, recompra-os pela taxa base do dia e põe a diferença no resultado cambial (a 5,5000 o gateway ganha US$ 0,92, a 4,5000 perde US$ 1,13); a recusa libera a reserva. **O bug de arredondamento evitado:** arredondando cada estorno sozinho, duas metades de R$ 101,51 dão R$ 50,76 cada, R$ 101,52 no total; em vez disso cada parcela é cumulativa, o que todos os estornos até aqui deveriam ter devolvido menos o que os anteriores devolveram, e a soma fecha no total exato. A máquina de estados do estorno tem cada par (status, evento) conferido contra uma tabela escrita de novo no teste.
 
-**Resultado:** `TestRefundsOfAnyPaymentAddUp`: 10.000 cobranças aleatórias (taxa, spread, tarifa, valor) com até 12 estornos cada, alguns recusados depois: o que conta nunca passa do pago, todo lançamento soma zero por moeda, e estornar o resto devolve exatamente os reais e o spread. 20/20 rodadas com `-race -count=20`. 14 mutantes mortos, entre eles arredondar cada estorno sozinho (reais ou spread), um erro de um centavo na invariante 8, recusar o estorno total, o resultado cambial com o sinal trocado, o custo ignorando a taxa do dia e uma resposta ambígua recusando o estorno.
+**Resultado:** `TestRefundsOfAnyPaymentAddUp`: 10.000 cobranças aleatórias (taxa, spread, tarifa, valor) com até 12 estornos cada, alguns recusados depois: o que conta nunca passa do pago, todo lançamento soma zero por moeda, e estornar o resto devolve exatamente os reais e o spread. 14 mutantes mortos.
 
 ---
 
@@ -260,7 +274,7 @@ O estorno sai pela proporção da cobrança original: US$ 10,00 da GameStore dev
 
 Invariante 8 pela API inteira: o estorno trava a cobrança (`FOR NO KEY UPDATE`), soma os estornos que ainda contam (todos menos os recusados), calcula o novo e lança a reserva numa só transação; o provedor é chamado depois do commit, e a resposta lança o dinheiro devolvido ou libera a reserva, levando a cobrança a `partially_refunded` ou `refunded` com `refund.succeeded` ou `refund.failed` na outbox. 40 estornos de valores aleatórios atingem uma cobrança paga ao mesmo tempo, por HTTP, cada um com sua `Idempotency-Key`. Recusa do provedor é `201` com `failed` e a reserva volta ao lojista; timeout deixa o estorno `pending` com a reserva mantida; repetir com a mesma key devolve a mesma resposta; um request que morreu depois da primeira transação retoma sem chamar o provedor duas vezes, e depois de `sent` não chama nenhuma.
 
-**Resultado:** **4.000 pedidos de estorno simultâneos** (5 cobranças × 40 por rodada, 20/20 rodadas com `-race -count=20`): nunca mais de US$ 20,00 ou R$ 101,50 estornados por cobrança, todo estorno aceito pelo gateway foi concluído no provedor, e toda recusa continuaria sem caber no que sobrou. No fim os livros fecham no centavo: nada em andamento, o lojista devolve exatamente o estornado, o provedor fica com o que não voltou. 11 mutantes mortos, entre eles calcular sem o lock da cobrança, contar só os estornos concluídos ou também os recusados, nunca chegar a `refunded`, não lançar a reserva ou a liberação, retomar criando um segundo estorno, chamar de novo depois de `sent` e ler timeout como recusa.
+**Resultado:** **4.000 pedidos de estorno simultâneos** (5 cobranças × 40 por rodada): nunca mais de US$ 20,00 ou R$ 101,50 estornados por cobrança, todo estorno aceito pelo gateway foi concluído no provedor, e toda recusa continuaria sem caber no que sobrou. No fim os livros fecham no centavo: nada em andamento, o lojista devolve exatamente o estornado, o provedor fica com o que não voltou. 11 mutantes mortos.
 
 ---
 
@@ -268,7 +282,7 @@ Invariante 8 pela API inteira: o estorno trava a cobrança (`FOR NO KEY UPDATE`)
 
 Um estorno sem resposta não espera o lojista repetir o request: a mesma fila das tentativas (`next_check_at` como agenda e lease, `SKIP LOCKED`) termina o que o request deixou. `created` parado há 1 min, de um request que morreu antes de chamar o provedor, é enviado, e só por quem o move para `sent`, então worker e request repetido nunca chamam o provedor os dois. `sent` parado vira `unknown`, nunca é enviado de novo; `unknown` é consultado com o backoff das tentativas. "Não encontrado" só recusa o estorno depois de 1 min da última mudança, não da criação: um estorno enviado tarde pode estar chegando agora. Recusado, a reserva volta ao lojista com `refund.failed`; concluído, lança como o request lançaria, com `refund.succeeded`. Sem resposta em 24 h, vai para uma pessoa com a reserva mantida.
 
-**Resultado:** 8 testes contra o simulador e o Postgres, 20/20 rodadas com `-race -count=20`. 10 mutantes mortos, entre eles enviar mesmo tendo perdido a corrida para `sent`, contar a carência desde a criação, recusar em qualquer erro de consulta, não enfileirar o `created`, não reiniciar a agenda na mudança de status e nunca escalar.
+**Resultado:** 8 testes contra o simulador e o Postgres. 10 mutantes mortos.
 
 ---
 
@@ -276,7 +290,7 @@ Um estorno sem resposta não espera o lojista repetir o request: a mesma fila da
 
 Uma vez por lojista e data de corte em `America/Sao_Paulo`, o disponível vira repasse em USD: sai de `merchant_payable` para `settlements_paid`, e as cobranças que ficaram disponíveis apontam para a liquidação, cada uma em exatamente uma. PIX pago no dia local P fica disponível em P+1 (boleto P+2, cartão P+30, dias corridos). O disponível é o saldo da obrigação menos o que ainda está pendente, cada cobrança pendente pelo seu líquido menos os estornos que contam; então um estorno de cobrança pendente sai dela, e um de cobrança já liquidada sai do próximo repasse. Disponível negativo não paga nada e espera mais dinheiro. A transação trava primeiro as cobranças e depois a obrigação, a ordem de todo caminho, e com a obrigação travada nada mais lança nela; `UNIQUE (merchant_id, cutoff_date)` faz a segunda rodada não pagar nada.
 
-**Resultado:** **Critério da F7**: rodar o mesmo corte duas vezes, ou com 8 workers ao mesmo tempo, gera um repasse só. Um modelo de 4 rodadas × 6 dias com cobranças e estornos aleatórios antes e depois de cada corte confere cada repasse no centavo e com as cobranças certas; 4 workers liquidando enquanto cobranças são confirmadas e estornadas terminam com tudo pago uma vez e a obrigação em zero. 20/20 rodadas com `-race -count=20`. 11 mutantes mortos, entre eles ignorar o pendente, disponibilidade um dia antes ou depois, corte em UTC, pendente sem os estornos ou com os recusados, pagar disponível negativo, listar de novo cobranças liquidadas e travar a obrigação antes das cobranças (deadlock)
+**Resultado:** **Critério da F7**: rodar o mesmo corte duas vezes, ou com 8 workers ao mesmo tempo, gera um repasse só. Um modelo de 4 rodadas × 6 dias com cobranças e estornos aleatórios antes e depois de cada corte confere cada repasse no centavo e com as cobranças certas; 4 workers liquidando enquanto cobranças são confirmadas e estornadas terminam com tudo pago uma vez e a obrigação em zero. 11 mutantes mortos.
 
 ---
 
@@ -284,7 +298,7 @@ Uma vez por lojista e data de corte em `America/Sao_Paulo`, o disponível vira r
 
 O saldo divide a obrigação do lojista como o job de liquidação faria naquele momento: pendente é o líquido das cobranças ainda não disponíveis menos os estornos delas, disponível é o resto, negativo depois de um estorno ou chargeback de dinheiro liquidado maior do que o que entrou desde então; reservado é a reserva rolante abaixo. As duas somas saem de um snapshot `REPEATABLE READ` sem a trava da obrigação, então uma leitura nunca espera uma confirmação nem segura uma liquidação. A lista mostra as liquidações do corte mais novo para o mais antigo, cada uma com suas cobranças, lidas no mesmo snapshot da página; o cursor é a data de corte, única por lojista, sobre o índice `UNIQUE (merchant_id, cutoff_date)`; as cobranças vêm de um novo índice parcial em `payments.settlement_id` (migration 00020)
 
-**Resultado:** Saldo conferido em 9 pontos ao longo de 3 dias de São Paulo, entre eles 23:30 local, quando a data em UTC já virou, sempre somando a obrigação. 3 liquidações em páginas de 1: cada uma vista uma vez, da mais nova para a mais antiga, com o mesmo valor e as mesmas cobranças gravadas, nenhuma de outro lojista liquidado nas mesmas rodadas. 5 parâmetros inválidos e 2 `401`. 20/20 rodadas com `-race -count=20`. 11 mutantes mortos, entre eles disponível sem o pendente, disponibilidade um dia antes ou depois, corte em UTC, cursor com `<=`, lista sem o filtro de lojista, as cobranças de todas as liquidações e erro para lojista ainda sem obrigação.
+**Resultado:** Saldo conferido em 9 pontos ao longo de 3 dias de São Paulo, entre eles 23:30 local, quando a data em UTC já virou, sempre somando a obrigação. 3 liquidações em páginas de 1: cada uma vista uma vez, da mais nova para a mais antiga, com o mesmo valor e as mesmas cobranças gravadas, nenhuma de outro lojista liquidado nas mesmas rodadas. 5 parâmetros inválidos e 2 `401`. 11 mutantes mortos.
 
 ---
 
@@ -303,7 +317,7 @@ Cada repasse retém 10% do disponível em `merchant_reserve` por 90 dias, e uma 
 
 `PUT /v1/webhook-endpoint` guarda a URL do lojista, recusada quando não é `https` ou aponta para dentro de uma rede: loopback, faixas privadas, link-local e metadados de cloud (`169.254.169.254`, também como `::ffff:169.254.169.254`), CGNAT, faixas reservadas, nomes `localhost`/`.internal`/`.local` e hosts numéricos como `2130706433`, que alguns resolvedores leem como `127.0.0.1`. Sem DNS no cadastro: o nome pode passar a resolver para outro lugar, então a entrega confere o IP depois do DNS (linha abaixo). O segredo de assinatura não é guardado: é derivado de uma chave fora do banco, do lojista e de uma versão; a rotação é condicionada à versão atual, então uma rotação repetida mostra o mesmo segredo em vez de rotacionar duas vezes.
 
-**Resultado:** 35 IPs nas bordas de cada faixa e 31 URLs, cada um sob a política estrita e a de desenvolvimento. 20 rotações simultâneas a partir da mesma versão: 1 rotação, o mesmo segredo nas 20 respostas. Uma troca de URL que leu a versão antes de uma rotação concorrente não a desfaz, forçado segurando a troca aberta até a rotação esperar no lock. Nenhum `whsec_` na linha guardada nem nos logs. 20/20 rodadas com `-race -count=20`. 22 mutantes mortos, entre eles tirar o lock do lojista, o desmapeamento `::ffff:`, a checagem de faixa privada ou de CGNAT, a de host numérico, abrir metadados em desenvolvimento, a rotação repetida rotacionar de novo e o `Cache-Control: no-store`
+**Resultado:** 35 IPs nas bordas de cada faixa e 31 URLs, cada um sob a política estrita e a de desenvolvimento. 20 rotações simultâneas a partir da mesma versão: 1 rotação, o mesmo segredo nas 20 respostas. Uma troca de URL que leu a versão antes de uma rotação concorrente não a desfaz, forçado segurando a troca aberta até a rotação esperar no lock. Nenhum `whsec_` na linha guardada nem nos logs. 22 mutantes mortos.
 
 ---
 
@@ -311,7 +325,7 @@ Cada repasse retém 10% do disponível em `merchant_reserve` por 90 dias, e uma 
 
 O worker reivindica os eventos vencidos da outbox com `FOR UPDATE SKIP LOCKED` e uma lease (`next_attempt_at` empurrado para depois do timeout + 1 min), faz commit e só então posta, fora de qualquer transação (seção 4.3); o resultado entra em outra transação curta. `attempts` cerca a reivindicação: depois que a lease venceu e outro worker pegou o evento, a primeira não consegue mais reagendar nem desistir dele, e um 2xx, que é fato, ainda é gravado. Cada post leva `Webhook-Signature: t=…,v1=…` (HMAC-SHA256 do timestamp e do corpo guardado), com um segundo `v1` do segredo anterior por 24 h depois de uma rotação. Só 2xx é sucesso: redirect não é seguido, e o IP é conferido de novo no `connect`, depois do DNS, pela mesma política do cadastro. Falha espera um sorteio em [0, 30 s · 2ⁿ⁻¹], até 6 h (decisão 23), e vira `failed` 72 h depois da criação. Cada rodada pega até 4 eventos por lojista, os lojistas com evento mais antigo primeiro.
 
-**Resultado:** **Teste citado 4:** o worker é morto no meio da segunda rodada de 100 eventos de 5 lojistas, com 10 posts recebidos pelo lojista e não respondidos; depois do reinício e do fim da lease, os 100 são entregues, os 10 cortados duas vezes e os outros 90 uma vez, e os cortados não ganham retry nem erro registrado. 4 workers sobre 300 eventos de 10 lojistas: cada um postado 1 vez, nenhuma assinatura inválida. 13 casos de decisão, 7 falsificações recusadas, 10 endereços na checagem pós-DNS. 20/20 rodadas com `-race -count=20`. 21 mutantes mortos, entre eles tirar o `FOR UPDATE SKIP LOCKED`, o limite por lojista, a cerca de `attempts`, a margem da lease, o contexto desacoplado do 2xx, o `CheckRedirect`, a checagem pós-DNS, o timestamp do MAC e o prazo do segredo anterior.
+**Resultado:** **Teste citado 4:** o worker é morto no meio da segunda rodada de 100 eventos de 5 lojistas, com 10 posts recebidos pelo lojista e não respondidos; depois do reinício e do fim da lease, os 100 são entregues, os 10 cortados duas vezes e os outros 90 uma vez, e os cortados não ganham retry nem erro registrado. 4 workers sobre 300 eventos de 10 lojistas: cada um postado 1 vez, nenhuma assinatura inválida. 13 casos de decisão, 7 falsificações recusadas, 10 endereços na checagem pós-DNS. 21 mutantes mortos.
 
 ---
 
@@ -319,7 +333,7 @@ O worker reivindica os eventos vencidos da outbox com `FOR UPDATE SKIP LOCKED` e
 
 Cada rodada informa o breaker de cada lojista uma vez: um 2xx encerra a sequência de falhas, e uma falha 72 h depois da primeira sem sucesso no meio desativa o endpoint, num único `UPDATE` condicional, então só uma de muitas falhas simultâneas desativa e avisa. Desativado, o endpoint não recebe post: os eventos esperam com o backoff normal e falham em 72 h, e falhas cortadas pelo shutdown não contam. O aviso é o `GET /v1/webhook-endpoint`, que mostra `failing_since`, `disabled_at` e `disabled_reason`, e uma linha `ERROR` no log para o operador; qualquer `PUT`, com a mesma URL também, reativa. Um job horário apaga, em lotes de 1.000 com `SKIP LOCKED`, os eventos entregues há mais de 30 dias; `pending` e `failed` ficam. O teste do `GET` achou um bug do #32: os horários lidos do banco saíam no fuso local (`-03:00`), e agora saem em UTC (seção 4.9).
 
-**Resultado:** 20 falhas simultâneas na marca de 72 h: 1 desativa. Nenhum post a um destino desativado, e a entrega volta depois do `PUT`. Uma rodada com 2xx e 500 misturados encerra a sequência. 5 entregues no corte apagados em 3 lotes; o entregue 1 µs depois do corte, o `failed` e o `pending` ficam. 20/20 rodadas com `-race -count=20`. 15 mutantes mortos, entre eles `<` no lugar de `<=` na marca, cada falha reiniciar a sequência, um sucesso reativar um destino desativado, postar em destino desativado, contar falhas do shutdown, a limpeza apagar `failed`, a retenção de 3 dias e ler sem UTC.
+**Resultado:** 20 falhas simultâneas na marca de 72 h: 1 desativa. Nenhum post a um destino desativado, e a entrega volta depois do `PUT`. Uma rodada com 2xx e 500 misturados encerra a sequência. 5 entregues no corte apagados em 3 lotes; o entregue 1 µs depois do corte, o `failed` e o `pending` ficam. 15 mutantes mortos.
 
 ---
 
@@ -327,7 +341,7 @@ Cada rodada informa o breaker de cada lojista uma vez: um 2xx encerra a sequênc
 
 A lista mostra os eventos do lojista, do mais novo para o mais antigo, com cursor opaco e filtro `delivery_status`: cada um com o corpo exato que toda entrega envia e onde a entrega dele está (tentativas, próxima tentativa, último status e erro). A reentrega vale para qualquer status: `failed` é tentado de novo, `delivered` é enviado de novo, `pending` sai sem esperar o backoff; responde `202`, sem `Idempotency-Key`, porque repetir só reenfileira. Ela abre uma janela nova de retry: o backoff recomeça em 30 s e as 72 h contam dela, sem zerar o `attempts`, que continua cercando a reivindicação. Um post em voo antes da reentrega não consegue empurrar o "agora" para o backoff dele. Sem endpoint ou com o endpoint desativado, `409`; evento de outro lojista, desconhecido ou com ID malformado, o mesmo `404`. O `evt_`/`pay_`/`att_` agora vêm de um só lugar, `internal/platform/publicid`.
 
-**Resultado:** 7 eventos em páginas de 3: cada um visto 1 vez, do mais novo para o mais antigo, nenhum de outro lojista, cada `event` igual aos bytes guardados. 6 parâmetros inválidos recusados. Reentrega a partir dos 3 status. Um evento que falhou a janela inteira (mais de 20 tentativas) reentregue espera 30 s na primeira falha, continua `pending` até 72 h depois da reentrega e é entregue. 20/20 rodadas com `-race -count=20`. 15 mutantes mortos, entre eles a reentrega não reabrir o prazo ou não reiniciar o backoff, tirar a cerca da janela, reentregar evento de outro lojista, o cursor com `<=`, o backoff pela tentativa total e reescrever o JSON do evento.
+**Resultado:** 7 eventos em páginas de 3: cada um visto 1 vez, do mais novo para o mais antigo, nenhum de outro lojista, cada `event` igual aos bytes guardados. 6 parâmetros inválidos recusados. Reentrega a partir dos 3 status. Um evento que falhou a janela inteira (mais de 20 tentativas) reentregue espera 30 s na primeira falha, continua `pending` até 72 h depois da reentrega e é entregue. 15 mutantes mortos.
 
 </details>
 
@@ -346,7 +360,7 @@ Um adquirente sobre HTTP de verdade, com autorizações em memória e as falhas 
 
 `method: card` com `card.token` é autorizado e capturado enquanto a cobrança é criada, então o `201` já vem `paid` com `card.status: captured`, os lançamentos da GameStore feitos e `payment.paid` no outbox, byte a byte igual ao `GET` e a uma repetição. O payments escolhe o provedor pelo meio (`pix` → `pixsim`, `card` → `cardsim`) e, depois que existe uma tentativa, pelo nome gravado com ela, então o estorno volta pelo adquirente que capturou. O token fica guardado com a tentativa, recusado por um `CHECK` se não for token, para que um request que morreu antes de chamar o adquirente seja completado pela repetição. Uma recusa é um `201` pendente com `declined`; uma resposta perdida é `processing`, e o resolvedor acha a captura pela key da tentativa.
 
-**Resultado:** 6 testes contra Postgres real e os dois simuladores: capturada na criação, 3 recusas, 5 requests rejeitados que não gravam nada (um número de cartão entre eles), o resolvedor confirmando uma captura perdida com 1 autorização, uma criação retomada autorizando uma vez com o token guardado, e um estorno de cartão lançado como um de PIX. 6 mutantes mortos: não reler a cobrança paga, não capturar na hora, o token não enviado ou não guardado, uma recusa lida como erro e o estorno roteado pelo meio em vez da tentativa paga.
+**Resultado:** 6 testes contra Postgres real e os dois simuladores: capturada na criação, 3 recusas, 5 requests rejeitados que não gravam nada (um número de cartão entre eles), o resolvedor confirmando uma captura perdida com 1 autorização, uma criação retomada autorizando uma vez com o token guardado, e um estorno de cartão lançado como um de PIX. 6 mutantes mortos.
 
 
 ---
@@ -366,7 +380,7 @@ Um adquirente sobre HTTP de verdade, com autorizações em memória e as falhas 
 
 O código de barras de 44 posições e a linha digitável de 47 do layout Febraban, com o DV módulo 10 de cada campo e o módulo 11 geral, e o fator de vencimento reiniciado em 1000 em 22/02/2025: uma contagem só a partir de 03/07/2000, de 9.000 em 9.000 dias, e a leitura escolhe a data mais perto de hoje. O calendário é uma tabela versionada no código (`BR-2024`, com o 20 de novembro nacional da Lei 14.759/2023), com Carnaval, Sexta-feira Santa e Corpus Christi calculados pela Páscoa e 31/12 sem expediente; um `Date` sem hora nem fuso, e o dia que conta é o de `America/Sao_Paulo`. O CPF do pagador é validado pelos dois dígitos e nunca impresso inteiro: `String` e `slog` mostram `***.982.247-**`.
 
-**Resultado:** o exemplo publicado do Banco do Brasil (R$ 1,00, fator 3737) bate dígito a dígito nos dois sentidos; toda troca de um dígito da linha digitável é pega; 100 boletos aleatórios por rodada vão e voltam pela linha; os dias úteis conferidos por propriedade em 100 anos e a Páscoa em 11 anos publicados, de 1961 a 2285. O teste de propriedade do CPF achou que o módulo 11 da Receita deixa passar alguns erros de um dígito na base, porque os restos 0 e 1 dão o mesmo 0, e o teste passou a afirmar só o que o algoritmo garante. 5 mutantes mortos: pesos do módulo 10, fator contado um dia depois, segundo DV do CPF ignorado, Corpus Christi esquecido e o vencimento num feriado sem ir para o dia útil seguinte.
+**Resultado:** o exemplo publicado do Banco do Brasil (R$ 1,00, fator 3737) bate dígito a dígito nos dois sentidos; toda troca de um dígito da linha digitável é pega; 100 boletos aleatórios por rodada vão e voltam pela linha; os dias úteis conferidos por propriedade em 100 anos e a Páscoa em 11 anos publicados, de 1961 a 2285. O teste de propriedade do CPF achou que o módulo 11 da Receita deixa passar alguns erros de um dígito na base, porque os restos 0 e 1 dão o mesmo 0, e o teste passou a afirmar só o que o algoritmo garante. 5 mutantes mortos.
 
 ---
 
@@ -382,7 +396,7 @@ Um banco sobre HTTP de verdade com o `simkit` dos outros dois: registra o boleto
 
 `method: boleto` com `payer` (nome, CPF e e-mail opcional) sai `201` pendente com `boleto.status: ready`, o código de barras, a linha digitável formatada e `due_date` três dias corridos depois em São Paulo; a cotação vale até o fim do último dia em que o banco recebe. O pagador e o vencimento ficam com a tentativa (migração 00023, com `CHECK`s que os mantêm juntos e longe do cartão), para que a repetição registre o mesmo boleto, e o código de barras devolvido também, para o `GET` mostrar o boleto que o pagador talvez já imprimiu; a linha digitável é derivada dele. O CPF não volta em resposta nenhuma. O `boleto.paid` chega ao inbox em `POST /v1/providers/boletosim/events` e o worker confirma a cobrança como qualquer outra, mas só numa tentativa do próprio `boletosim`: um evento que nomeie uma tentativa de outro provedor falha. Um boleto vencido é recusado pelo banco e a cobrança expira pelo job de expiração; uma resposta perdida fica `processing` até o resolvedor achar o boleto pela key.
 
-**Resultado:** 5 testes de contrato contra Postgres real e o simulador, mais 1 do worker e 2 de domínio: o boleto pronto, igual no `GET`, com o pagador gravado e o CPF ausente da resposta; pago no banco, confirmado pelo evento com os lançamentos da GameStore e estornado pela metade de volta pelo banco; recusado depois do vencimento e expirado sem lançamento; uma resposta perdida resolvida com 1 registro no banco; 7 pedidos recusados sem chamar o banco; e um `boleto.paid` que nomeia uma tentativa PIX deixado `failed`. Vencimento no sábado, num feriado e às 23h30 de sexta em São Paulo. 20/20 rodadas com `-race`. 8 mutantes mortos: CPF mascarado mandado ao banco, vencimento ou código de barras não gravados, pagador aceito no PIX, um evento que troca o código de barras aceito, o worker sem o handler do boleto, a API sem o verificador dele e o evento aplicado à tentativa de outro provedor (esta última uma falha de verdade, achada ao escrever o teste: com um provedor só ela não aparecia).
+**Resultado:** 5 testes de contrato contra Postgres real e o simulador, mais 1 do worker e 2 de domínio: o boleto pronto, igual no `GET`, com o pagador gravado e o CPF ausente da resposta; pago no banco, confirmado pelo evento com os lançamentos da GameStore e estornado pela metade de volta pelo banco; recusado depois do vencimento e expirado sem lançamento; uma resposta perdida resolvida com 1 registro no banco; 7 pedidos recusados sem chamar o banco; e um `boleto.paid` que nomeia uma tentativa PIX deixado `failed`. Vencimento no sábado, num feriado e às 23h30 de sexta em São Paulo. 20/20 rodadas com `-race`. 8 mutantes mortos. Um era falha de verdade, achada ao escrever o teste: o evento aplicado à tentativa de outro provedor, que com um provedor só não aparecia.
 
 </details>
 
@@ -401,7 +415,7 @@ A adquirente abre um chargeback sobre uma autorização capturada por endpoint d
 
 `chargeback.opened` chega à inbox em `POST /v1/providers/cardsim/events`, e o worker leva a cobrança a `charged_back`, grava o chargeback e tira o dinheiro numa transação só: os reais saem do recebível da adquirente, o lojista perde a mesma proporção da cobrança em USD, sem devolver a tarifa, calculada de forma cumulativa como nos estornos, e o resultado cambial do gateway absorve a taxa do dia. O lojista fica sabendo por `chargeback.opened`, com o ID do chargeback. Aceitar e contestar vão primeiro à adquirente, fora da transação, e uma resposta perdida é um `503` que não mudou nada. Uma disputa ganha lança o estorno do débito e manda `chargeback.won`; uma perdida manda `chargeback.lost`. Cada um avança a versão da cobrança. Uma cobrança estornada ainda pode sofrer chargeback, e o dinheiro sai duas vezes até a disputa ser ganha (decisão 7). Um chargeback de captura ainda em confirmação, ou um fechamento antes da abertura, é tentado de novo; a mesma abertura sob outro ID de evento é aplicada uma vez.
 
-**Resultado:** **Critério da F8:** a GameStore paga no cartão, repassada no dia 30 com US$ 1,94 retidos, sofre chargeback: o saldo vai a −US$ 20,00, a rodada seguinte consome a reserva e deixa −US$ 18,06, e a disputa ganha volta a US$ 1,94, com o recebível da adquirente de novo em R$ 101,50 e todo evento batendo com `ChargebackEvent`. 8 testes de contrato, mais 6 de domínio e 1 do worker: o acima; aceito e perdido; estornada e depois chargeback, a obrigação em −US$ 1,20 até ganhar; duas metades de US$ 10,00 cada; dinheiro pendente saindo do pendente; 404s, evidência recusada e um `503` tentado de novo; uma abertura repetida e um fechamento adiantado; um chargeback antes de a captura ser confirmada, aplicado depois. Cálculo e lançamentos por propriedade: chargebacks em quaisquer pedaços somam a cobrança e o spread inteiro, todo lançamento fechando em qualquer taxa. 20/20 rodadas com `-race -count=20`. 5 mutantes mortos, entre eles o pendente sem os chargebacks, o estorno do débito nunca lançado e um chargeback adiantado falhando em vez de esperar. Um era bug de verdade, achado ao escrever o teste: a abertura repetida era calculada antes de ser reconhecida, e um chargeback inteiro visto duas vezes falhava como maior do que a cobrança.
+**Resultado:** **Critério da F8:** a GameStore paga no cartão, repassada no dia 30 com US$ 1,94 retidos, sofre chargeback: o saldo vai a −US$ 20,00, a rodada seguinte consome a reserva e deixa −US$ 18,06, e a disputa ganha volta a US$ 1,94, com o recebível da adquirente de novo em R$ 101,50 e todo evento batendo com `ChargebackEvent`. 8 testes de contrato, mais 6 de domínio e 1 do worker: o acima; aceito e perdido; estornada e depois chargeback, a obrigação em −US$ 1,20 até ganhar; duas metades de US$ 10,00 cada; dinheiro pendente saindo do pendente; 404s, evidência recusada e um `503` tentado de novo; uma abertura repetida e um fechamento adiantado; um chargeback antes de a captura ser confirmada, aplicado depois. Cálculo e lançamentos por propriedade: chargebacks em quaisquer pedaços somam a cobrança e o spread inteiro, todo lançamento fechando em qualquer taxa. 5 mutantes mortos. Um era bug de verdade, achado ao escrever o teste: a abertura repetida era calculada antes de ser reconhecida, e um chargeback inteiro visto duas vezes falhava como maior do que a cobrança.
 
 </details>
 
@@ -751,11 +765,20 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F6 | Outbox e webhooks; GameStore ponta a ponta por HTTP | ✅ pronta |
 | F7 | Estornos e liquidação | ✅ pronta |
 | F8 | Cartão, boleto, chargebacks | ✅ pronta |
-| F9 | Polimento: menos código, comentário só para o porquê, sem mudar comportamento ([plano](docs/polimento.md)) | 🚧 em andamento |
+| F9 | Polimento: menos código, comentário só para o porquê, sem mudar comportamento ([plano](docs/polimento.md)) | ✅ pronta |
 | F10 | Teste de caos nos três simuladores e conciliação diária | planejada |
 | F11 | `docker compose up` com tudo e script de demo da GameStore | planejada |
 
 Em 14 de novembro de 2026, depois da F8, saíram o sandbox Efí, o deploy público, os testes de carga e a página do pagador (decisão 58): F0–F8 já provam os quatro eixos, e o tempo vai para um código menor.
+
+O que a F9 mudou, em linhas (`wc -l`, sem o código que o sqlc gera):
+
+| | Antes | Depois |
+|---|---|---|
+| Go de produção | 17.147 | 16.427 |
+| Comentários no Go de produção | 1.630 | 924 |
+| Go de teste | 19.009 | 18.894 |
+| `api/openapi.yaml` | 1.505 | 1.493 |
 
 ## Rodando localmente
 
