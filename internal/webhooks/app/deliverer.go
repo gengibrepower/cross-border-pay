@@ -1,6 +1,5 @@
-// Package app runs the worker that delivers the outbox to merchants' endpoints: each
-// round claims due events under a lease, posts them outside any transaction and
-// records how each attempt ended.
+// Package app delivers the outbox: each round claims due events under a lease and
+// posts them outside any transaction.
 package app
 
 import (
@@ -25,11 +24,9 @@ const (
 	PerMerchant  = 4
 	// LeaseMargin is how long a claim outlives its post's timeout, to record the
 	// answers. A worker that dies keeps its events away for timeout + LeaseMargin.
-	LeaseMargin = time.Minute
-	// recordTimeout bounds recording a 2xx after the worker was told to stop.
+	LeaseMargin   = time.Minute
 	recordTimeout = 5 * time.Second
-	// CleanupBatch keeps each delete of the cleanup short; it loops until a batch
-	// comes back short.
+	// CleanupBatch keeps each delete short.
 	CleanupBatch = 1000
 )
 
@@ -49,26 +46,21 @@ type Queue interface {
 	Delivered(ctx context.Context, d *events.Delivery, statusCode int, now time.Time) (bool, error)
 	Reschedule(ctx context.Context, d *events.Delivery, statusCode int, reason string, at time.Time) (bool, error)
 	Fail(ctx context.Context, d *events.Delivery, statusCode int, reason string, now time.Time) (bool, error)
-	// DeleteDelivered deletes up to limit events delivered at or before cutoff.
 	DeleteDelivered(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 }
 
 type Endpoints interface {
-	// Endpoint returns merchantsapp.ErrEndpointNotFound for a merchant without one.
 	Endpoint(ctx context.Context, merchant merchants.MerchantID) (merchants.Endpoint, error)
-	// EndpointSucceeded and EndpointFailed feed decision 24's breaker. EndpointFailed
-	// reports whether this failure disabled the endpoint.
+	// EndpointSucceeded and EndpointFailed feed decision 24's breaker.
 	EndpointSucceeded(ctx context.Context, merchant merchants.MerchantID) error
 	EndpointFailed(ctx context.Context, merchant merchants.MerchantID, reason string, now time.Time) (bool, error)
 }
 
 type Sender interface {
-	// Send posts body with the signature header. An answer with any status is not an
-	// error; no answer is.
+	// Send: an answer with any status is not an error; no answer is.
 	Send(ctx context.Context, url, signature string, body []byte) (statusCode int, err error)
 }
 
-// Jitter draws a wait from [0, ceiling].
 type Jitter func(ceiling time.Duration) time.Duration
 
 func FullJitter(ceiling time.Duration) time.Duration {
@@ -86,8 +78,7 @@ type Deliverer struct {
 	logger    *slog.Logger
 }
 
-// NewDeliverer takes the key the merchants' secrets are derived from and the timeout
-// of each post.
+// NewDeliverer's signingKey is the one the merchants' secrets are derived from.
 func NewDeliverer(queue Queue, endpoints Endpoints, sender Sender, signingKey []byte, clock Clock, jitter Jitter, timeout time.Duration, logger *slog.Logger) (*Deliverer, error) {
 	if len(signingKey) < merchants.MinSigningKeyBytes {
 		return nil, merchants.ErrWeakSigningKey
@@ -98,11 +89,9 @@ func NewDeliverer(queue Queue, endpoints Endpoints, sender Sender, signingKey []
 	}, nil
 }
 
-// Deliver runs one round over up to limit due events and returns how many it claimed.
-// The posts run in parallel and the round waits for all of them, each bounded by the
-// timeout. When ctx ends mid-round, interrupted posts are not recorded: their lease
-// runs out and they are due again, so every event is delivered at least once. An
-// endpoint that is disabled gets no post: its events wait with the usual backoff.
+// Deliver: when ctx ends mid-round, interrupted posts are not recorded; their lease
+// runs out and they are due again, so every event is delivered at least once. A
+// disabled endpoint gets no post, and its events wait with the usual backoff.
 func (d *Deliverer) Deliver(ctx context.Context, limit int) (int, error) {
 	now := d.clock.Now()
 	batch, err := d.queue.Claim(ctx, now, now.Add(d.timeout+LeaseMargin), PerMerchant, limit)
@@ -184,8 +173,7 @@ func (d *Deliverer) trip(ctx context.Context, batch []events.Delivery, answers [
 	return errs
 }
 
-// Cleanup deletes delivered events older than domain.DeliveredRetention, batch at a
-// time. Failed and pending events are kept: they still need a delivery.
+// Cleanup keeps failed and pending events: they still need a delivery.
 func (d *Deliverer) Cleanup(ctx context.Context, batch int) (int64, error) {
 	cutoff := d.clock.Now().Add(-domain.DeliveredRetention)
 	var total int64
