@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
+
 	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
@@ -144,4 +146,8 @@ func problemError(status int, code string) error {
 	default:
 		return nil
 	}
+}
+
+func (c *Client) Statement(ctx context.Context, date calendar.Date) (Statement, error) {
+	return c.c.Statement(ctx, date)
 }
