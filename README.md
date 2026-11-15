@@ -18,14 +18,29 @@ The one rule that can never break: **the money on record always matches the mone
 
 ## Quick start
 
-You need [mise](https://mise.jdx.dev) and Docker.
+You need Docker.
 
 ```sh
-mise install    # Go and the tools at the versions CI uses
-mise run test   # the whole suite with -race, against a real Postgres in containers
+docker compose up -d           # Postgres, the API, the worker and the three simulators
+docker compose run --rm demo   # the GameStore story, told against all of them
 ```
 
-To run the API, the worker and the simulators by hand, see [Run it locally](#run-it-locally).
+The demo plays the merchant over the public API, and the payer and the acquirer at the simulators:
+
+```
+1. PIX
+   A player buys 20.00 USD of credits. The gateway quotes it: the payer pays 101.50 BRL by PIX,
+   the GameStore gets 19.40 USD after a fee of 0.60 USD.
+   ...
+   and the GameStore receives payment.paid, signed: the signature checks out.
+   PIX settles D+1: the money is available on 2026-11-16 and paid out by that day's settlement.
+
+2. Card and chargeback
+   ...
+   The issuer decides for the GameStore: chargeback.won, and the money comes back.
+```
+
+To work on the code you also need [mise](https://mise.jdx.dev): `mise install` brings Go and the tools at the versions CI uses, and `mise run test` runs the whole suite with `-race` against a real Postgres. To run each part by hand, see [Run it locally](#run-it-locally).
 
 ## What the project sets out to prove
 
@@ -447,7 +462,7 @@ Every minute the worker reconciles, for each provider, the last 7 closed days no
 </details>
 
 <details>
-<summary><b>End to end</b> · 2 tests</summary>
+<summary><b>End to end</b> · 3 tests</summary>
 
 **GameStore walkthrough end to end (`e2e/`, section 4.1)**
 
@@ -463,9 +478,17 @@ The real `api`, `worker` and three simulators as processes. One step at a time, 
 
 **Result:** **F10's criterion:** the books sum to zero per currency; the reconciliation finds only the planted charge (PIX: 1 divergence, held; card and boleto: none), so every other real on the statements is in the ledger once; seed 42 twice leaves the same state and seed 43 another (cited test 5). 24 operations per run, the three runs side by side in ~66 s with `-race`; the nightly job runs 300. `fail_before` is left out: the gateway only gives up on a call the provider never got after a minute, and the resolver's tests cover it.
 
+---
+
+**The demo (`cmd/demo`, F11)**
+
+`docker compose run --rm demo` against the compose stack, and the same binary against the processes in `e2e/`. It creates the GameStore, registers a webhook endpoint it serves itself, and tells the story with the amounts: a PIX of US$ 20.00 quoted at R$ 101.50, paid at the simulator, `payment.paid` checked by its signature, and the day it settles by the PIX rule (D+1); then a card of US$ 15.00 captured, charged back by the acquirer, contested by the GameStore and won, with the balance at each step. Every wait has a one-minute limit, so a broken step fails the demo instead of hanging it.
+
+**Result:** the balance goes 33.95 → 18.95 → 33.95 USD pending through the dispute. ~14 s against the processes. The CI's `compose` job builds the image, brings up the stack and runs the demo on every pull request: the path of someone who clones.
+
 </details>
 
-CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`, the end-to-end tests with `-count=10`, and the chaos script with 300 operations.
+CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request, and a second job brings up `docker compose` and runs the demo. A nightly job reruns everything with `-race -count=100`, the end-to-end tests with `-count=10`, and the chaos script with 300 operations.
 
 ## Architecture
 
@@ -800,6 +823,19 @@ The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 </details>
 
+<details>
+<summary><b>Local delivery</b> · 4 decisions</summary>
+
+- **One image:** A multi-stage `Dockerfile` builds every binary into one rootless `distroless/static` image; each compose service picks its command, and only `migrate` builds it.<br>*Discarded:* An image per binary: eight builds of one module. `build:` on every service: they raced to build the same tag on the first `up`.
+
+- **Waiting for the services:** The demo waits for `/readyz` and the simulators' `/healthz`; the Go services have no compose healthcheck.<br>*Discarded:* A `-healthcheck` mode in each binary: production code for a demo's infrastructure, since a distroless image has no `curl`.
+
+- **The demo in Go:** `cmd/demo`, in the same image, so the second command needs nothing on the host but Docker, and the demo has a test.<br>*Discarded:* A shell script with `curl` and `jq`: shorter, but needs tools on the host and has no test.
+
+- **Settlement in the demo:** The pending balance and the day it settles by the PIX rule (D+1).<br>*Discarded:* A configurable settlement delay set to zero for the demo: it would show the payout, through production configuration that only the demo needs.
+
+</details>
+
 ## Status
 
 The plan is split into phases, each with a written definition of done ([docs/escopo.md §12](docs/escopo.md)).
@@ -817,7 +853,9 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F8 | Card, boleto, chargebacks | ✅ done |
 | F9 | Polish: less code, comments only for the why, no behavior change ([plan](docs/polimento.md)) | ✅ done |
 | F10 | Chaos test across the three simulators and daily reconciliation ([plan](docs/f10.md)) | ✅ done |
-| F11 | `docker compose up` with everything and a GameStore demo script | planned |
+| F11 | `docker compose up` with everything and a GameStore demo script ([plan](docs/f11.md)) | ✅ done |
+
+With F11, every phase of the plan is done: a clean clone runs the demo with the two commands of the [Quick start](#quick-start).
 
 On 14 November 2026, after F8, the Efí sandbox, the public deploy, load tests and the payer page were cut (decision 58): F0–F8 already prove the four axes, and the time goes into a smaller codebase instead.
 
@@ -832,7 +870,7 @@ What F9 changed, in lines (`wc -l`, without the code sqlc generates):
 
 ## Run it locally
 
-You need [mise](https://mise.jdx.dev) and Docker. mise pins Go, `golangci-lint`, `sqlc` and `govulncheck` to the exact versions CI uses.
+The quickest way is the [Quick start](#quick-start): `docker compose up -d` builds one image with every binary and starts the API on port 8080 and the simulators on 8090–8092, all bound to `127.0.0.1`. To run each part on its own, you need [mise](https://mise.jdx.dev) and Docker. mise pins Go, `golangci-lint`, `sqlc` and `govulncheck` to the exact versions CI uses.
 
 ```sh
 mise install          # toolchain at pinned versions
@@ -981,6 +1019,7 @@ cmd/
   worker/     background jobs, with graceful shutdown
   migrate/    applies embedded goose migrations
   admin/      operator tasks: create a merchant and its API key, revoke a key
+  demo/       the GameStore story against a running gateway
   pixsim/     PIX simulator: seed, faults, "pay now", events
   cardsim/    card simulator: tokens, authorization, capture
   boletosim/  boleto simulator: registration, due date, "pay now"
@@ -1003,7 +1042,9 @@ internal/
 api/          openapi.yaml, the hand-written contract
 migrations/   SQL migrations, embedded in the binaries
 docs/         scope, rules and decisions (Portuguese)
-e2e/          GameStore walkthrough and the chaos script, against the real binaries
+e2e/          GameStore walkthrough, the chaos script and the demo, against the real binaries
+Dockerfile    one image with every binary
+compose.yaml  the whole gateway locally, and the demo
 ```
 
 ## Stack
