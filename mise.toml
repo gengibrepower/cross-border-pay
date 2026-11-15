@@ -67,8 +67,11 @@ description = "Gera o código do sqlc a partir das migrations e das queries"
 run = "sqlc generate"
 
 [tasks."gen:check"]
-description = "Falha se o código gerado pelo sqlc estiver desatualizado"
-run = "sqlc diff"
+description = "Falha se o código gerado pelo sqlc estiver desatualizado, ou se o Go do Dockerfile não for o daqui"
+run = [
+  "sqlc diff",
+  '''v=$(sed -n 's/^go = "\(.*\)"$/\1/p' mise.toml); grep -q "^FROM golang:$v " Dockerfile || { echo "Dockerfile: use golang:$v, the Go version mise.toml pins"; exit 1; }''',
+]
 
 [tasks.db]
 description = "Sobe o Postgres local (compose.yaml) e espera ficar saudável"

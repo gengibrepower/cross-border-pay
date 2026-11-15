@@ -1,5 +1,5 @@
 # One image with every binary; each compose service picks its command (docs/f11.md).
-# The Go version is the one mise.toml pins.
+# The Go version is the one mise.toml pins; mise run gen:check fails when they differ.
 FROM golang:1.27.4 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
