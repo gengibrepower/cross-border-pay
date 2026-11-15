@@ -82,6 +82,7 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/charges/by-key/{key}", s.get)
 	mux.HandleFunc("POST /v1/charges/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
+	mux.HandleFunc("GET /statements/{date}", simkit.ServeStatement(s.faults, s.logger, s.movements))
 	mux.HandleFunc("POST /control/charges/{id}/pay", s.pay)
 	mux.HandleFunc("POST /control/faults", s.faults.InjectFault)
 	mux.HandleFunc("POST /control/events/{id}/deliver", s.webhook.Redeliver)
@@ -193,6 +194,23 @@ func (s *Simulator) getRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	simkit.WriteJSON(w, http.StatusOK, rf)
+}
+
+func (s *Simulator) movements() []simkit.Movement {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []simkit.Movement
+	for _, rec := range s.byKey {
+		if ch := rec.charge; ch.PaidAt != nil {
+			out = append(out, simkit.Movement{Kind: simkit.Received, ID: ch.ID, IdempotencyKey: ch.IdempotencyKey, Amount: ch.Amount, At: *ch.PaidAt})
+		}
+	}
+	for _, rec := range s.refunds {
+		if rf := rec.refund; rf.Status == pixsim.RefundCompleted {
+			out = append(out, simkit.Movement{Kind: simkit.Refunded, ID: rf.ID, IdempotencyKey: rf.IdempotencyKey, ParentID: rf.ChargeID, Amount: rf.Amount, At: rf.CreatedAt})
+		}
+	}
+	return out
 }
 
 // storeRefund keeps a rejected refund too, so a caller that lost the answer finds the

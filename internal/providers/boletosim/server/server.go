@@ -96,6 +96,7 @@ func (s *Simulator) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/boletos/by-key/{key}", s.get)
 	mux.HandleFunc("POST /v1/boletos/{id}/refunds", s.refund)
 	mux.HandleFunc("GET /v1/refunds/by-key/{key}", s.getRefund)
+	mux.HandleFunc("GET /statements/{date}", simkit.ServeStatement(s.faults, s.logger, s.movements))
 	mux.HandleFunc("POST /control/boletos/{id}/pay", s.pay)
 	mux.HandleFunc("POST /control/faults", s.faults.InjectFault)
 	mux.HandleFunc("POST /control/events/{id}/deliver", s.webhook.Redeliver)
@@ -375,4 +376,21 @@ func digits(rng *rand.Rand, n int) string {
 		b[i] = "0123456789"[rng.IntN(10)]
 	}
 	return string(b)
+}
+
+func (s *Simulator) movements() []simkit.Movement {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []simkit.Movement
+	for _, rec := range s.byKey {
+		if b := rec.boleto; b.PaidAt != nil {
+			out = append(out, simkit.Movement{Kind: simkit.Received, ID: b.ID, IdempotencyKey: b.IdempotencyKey, Amount: b.Amount, At: *b.PaidAt})
+		}
+	}
+	for _, rec := range s.refunds {
+		if rf := rec.refund; rf.Status == boletosim.RefundCompleted {
+			out = append(out, simkit.Movement{Kind: simkit.Refunded, ID: rf.ID, IdempotencyKey: rf.IdempotencyKey, ParentID: rf.BoletoID, Amount: rf.Amount, At: rf.CreatedAt})
+		}
+	}
+	return out
 }
