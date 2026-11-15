@@ -4,16 +4,20 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gengibrepower/cross-border-pay/internal/calendar"
 	fxadapters "github.com/gengibrepower/cross-border-pay/internal/fx/adapters"
 	fx "github.com/gengibrepower/cross-border-pay/internal/fx/domain"
+	"github.com/gengibrepower/cross-border-pay/internal/money"
 	paymentsadapters "github.com/gengibrepower/cross-border-pay/internal/payments/adapters"
 	paymentsapp "github.com/gengibrepower/cross-border-pay/internal/payments/app"
 	payments "github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
+	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
 // refundResolver is the worker's refund-resolver job against the contract's database,
@@ -338,4 +342,54 @@ func TestRefundResolverTakesStaleSentRefunds(t *testing.T) {
 	if n := c.provider.refunds.Load(); n != 0 {
 		t.Errorf("provider asked for the refund %d times, want 0", n)
 	}
+}
+
+// The provider refunded but its answer was lost: the day's statement shows the refund,
+// and the reconciliation finishes it the way the answer would have.
+func TestStatementFinishesARefundWhoseAnswerWasLost(t *testing.T) {
+	c := newContract(t)
+	key := c.merchantKey()
+	id := c.paidPayment(key)
+	if err := c.sim.InjectFault(t.Context(), pixsim.Fault{Op: pixsim.OpRefund, Kind: pixsim.TimeoutAfter, Count: 1}); err != nil {
+		t.Fatal(err)
+	}
+	r := refundOf(t, c.do(postRefund(t, key, "/v1/payments/"+id, "r1", usdBody(1000)), true))
+	cal, err := calendar.Brazil()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := c.sim.Statement(t.Context(), cal.Today(c.clock.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(st.Movements, func(m simkit.Movement) bool { return m.Kind == simkit.Refunded })
+	if i < 0 || r.Status != "pending" {
+		t.Fatalf("refund %+v, statement %+v; want pending and a refunded line", r, st.Movements)
+	}
+	sinks := paymentSinks()
+	sinks.Rates = fxadapters.NewFixedRates(contractRate(t))
+	store := paymentsadapters.NewPostgres(c.pool, sinks)
+	m := st.Movements[i]
+	line := paymentsadapters.Movement{Kind: paymentsadapters.Refunded, Key: m.IdempotencyKey, ExternalID: m.ID, Amount: m.Amount, At: m.At}
+
+	wrong := line
+	wrong.Amount = money.New(m.Amount.Amount()+1, m.Amount.Currency())
+	if settled, err := store.SettleRefunded(t.Context(), "pixsim", &wrong, c.clock.Now()); settled || err != nil {
+		t.Fatalf("SettleRefunded(another amount) = %v, %v; want false for a person", settled, err)
+	}
+	if settled, err := store.SettleRefunded(t.Context(), "cardsim", &line, c.clock.Now()); settled || err != nil {
+		t.Fatalf("SettleRefunded(another provider) = %v, %v; want false", settled, err)
+	}
+	if settled, err := store.SettleRefunded(t.Context(), "pixsim", &line, c.clock.Now()); !settled || err != nil {
+		t.Fatalf("SettleRefunded() = %v, %v; want true", settled, err)
+	}
+	if s := c.refundSchedule(); s.status != "succeeded" || s.next != nil {
+		t.Fatalf("refund %+v, want succeeded and out of the queue", s)
+	}
+	c.checkLedger(1000, 5075)
+	c.checkRefundEvent("refund.succeeded", r.ID)
+	if settled, err := store.SettleRefunded(t.Context(), "pixsim", &line, c.clock.Now()); !settled || err != nil {
+		t.Errorf("SettleRefunded() again = %v, %v; want true, already recorded", settled, err)
+	}
+	c.checkLedger(1000, 5075)
 }

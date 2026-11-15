@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/gengibrepower/cross-border-pay/internal/money"
+	"github.com/gengibrepower/cross-border-pay/internal/platform/publicid"
 
 	"github.com/gengibrepower/cross-border-pay/internal/reconciliation/adapters/reconciliationdb"
 	"github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
@@ -22,11 +27,12 @@ func (Reviews) Open(ctx context.Context, tx pgx.Tx, c *domain.Case) (opened bool
 		Kind:            string(c.Kind),
 		Provider:        c.Provider,
 		ExternalID:      c.ExternalID,
+		ProviderKey:     pgtype.Text{String: c.ProviderKey, Valid: c.ProviderKey != ""},
 		PaymentID:       optionalUUID(c.Payment),
 		AttemptID:       optionalUUID(c.Attempt),
 		Amount:          c.Amount.Amount(),
 		Currency:        c.Amount.Currency().Code(),
-		LedgerReference: c.LedgerReference,
+		LedgerReference: pgtype.Text{String: c.LedgerReference, Valid: c.LedgerReference != ""},
 		Details:         c.Details,
 		CreatedAt:       pgtype.Timestamptz{Time: c.CreatedAt, Valid: true},
 	})
@@ -37,6 +43,46 @@ func (Reviews) Open(ctx context.Context, tx pgx.Tx, c *domain.Case) (opened bool
 		return false, fmt.Errorf("reconciliation: open %s case for %s %s: %w", c.Kind, c.Provider, c.ExternalID, err)
 	}
 	return true, nil
+}
+
+// Cases is the review queue as the reconciliation sees it, outside any payment's
+// transaction.
+type Cases struct {
+	pool *pgxpool.Pool
+}
+
+func NewCases(pool *pgxpool.Pool) *Cases { return &Cases{pool: pool} }
+
+func (c *Cases) Open(ctx context.Context, cs *domain.Case) (opened bool, err error) {
+	err = pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
+		opened, err = Reviews{}.Open(ctx, tx, cs)
+		return err
+	})
+	return opened, err
+}
+
+// Held is the money cases hold, as movements the gateway received: keyed by the
+// attempt, or by what the provider named when no attempt has it.
+func (c *Cases) Held(ctx context.Context, provider string, since, until time.Time) ([]domain.Line, error) {
+	rows, err := reconciliationdb.New(c.pool).HeldBetween(ctx, reconciliationdb.HeldBetweenParams{
+		Provider: provider, FromAt: pgtype.Timestamptz{Time: since, Valid: true}, ToAt: pgtype.Timestamptz{Time: until, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reconciliation: held by %s: %w", provider, err)
+	}
+	out := make([]domain.Line, 0, len(rows))
+	for _, r := range rows {
+		cur, err := money.ParseCurrency(r.Currency)
+		if err != nil {
+			return nil, fmt.Errorf("reconciliation: case of %s: %w", r.ExternalID, err)
+		}
+		key := r.ProviderKey.String
+		if r.AttemptID.Valid {
+			key = publicid.Encode("att_", r.AttemptID.Bytes)
+		}
+		out = append(out, domain.Line{Kind: domain.Received, ExternalID: r.ExternalID, Key: key, Amount: money.New(r.Amount, cur), At: r.CreatedAt.Time})
+	}
+	return out, nil
 }
 
 func optionalUUID(id *[16]byte) pgtype.UUID {

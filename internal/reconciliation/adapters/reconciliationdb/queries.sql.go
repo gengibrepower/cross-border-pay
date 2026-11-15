@@ -11,11 +11,61 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const heldBetween = `-- name: HeldBetween :many
+SELECT external_id, provider_key, attempt_id, amount, currency, created_at
+FROM review_cases
+WHERE provider = $1 AND ledger_reference IS NOT NULL
+  AND created_at >= $2 AND created_at < $3
+`
+
+type HeldBetweenParams struct {
+	Provider string
+	FromAt   pgtype.Timestamptz
+	ToAt     pgtype.Timestamptz
+}
+
+type HeldBetweenRow struct {
+	ExternalID  string
+	ProviderKey pgtype.Text
+	AttemptID   pgtype.UUID
+	Amount      int64
+	Currency    string
+	CreatedAt   pgtype.Timestamptz
+}
+
+// The money a case holds is a movement the gateway recorded, dated when it was held.
+func (q *Queries) HeldBetween(ctx context.Context, arg HeldBetweenParams) ([]HeldBetweenRow, error) {
+	rows, err := q.db.Query(ctx, heldBetween, arg.Provider, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HeldBetweenRow
+	for rows.Next() {
+		var i HeldBetweenRow
+		if err := rows.Scan(
+			&i.ExternalID,
+			&i.ProviderKey,
+			&i.AttemptID,
+			&i.Amount,
+			&i.Currency,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const openCase = `-- name: OpenCase :one
-INSERT INTO review_cases (kind, provider, external_id, payment_id, attempt_id, amount, currency,
+INSERT INTO review_cases (kind, provider, external_id, provider_key, payment_id, attempt_id, amount, currency,
                           ledger_reference, details, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11)
 ON CONFLICT (provider, external_id) DO NOTHING
 RETURNING id
 `
@@ -24,11 +74,12 @@ type OpenCaseParams struct {
 	Kind            string
 	Provider        string
 	ExternalID      string
+	ProviderKey     pgtype.Text
 	PaymentID       pgtype.UUID
 	AttemptID       pgtype.UUID
 	Amount          int64
 	Currency        string
-	LedgerReference string
+	LedgerReference pgtype.Text
 	Details         string
 	CreatedAt       pgtype.Timestamptz
 }
@@ -39,6 +90,7 @@ func (q *Queries) OpenCase(ctx context.Context, arg OpenCaseParams) (pgtype.UUID
 		arg.Kind,
 		arg.Provider,
 		arg.ExternalID,
+		arg.ProviderKey,
 		arg.PaymentID,
 		arg.AttemptID,
 		arg.Amount,

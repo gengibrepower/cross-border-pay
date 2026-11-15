@@ -17,12 +17,21 @@ const (
 	SecondCharge       CaseKind = "second_charge"
 )
 
+// Section 4.8, from the daily reconciliation: the values of DivergenceKind.
+const (
+	MissingInSystemCase   = CaseKind(MissingInSystem)
+	MissingAtProviderCase = CaseKind(MissingAtProvider)
+	AmountDiffersCase     = CaseKind(AmountDiffers)
+)
+
 // Case's Payment and Attempt are nil for money that cannot be tied to one, such as
-// what the reconciliation of F10 finds.
+// what the reconciliation finds. LedgerReference is empty for a case without a posting.
 type Case struct {
-	Kind            CaseKind
-	Provider        string
-	ExternalID      string
+	Kind       CaseKind
+	Provider   string
+	ExternalID string
+	// ProviderKey is the key the provider named, kept when no attempt has it.
+	ProviderKey     string
 	Payment         *[16]byte
 	Attempt         *[16]byte
 	Amount          money.Money

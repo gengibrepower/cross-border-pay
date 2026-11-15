@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gengibrepower/cross-border-pay/internal/money"
+
 	ledgeradapters "github.com/gengibrepower/cross-border-pay/internal/ledger/adapters"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/adapters/paymentsdb"
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
@@ -43,15 +45,18 @@ func diverge(ctx context.Context, tx pgx.Tx, reviews Reviews, pay *paymentsdb.Lo
 	if !opened {
 		return nil
 	}
+	return postDivergence(ctx, tx, reference, u.Amount)
+}
 
-	cur := u.Amount.Currency().Code()
+func postDivergence(ctx context.Context, tx pgx.Tx, reference string, amount money.Money) error {
+	cur := amount.Currency().Code()
 	receivables, held := "provider_receivables:"+cur, "divergence:"+cur
 	l := ledgeradapters.Ledger{}
 	accounts, err := l.AccountsByCode(ctx, tx, receivables, held)
 	if err != nil {
 		return fmt.Errorf("chart of accounts: %w", err)
 	}
-	t, err := domain.DivergencePosting(reference, accounts[receivables].ID(), accounts[held].ID(), u.Amount)
+	t, err := domain.DivergencePosting(reference, accounts[receivables].ID(), accounts[held].ID(), amount)
 	if err != nil {
 		return fmt.Errorf("divergence: %w", err)
 	}

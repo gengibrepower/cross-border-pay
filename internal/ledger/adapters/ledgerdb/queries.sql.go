@@ -49,6 +49,45 @@ func (q *Queries) AccountsByCode(ctx context.Context, codes []string) ([]Account
 	return items, nil
 }
 
+const amountsByReference = `-- name: AmountsByReference :many
+SELECT t.reference::text AS reference, e.amount
+FROM ledger_transactions AS t
+JOIN ledger_entries AS e ON e.transaction_id = t.id
+WHERE t.reference = ANY($1::text[]) AND e.account_id = $2
+`
+
+type AmountsByReferenceParams struct {
+	Refs      []string
+	AccountID pgtype.UUID
+}
+
+type AmountsByReferenceRow struct {
+	Reference string
+	Amount    int64
+}
+
+// What each transaction moved on one account; a reference that posted nothing there
+// has no row.
+func (q *Queries) AmountsByReference(ctx context.Context, arg AmountsByReferenceParams) ([]AmountsByReferenceRow, error) {
+	rows, err := q.db.Query(ctx, amountsByReference, arg.Refs, arg.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AmountsByReferenceRow
+	for rows.Next() {
+		var i AmountsByReferenceRow
+		if err := rows.Scan(&i.Reference, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const balances = `-- name: Balances :many
 SELECT account_id, sum(amount)::bigint AS balance
 FROM ledger_entries
