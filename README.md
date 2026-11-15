@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/gengibrepower/cross-border-pay/actions/workflows/ci.yml/badge.svg)](https://github.com/gengibrepower/cross-border-pay/actions/workflows/ci.yml)
 [![Nightly stress](https://github.com/gengibrepower/cross-border-pay/actions/workflows/nightly.yml/badge.svg)](https://github.com/gengibrepower/cross-border-pay/actions/workflows/nightly.yml)
+[![Release](https://img.shields.io/github/v/release/gengibrepower/cross-border-pay)](https://github.com/gengibrepower/cross-border-pay/releases/latest)
 ![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL 18](https://img.shields.io/badge/postgres-18-4169E1?logo=postgresql&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -855,7 +856,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F10 | Chaos test across the three simulators and daily reconciliation ([plan](docs/f10.md)) | ✅ done |
 | F11 | `docker compose up` with everything and a GameStore demo script ([plan](docs/f11.md)) | ✅ done |
 
-With F11, every phase of the plan is done: a clean clone runs the demo with the two commands of the [Quick start](#quick-start).
+With F11, every phase of the plan is done, released as [v1.0.0](https://github.com/gengibrepower/cross-border-pay/releases/tag/v1.0.0): a clean clone runs the demo with the two commands of the [Quick start](#quick-start).
 
 On 14 November 2026, after F8, the Efí sandbox, the public deploy, load tests and the payer page were cut (decision 58): F0–F8 already prove the four axes, and the time goes into a smaller codebase instead.
 

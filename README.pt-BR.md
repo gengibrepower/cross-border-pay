@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/gengibrepower/cross-border-pay/actions/workflows/ci.yml/badge.svg)](https://github.com/gengibrepower/cross-border-pay/actions/workflows/ci.yml)
 [![Stress noturno](https://github.com/gengibrepower/cross-border-pay/actions/workflows/nightly.yml/badge.svg)](https://github.com/gengibrepower/cross-border-pay/actions/workflows/nightly.yml)
+[![Release](https://img.shields.io/github/v/release/gengibrepower/cross-border-pay)](https://github.com/gengibrepower/cross-border-pay/releases/latest)
 ![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL 18](https://img.shields.io/badge/postgres-18-4169E1?logo=postgresql&logoColor=white)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-blue)](LICENSE)
@@ -855,7 +856,7 @@ O plano é dividido em fases, cada uma com definição de "pronto" escrita ([doc
 | F10 | Teste de caos nos três simuladores e conciliação diária ([plano](docs/f10.md)) | ✅ pronta |
 | F11 | `docker compose up` com tudo e script de demo da GameStore ([plano](docs/f11.md)) | ✅ pronta |
 
-Com a F11, todas as fases do plano estão prontas: um clone limpo roda a demo com os dois comandos do [Começo rápido](#começo-rápido).
+Com a F11, todas as fases do plano estão prontas, publicadas como [v1.0.0](https://github.com/gengibrepower/cross-border-pay/releases/tag/v1.0.0): um clone limpo roda a demo com os dois comandos do [Começo rápido](#começo-rápido).
 
 Em 14 de novembro de 2026, depois da F8, saíram o sandbox Efí, o deploy público, os testes de carga e a página do pagador (decisão 58): F0–F8 já provam os quatro eixos, e o tempo vai para um código menor.
 
