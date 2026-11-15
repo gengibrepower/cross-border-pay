@@ -13,13 +13,11 @@ import (
 type EventType string
 
 const (
-	// ChargebackOpened is the cardholder's bank taking the money back.
 	ChargebackOpened EventType = "chargeback.opened"
-	// ChargebackClosed is the dispute's end: won or lost.
 	ChargebackClosed EventType = "chargeback.closed"
 )
 
-// Event is what the simulator posts to the webhook URL. Its ID is unique per fact.
+// Event's ID is unique per fact.
 type Event struct {
 	ID         string     `json:"id"`
 	Type       EventType  `json:"type"`
@@ -31,7 +29,6 @@ const SignatureHeader = "Cardsim-Signature"
 
 var ErrBadEvent = errors.New("cardsim: malformed event")
 
-// VerifyEvent checks the signature header against body and parses the event.
 func VerifyEvent(secret []byte, header string, body []byte, now time.Time) (Event, error) {
 	if err := simkit.Verify(secret, header, body, now); err != nil {
 		return Event{}, err
