@@ -1,5 +1,4 @@
-// Command pixsim runs the PIX simulator: the provider the gateway talks to in test
-// mode, with charges in memory, a seed and failures injected through /control.
+// Command pixsim runs the PIX simulator the gateway talks to in test mode.
 package main
 
 import (

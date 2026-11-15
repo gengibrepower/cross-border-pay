@@ -1,6 +1,5 @@
-// Package boletosim is the client of the boleto simulator in cmd/boletosim: a bank
-// that registers boletos, receives them until the due date and fails on command. It
-// speaks only the simulator's own types; payments translates them.
+// Package boletosim is the client of the boleto simulator in cmd/boletosim. It speaks
+// only the simulator's own types; payments translates them.
 package boletosim
 
 import (
@@ -11,16 +10,15 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
-// Payer is who the boleto is registered to (decision 54). Document is the CPF, bare
-// digits; the simulator never sends it back.
+// Payer is decision 54. The simulator never sends the CPF back.
 type Payer struct {
 	Name     string `json:"name"`
 	Document string `json:"document"`
 	Email    string `json:"email,omitempty"`
 }
 
-// CreateBoleto registers a boleto due on DueDate. It is received until the end of the
-// first banking day on or after it, and refused after (decision 53).
+// CreateBoleto is received until the end of the first banking day on or after
+// DueDate (decision 53).
 type CreateBoleto struct {
 	Amount  money.Money   `json:"amount"`
 	DueDate calendar.Date `json:"due_date"`
@@ -33,8 +31,7 @@ const (
 	Registered Status = "registered"
 	Paid       Status = "paid"
 	Rejected   Status = "rejected"
-	// Expired is a boleto never paid whose last day to be received went by. The bank
-	// takes it off its books: nothing was paid and nothing can be.
+	// Expired: nothing was paid and nothing can be.
 	Expired Status = "expired"
 )
 
@@ -52,8 +49,8 @@ type Boleto struct {
 	PaidAt        *time.Time `json:"paid_at,omitempty"`
 }
 
-// CreateRefund returns part or all of a paid boleto to the payer. A boleto has no way
-// back of its own: the bank sends the money to the payer by transfer.
+// CreateRefund: a boleto has no way back of its own, so the bank pays the payer by
+// transfer.
 type CreateRefund struct {
 	Amount money.Money `json:"amount"`
 }
@@ -100,7 +97,6 @@ const (
 	Delay        = simkit.Delay
 )
 
-// Problem codes the simulator answers with.
 const (
 	CodeRejected       = "boleto_rejected"
 	CodeNotFound       = "boleto_not_found"

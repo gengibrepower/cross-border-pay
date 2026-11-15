@@ -1,5 +1,4 @@
-// Command boletosim runs the boleto simulator: the bank the gateway talks to in test
-// mode, with boletos in memory, a seed and failures injected through /control.
+// Command boletosim runs the boleto simulator the gateway talks to in test mode.
 package main
 
 import (

@@ -1,5 +1,5 @@
-// Package pixsim is the client of the PIX simulator in cmd/pixsim, a provider that
-// fails on command. It speaks only the simulator's own types; payments translates them.
+// Package pixsim is the client of the PIX simulator in cmd/pixsim. It speaks only the
+// simulator's own types; payments translates them.
 package pixsim
 
 import (
@@ -35,7 +35,7 @@ type Charge struct {
 	PaidAt    *time.Time `json:"paid_at,omitempty"`
 }
 
-// CreateRefund returns part or all of a paid charge to the payer, as a PIX devolução.
+// CreateRefund is a PIX devolução.
 type CreateRefund struct {
 	Amount money.Money `json:"amount"`
 }
@@ -53,9 +53,8 @@ type Refund struct {
 	ChargeID       string       `json:"charge_id"`
 	Status         RefundStatus `json:"status"`
 	Amount         money.Money  `json:"amount"`
-	// Reason says why a rejected refund was refused.
-	Reason    string    `json:"reason,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Reason         string       `json:"reason,omitempty"`
+	CreatedAt      time.Time    `json:"created_at"`
 }
 
 type Op = simkit.Op
@@ -67,7 +66,6 @@ const (
 	OpGetRefund Op = "get_refund"
 )
 
-// Ops are the operations a fault can target; Rejectable those that can be refused.
 var (
 	Ops        = []Op{OpCreate, OpGet, OpRefund, OpGetRefund}
 	Rejectable = []Op{OpCreate, OpRefund}
@@ -85,7 +83,6 @@ const (
 	Delay        = simkit.Delay
 )
 
-// Problem codes the simulator answers with.
 const (
 	CodeRejected       = "charge_rejected"
 	CodeRefundRejected = "refund_rejected"

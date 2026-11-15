@@ -1,5 +1,4 @@
-// Command cardsim runs the card simulator: the acquirer the gateway talks to in test
-// mode, with authorizations in memory, a seed and failures injected through /control.
+// Command cardsim runs the card simulator the gateway talks to in test mode.
 package main
 
 import (

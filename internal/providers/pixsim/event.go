@@ -14,8 +14,7 @@ type EventType string
 
 const ChargePaid EventType = "charge.paid"
 
-// Event is what the simulator posts to the webhook URL. Its ID is unique per fact, so
-// a redelivery repeats it and the receiver can drop the duplicate.
+// Event's ID is unique per fact, so the receiver can drop a redelivery.
 type Event struct {
 	ID        string    `json:"id"`
 	Type      EventType `json:"type"`
@@ -34,10 +33,8 @@ var (
 	ErrBadEvent       = errors.New("pixsim: malformed event")
 )
 
-// Sign returns the signature header for body sent at t (simkit.Sign).
 func Sign(secret []byte, t time.Time, body []byte) string { return simkit.Sign(secret, t, body) }
 
-// VerifyEvent checks the signature header against body and parses the event.
 func VerifyEvent(secret []byte, header string, body []byte, now time.Time) (Event, error) {
 	if err := simkit.Verify(secret, header, body, now); err != nil {
 		return Event{}, err
