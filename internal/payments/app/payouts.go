@@ -8,32 +8,24 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// SettlementQuery pages through a merchant's settlements, newest cutoff first.
 type SettlementQuery struct {
-	// Before lists settlements of cutoff dates before this one; the zero value starts at
-	// the newest.
+	// Before's zero value starts at the newest.
 	Before time.Time
 	Limit  int
 }
 
-// SettlementPage is newest cutoff first. More means there are older settlements past the last.
 type SettlementPage struct {
 	Settlements []domain.Settlement
 	More        bool
 }
 
 type PayoutStore interface {
-	// Balance reads the merchant's payable and what of it is pending at now, at one
-	// point in time.
+	// Balance reads everything at one point in time.
 	Balance(ctx context.Context, merchant domain.MerchantID, policy *domain.SettlementPolicy, now time.Time) (domain.Balance, error)
-	// ListSettlements returns at most q.Limit settlements of the merchant, newest cutoff
-	// first,
-	// each with its payments.
 	ListSettlements(ctx context.Context, merchant domain.MerchantID, q SettlementQuery) ([]domain.Settlement, error)
 }
 
-// Payouts answers what the merchant has with the platform and what it was paid
-// (section 4.9), by the same policy the settlement job pays with.
+// Payouts is section 4.9, by the same policy the settlement job pays with.
 type Payouts struct {
 	store  PayoutStore
 	policy domain.SettlementPolicy

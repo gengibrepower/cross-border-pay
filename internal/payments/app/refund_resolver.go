@@ -11,27 +11,23 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// DueRefund is a claimed refund with the number of lookups that already failed.
 type DueRefund struct {
 	Refund domain.Refund
 	Checks int
 }
 
 type RefundQueue interface {
-	// ClaimDueRefunds takes up to limit refunds whose check is due at now and moves
-	// their next check to leaseUntil, so no other worker takes them meanwhile.
+	// ClaimDueRefunds leases the refunds until leaseUntil, so no other worker takes
+	// them meanwhile.
 	ClaimDueRefunds(ctx context.Context, now, leaseUntil time.Time, limit int) ([]DueRefund, error)
-	// RescheduleRefund records one more failed lookup of an unknown refund.
 	RescheduleRefund(ctx context.Context, id domain.RefundID, next time.Time) error
-	// EscalateRefund takes the refund out of the queue for a person to resolve; its
-	// hold stays until then.
+	// EscalateRefund leaves the hold until a person resolves the refund.
 	EscalateRefund(ctx context.Context, id domain.RefundID, now time.Time) error
 }
 
 // RefundResolver finishes the refunds a request left behind (decision 17, section
 // 4.3): it sends a created one, which the provider certainly never got, and looks up
-// a sent or unknown one, never sending it again. Without it a refund whose request
-// died or timed out would keep the merchant's money held until a retry came.
+// a sent or unknown one, never sending it again.
 type RefundResolver struct {
 	refunder *Refunder
 	queue    RefundQueue
@@ -41,9 +37,7 @@ func NewRefundResolver(refunder *Refunder, queue RefundQueue) *RefundResolver {
 	return &RefundResolver{refunder: refunder, queue: queue}
 }
 
-// Resolve checks one batch of due refunds and returns how many it claimed. One refund
-// failing does not stop the others; their errors are joined. Without today's rate
-// nothing is claimed: a completion is posted at it.
+// Resolve claims nothing without today's rate: a completion is posted at it.
 func (r *RefundResolver) Resolve(ctx context.Context, limit int) (int, error) {
 	rate, err := r.refunder.rates.Rate(ctx, domain.ChargeCurrency, money.BRL)
 	if err != nil {

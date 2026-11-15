@@ -28,14 +28,13 @@ var (
 	ErrPaymentNotFound = errors.New("payments: payment not found")
 	ErrInvalidLimit    = errors.New("payments: limit out of range")
 	ErrRecoveryPoint   = errors.New("payments: unknown recovery point")
-	// ErrProviderUnavailable is a provider that could not say whether the payer already
-	// paid, so nothing was decided.
+	// ErrProviderUnavailable: the provider could not say whether the payer paid, so
+	// nothing was decided.
 	ErrProviderUnavailable = errors.New("payments: provider unavailable")
 )
 
-// AttemptRequested is the recovery point of a create whose payment and attempt are
-// stored: a resumed request carries on from the attempt's status instead of creating
-// another payment.
+// AttemptRequested: a resumed request carries on from the attempt's status instead of
+// creating another payment.
 const AttemptRequested idempotency.RecoveryPoint = "attempt_requested"
 
 const (
@@ -43,57 +42,46 @@ const (
 	MaxPageSize     = 100
 )
 
-// Priced is a payment with the quote that priced it and its latest attempt, which is
-// nil only for a payment stored before attempts existed.
+// Priced's Attempt is nil only for a payment stored before attempts existed.
 type Priced struct {
 	Payment domain.Payment
 	Quote   fx.Quote
 	Attempt *domain.PaymentAttempt
-	// Captured is the quote of what a separate capture took, nil until one started.
+	// Captured is nil until a separate capture started.
 	Captured *fx.Quote
 }
 
-// CreateRequest is a merchant's request for a payment, before validation.
 type CreateRequest struct {
 	Method    string
 	Amount    money.Money
 	Reference string
-	// Card is the payer's card, for a card payment only, and Payer whom a boleto is
-	// registered to, for a boleto only.
-	Card  domain.CardInput
-	Payer domain.PayerInput
+	Card      domain.CardInput
+	Payer     domain.PayerInput
 }
 
 type ListQuery struct {
-	// Status filters the list; the zero value lists every status.
+	// Status's zero value lists every status.
 	Status domain.Status
-	// Before lists payments older than this one; the zero value starts at the newest.
+	// Before's zero value starts at the newest.
 	Before domain.PaymentID
 	Limit  int
 }
 
-// Page is newest first. More means there are older payments past the last one.
 type Page struct {
 	Payments []Priced
 	More     bool
 }
 
 type Store interface {
-	// Create stores the quote, the pending payment, its attempt in created and the
-	// AttemptRequested recovery point together, or none of them.
+	// Create stores the quote, the payment, its attempt and the AttemptRequested
+	// recovery point together, or none of them.
 	Create(ctx context.Context, held *idempotency.Held, d *domain.Draft, q *fx.Quote, provider domain.ProviderName) (Priced, error)
 	// Get returns ErrPaymentNotFound unless the merchant owns the payment.
 	Get(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (Priced, error)
-	// List returns at most q.Limit payments of the merchant, newest first.
 	List(ctx context.Context, merchant domain.MerchantID, q ListQuery) ([]Priced, error)
 	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
-	// Cancel moves the merchant's pending payment to canceled with payment.canceled in
-	// the outbox. A payment already canceled is left as it is; any other status is
-	// domain.ErrInvalidTransition.
 	Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, now time.Time) error
-	// PrepareCapture checks the merchant's payment can be captured for amount, the
-	// whole payment when nil, and stores the quote of what the capture takes before the
-	// acquirer is called. See Service.Capture for the answers.
+	// PrepareCapture stores the quote of what the capture takes; see Service.Capture.
 	PrepareCapture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money, now time.Time) (PreparedCapture, error)
 }
 
@@ -112,9 +100,8 @@ func NewService(quoter Quoter, store Store, providers *Providers, cal *calendar.
 	return &Service{quoter: quoter, store: store, providers: providers, calendar: cal, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
-// Create prices the payment, stores it with its attempt and asks the provider for the
-// PIX code (section 4.1, steps 1-3), under the idempotency key held. Each write leaves
-// a status that tells a resumed request what is safe to do next (section 4.3):
+// Create is section 4.1, steps 1-3. Each write leaves a status that tells a resumed
+// request what is safe to do next (section 4.3):
 //
 //	created  the provider was certainly not called yet: call it
 //	sent     it may have been called: mark unknown, never call again in the dark
@@ -185,10 +172,8 @@ func (s *Service) List(ctx context.Context, merchant domain.MerchantID, q ListQu
 	return Page{Payments: payments}, nil
 }
 
-// Cancel closes a pending payment at the merchant's request. Like the expiry job, it
-// asks the provider first: a payer who already paid is confirmed, and the cancel then
-// fails because the payment is paid. Money paid after the cancel is late money and is
-// held for review (decision 8).
+// Cancel asks the provider first, like the expiry job: a payer who already paid is
+// confirmed and the cancel fails. Money paid after it is late money (decision 8).
 func (s *Service) Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID) (Priced, error) {
 	p, err := s.store.Get(ctx, merchant, id)
 	if err != nil {

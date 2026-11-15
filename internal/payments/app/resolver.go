@@ -17,25 +17,21 @@ const (
 	ClaimLease   = time.Minute
 )
 
-// DueAttempt is a claimed attempt with the number of lookups that already failed.
 type DueAttempt struct {
 	Attempt domain.PaymentAttempt
 	Checks  int
 }
 
 type AttemptQueue interface {
-	// ClaimDueAttempts takes up to limit attempts whose check is due at now and moves
-	// their next check to leaseUntil, so no other worker takes them meanwhile.
+	// ClaimDueAttempts leases the attempts until leaseUntil, so no other worker takes
+	// them meanwhile.
 	ClaimDueAttempts(ctx context.Context, now, leaseUntil time.Time, limit int) ([]DueAttempt, error)
 	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
-	// RescheduleAttempt records one more failed lookup of an unknown attempt.
 	RescheduleAttempt(ctx context.Context, id domain.AttemptID, next time.Time) error
-	// EscalateAttempt takes the attempt out of the queue for a person to resolve.
 	EscalateAttempt(ctx context.Context, id domain.AttemptID, now time.Time) error
 }
 
-// Resolver finds out what happened to ambiguous attempts by asking the provider
-// (decision 17): never by repeating the call.
+// Resolver asks the provider what happened (decision 17), never repeating the call.
 type Resolver struct {
 	queue           AttemptQueue
 	providers       *Providers
@@ -48,8 +44,6 @@ func NewResolver(queue AttemptQueue, providers *Providers, clock Clock, logger *
 	return &Resolver{queue: queue, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
-// Resolve checks one batch of due attempts and returns how many it claimed. One
-// attempt failing does not stop the others; their errors are joined.
 func (r *Resolver) Resolve(ctx context.Context, limit int) (int, error) {
 	now := r.clock.Now()
 	due, err := r.queue.ClaimDueAttempts(ctx, now, now.Add(ClaimLease), limit)
