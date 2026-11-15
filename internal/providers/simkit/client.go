@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// ErrBadResponse is an answer the client does not understand: a status it did not
-// expect, a problem code it does not know, or a body it cannot read.
 var ErrBadResponse = errors.New("simulator: unexpected response")
 
 // DefaultTimeout bounds every call; a call that hits it is ambiguous, not failed.
@@ -21,11 +19,9 @@ const DefaultTimeout = 10 * time.Second
 
 const maxResponse = 1 << 20
 
-// Problems maps an error answer to the simulator's own error. It returns nil for one
-// it does not know, which the client reports as ErrBadResponse.
+// Problems returns nil for an answer it does not know, reported as ErrBadResponse.
 type Problems func(status int, code string) error
 
-// Client is the HTTP core of a simulator's client.
 type Client struct {
 	name     string
 	base     *url.URL
@@ -33,8 +29,7 @@ type Client struct {
 	problems Problems
 }
 
-// NewClient talks to the simulator named name at baseURL. httpClient nil means one
-// with DefaultTimeout.
+// NewClient's nil httpClient uses DefaultTimeout.
 func NewClient(name, baseURL string, httpClient *http.Client, problems Problems) (*Client, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
@@ -46,8 +41,6 @@ func NewClient(name, baseURL string, httpClient *http.Client, problems Problems)
 	return &Client{name: name, base: base, http: httpClient, problems: problems}, nil
 }
 
-// Do sends body as JSON, with key as the Idempotency-Key when it is not empty, and
-// decodes the answer into out when its status is want.
 func (c *Client) Do(ctx context.Context, method, path, key string, body any, want int, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -90,8 +83,8 @@ func (c *Client) Do(ctx context.Context, method, path, key string, body any, wan
 	return nil
 }
 
-// problem maps only the exact problem codes the simulator knows; anything else, such
-// as a 500 or a proxy's HTML page, stays ErrBadResponse.
+// problem: anything but a known code, such as a proxy's HTML page, stays
+// ErrBadResponse.
 func (c *Client) problem(status int, body []byte) error {
 	var p struct {
 		Code string `json:"code"`
