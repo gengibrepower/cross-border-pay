@@ -49,7 +49,7 @@ Para mexer no código, precisa também de [mise](https://mise.jdx.dev): `mise in
 3. **Escrita dupla sem transação distribuída.** O banco e o provedor nunca participam da mesma transação. A intenção é gravada antes, resultado ambíguo vira `unknown` em vez de falha, e tabelas de inbox e outbox carregam os eventos de entrada e saída.
 4. **Tolerância a um mundo externo hostil.** Provedores que atrasam, duplicam, reordenam ou somem, e lojistas com o endpoint fora do ar.
 
-## O que já está provado
+## O que está provado
 
 Todos os números abaixo são medidos, não estimados. Todo teste que toca o banco roda contra um **PostgreSQL 18 real** em container (`testcontainers-go`), nunca contra um banco mockado; os testes de domínio não fazem I/O nenhum.
 
@@ -583,7 +583,7 @@ A lista completa das 58 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Armazenamento do ledger:** Postgres atrás de uma interface `Ledger`; saldo derivado dos lançamentos.<br>*Descartado:* Motor de ledger próprio (projeto futuro); saldo em cache, até a carga justificar.
 
-- **Isolamento:** `READ COMMITTED` + `SELECT … FOR UPDATE` nas contas, travadas em ordem crescente de ID para evitar deadlock.<br>*Descartado:* `SERIALIZABLE` com retry: entra num benchmark comparativo.
+- **Isolamento:** `READ COMMITTED` + `SELECT … FOR UPDATE` nas contas, travadas em ordem crescente de ID para evitar deadlock.<br>*Descartado:* `SERIALIZABLE` com retry: mais transações abortadas sob disputa, por uma garantia que as travas nas linhas já dão.
 
 - **Imutabilidade:** Lançamentos nunca são alterados nem apagados, garantido por triggers no banco; correção é nova transação.<br>*Descartado:* Linhas editáveis: trilha de auditoria em que não dá para confiar.
 
@@ -640,7 +640,7 @@ A lista completa das 58 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Idempotência da captura:** Nenhuma chave: uma autorização é capturada uma vez, então a mesma captura responde como está e outro valor é `409`, mesmo depois de uma captura que o adquirente talvez não tenha recebido.<br>*Descartado:* Idempotency-Key: uma segunda chave com outro valor poderia capturar duas vezes.
 
-- **Confirmação do boleto:** O `boleto.paid` assinado do simulador, pelo mesmo inbox do PIX; o retorno CNAB 240 pode entrar na F10 como evidência da conciliação.<br>*Descartado:* Esperar o CNAB: o boleto da F8 dependeria de um parser futuro, e um banco real avisa a liquidação de qualquer jeito antes do arquivo do dia seguinte.
+- **Confirmação do boleto:** O `boleto.paid` assinado do simulador, pelo mesmo inbox do PIX; o retorno CNAB 240 ficou fora da F10, cuja conciliação lê os extratos dos simuladores.<br>*Descartado:* Esperar o CNAB: o boleto da F8 dependeria de um parser futuro, e um banco real avisa a liquidação de qualquer jeito antes do arquivo do dia seguinte.
 
 - **Vencimento do boleto:** Três dias corridos em `America/Sao_Paulo` (decisão 44), recebido até o fim do primeiro dia útil a partir dele; a cotação dura até lá, e a data fica gravada com a tentativa.<br>*Descartado:* Recalcular o vencimento a cada chamada: uma criação retomada depois da meia-noite pediria outro boleto com a mesma key. Três dias úteis: a decisão 44 diz corridos, e o dia útil já entra no último dia de recebimento.
 
@@ -691,7 +691,7 @@ A lista completa das 58 decisões fechadas, com o raciocínio, está em [docs/es
 
 - **Invariante 7, uma confirmação por cobrança:** Duas barreiras: o lock da cobrança com a máquina de estados (`paid` + `confirm` é no-op), e uma referência única no ledger, `payment:<id>:confirm`, que recusa um segundo lançamento se a primeira barreira um dia falhar.<br>*Descartado:* Confiar só no status: um bug em um caminho e o dinheiro é contado duas vezes.
 
-- **Dono da fila de revisão:** O módulo `reconciliation` (seção 2.1), por enquanto só com `review_cases`; o `payments` abre casos por uma porta ligada no `cmd`, como a outbox.<br>*Descartado:* Tabela no `payments`: a conciliação da F10 precisaria de uma segunda fila ou de uma migração de dados. O `failed` do inbox: não guarda lançamento, e o job de expiração não tem evento.
+- **Dono da fila de revisão:** O módulo `reconciliation` (seção 2.1), que desde a F10 também roda a conciliação diária; o `payments` abre casos por uma porta ligada no `cmd`, como a outbox.<br>*Descartado:* Tabela no `payments`: a conciliação da F10 precisaria de uma segunda fila ou de uma migração de dados. O `failed` do inbox: não guarda lançamento, e o job de expiração não tem evento.
 
 - **Pagamento de cobrança fechada:** Atrasado ou com outro valor: tentativa `succeeded` (o provedor tem o dinheiro), cobrança intocada, dinheiro retido.<br>*Descartado:* Desfazer tudo, como antes: o dinheiro ficava fora do ledger, e um evento atrasado deixava a tentativa pela metade.
 

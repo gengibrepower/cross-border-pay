@@ -426,7 +426,8 @@ paths:
         of payments not available yet (PIX D+1, boleto D+2, card D+30, in São Paulo
         calendar days), less their refunds. `available` is negative when refunds of
         settled payments exceed what came in since: nothing is paid out until it is
-        positive again. `reserved` is held against chargebacks; it is zero for now.
+        positive again. `reserved` is the rolling reserve held against chargebacks:
+        10% of each payout, kept 90 days.
       responses:
         "200":
           description: The balance.
