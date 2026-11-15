@@ -118,7 +118,10 @@ Marque `[x]` ao terminar e anote o número da PR.
   linhas.
   Feito: `payments/domain` 300 → 159 (#59); `payments/app` 238 → 141 (#60);
   `payments/adapters` 209 → 122 (#61); `providers/cardsim` 108 → 43, com o `server/` (#62);
-  `simkit` 64 → 26 (#63); `webhooks/app` 48 → 30 (#64).
+  `simkit` 64 → 26 (#63); `webhooks/app` 48 → 30 (#64);
+  `boleto` 47 → 35 (#65). A lista acabou com 1.170 linhas no total, acima do alvo: falta
+  decidir se o corte segue por pacotes fora da lista (`pixsim`, `boletosim`) ou se o alvo
+  muda.
 - [ ] **3. Duplicação no código de produção.**
   - `HandlePixSimEvent` e `HandleBoletoSimEvent` (`payments/adapters/events.go`) são o
     mesmo código com tipos diferentes. Basta uma função que receba o que muda.
@@ -162,6 +165,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 15/11/2026 | 2. Comentários: `providers/cardsim` | #62 | 16.741 | 1.238 | 19.009 | 108 → 43 no pacote |
 | 15/11/2026 | 2. Comentários: `simkit` | #63 | 16.703 | 1.200 | 19.009 | 64 → 26 no pacote |
 | 15/11/2026 | 2. Comentários: `webhooks/app` | #64 | 16.685 | 1.182 | 19.009 | 48 → 30 no pacote |
+| 15/11/2026 | 2. Comentários: `boleto` | #65 | 16.673 | 1.170 | 19.009 | 47 → 35 no pacote |
 
 ## 8. Como retomar numa sessão nova
 
