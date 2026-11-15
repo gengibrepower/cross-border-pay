@@ -8,7 +8,6 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 )
 
-// Problem codes every simulator answers with.
 const (
 	CodeInvalid        = "invalid_request"
 	CodeKeyReused      = "idempotency_key_reused"
@@ -22,7 +21,6 @@ const (
 	MaxRequestBody = 1 << 16
 )
 
-// ValidKey accepts 1 to MaxKeyLength printable ASCII characters.
 func ValidKey(key string) bool {
 	if key == "" || len(key) > MaxKeyLength {
 		return false
@@ -35,8 +33,6 @@ func ValidKey(key string) bool {
 	return true
 }
 
-// IdempotencyKey reads and checks the request's key, answering 400 when it is not
-// valid.
 func IdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
 	key := r.Header.Get("Idempotency-Key")
 	if !ValidKey(key) {
@@ -46,8 +42,6 @@ func IdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return key, true
 }
 
-// Decode reads one JSON value, refusing unknown fields and bodies over
-// MaxRequestBody.
 func Decode(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 	dec.DisallowUnknownFields()

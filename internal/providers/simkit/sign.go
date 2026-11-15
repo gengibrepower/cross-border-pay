@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// SignatureTolerance bounds how old (or how far ahead) a signature may be, so a
-// captured request cannot be replayed later.
+// SignatureTolerance keeps a captured request from being replayed later.
 const SignatureTolerance = 5 * time.Minute
 
 var (
@@ -20,9 +19,8 @@ var (
 	ErrStaleSignature = errors.New("simulator: event signature is too old or from the future")
 )
 
-// Sign returns the signature header for body sent at t: the HMAC-SHA256 of the Unix
-// time, a dot and the body. Signing the time with the body is what makes the
-// tolerance check mean anything.
+// Sign signs the time with the body, which is what makes the tolerance check mean
+// anything.
 func Sign(secret []byte, t time.Time, body []byte) string {
 	ts := strconv.FormatInt(t.Unix(), 10)
 	return "t=" + ts + ",v1=" + hex.EncodeToString(mac(secret, ts, body))
@@ -36,8 +34,8 @@ func mac(secret []byte, ts string, body []byte) []byte {
 	return h.Sum(nil)
 }
 
-// Verify checks the signature header against body. Any v1 may match, so the sender
-// can sign with an old and a new secret while rotating.
+// Verify accepts any v1 that matches, so the sender can sign with an old and a new
+// secret while rotating.
 func Verify(secret []byte, header string, body []byte, now time.Time) error {
 	var ts string
 	var sigs [][]byte

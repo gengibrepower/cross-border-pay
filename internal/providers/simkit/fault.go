@@ -1,6 +1,5 @@
-// Package simkit is what every provider simulator shares: faults on command, a seed
-// behind every random choice, signed events posted to a webhook, and the HTTP plumbing
-// of server and client. Each simulator keeps its own resources and its own types.
+// Package simkit is what every provider simulator shares. Each simulator keeps its own
+// resources and types.
 package simkit
 
 import (
@@ -15,25 +14,18 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 )
 
-// Op names an operation of a simulator, such as "create" or "refund".
 type Op string
 
 type FaultKind string
 
 const (
-	// Reject refuses the operation for good, as a provider that says no.
-	Reject FaultKind = "reject"
-	// FailBefore answers 500 without doing anything.
+	Reject     FaultKind = "reject"
 	FailBefore FaultKind = "fail_before"
-	// TimeoutAfter does the work and then never answers: the ambiguous case of
-	// section 4.3, where the provider acted and the caller cannot know it.
+	// TimeoutAfter does the work and never answers: the ambiguous case of section 4.3.
 	TimeoutAfter FaultKind = "timeout_after"
-	// Delay waits DelayMS before doing the work and answering normally.
-	Delay FaultKind = "delay"
+	Delay        FaultKind = "delay"
 )
 
-// Fault makes the next Count requests of Op fail as Kind, in the order the faults
-// were added.
 type Fault struct {
 	Op      Op        `json:"op"`
 	Kind    FaultKind `json:"fault"`
@@ -41,7 +33,7 @@ type Fault struct {
 	DelayMS int64     `json:"delay_ms,omitempty"`
 }
 
-// HangLimit bounds a TimeoutAfter fault, in case the caller never gives up.
+// HangLimit is for a caller that never gives up.
 const HangLimit = time.Minute
 
 const (
@@ -49,7 +41,6 @@ const (
 	MaxDelay      = time.Minute
 )
 
-// Faults is a simulator's queue of scripted failures, safe for concurrent use.
 type Faults struct {
 	ops        []Op
 	rejectable []Op
@@ -58,12 +49,10 @@ type Faults struct {
 	list []Fault
 }
 
-// NewFaults takes the simulator's operations and those of them that can be refused.
 func NewFaults(ops, rejectable []Op) *Faults {
 	return &Faults{ops: ops, rejectable: rejectable}
 }
 
-// Add schedules f after the faults already waiting.
 func (q *Faults) Add(f *Fault) error {
 	if err := q.validate(f); err != nil {
 		return err
@@ -74,8 +63,7 @@ func (q *Faults) Add(f *Fault) error {
 	return nil
 }
 
-// Next takes one use of the oldest fault scheduled for op. With none, it returns the
-// zero Fault, whose Kind runs as no fault at all.
+// Next returns the zero Fault, which runs as none, when nothing is scheduled.
 func (q *Faults) Next(op Op) Fault {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -123,8 +111,7 @@ func (q *Faults) validate(f *Fault) error {
 	return nil
 }
 
-// Before runs the part of a fault that happens before any work. It reports whether
-// the handler should go on.
+// Before reports whether the handler should go on.
 func Before(w http.ResponseWriter, r *http.Request, f *Fault) bool {
 	switch f.Kind {
 	case FailBefore:
@@ -146,16 +133,13 @@ func Before(w http.ResponseWriter, r *http.Request, f *Fault) bool {
 	}
 }
 
-// After runs the part of a fault that happens once the work is done: TimeoutAfter
-// never answers.
 func After(r *http.Request, f *Fault) {
 	if f.Kind == TimeoutAfter {
 		hang(r)
 	}
 }
 
-// hang waits for the caller to give up, or HangLimit, and then drops the connection.
-// net/http treats ErrAbortHandler as a deliberate abort.
+// hang: net/http treats ErrAbortHandler as a deliberate abort.
 func hang(r *http.Request) {
 	t := time.NewTimer(HangLimit)
 	defer t.Stop()
@@ -166,7 +150,6 @@ func hang(r *http.Request) {
 	panic(http.ErrAbortHandler)
 }
 
-// InjectFault is the handler of POST /control/faults.
 func (q *Faults) InjectFault(w http.ResponseWriter, r *http.Request) {
 	var f Fault
 	if err := Decode(w, r, &f); err != nil {

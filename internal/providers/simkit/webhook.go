@@ -14,15 +14,14 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/httpapi"
 )
 
-// DeliveryTimeout bounds one webhook delivery.
 const DeliveryTimeout = 5 * time.Second
 
 type Clock interface {
 	Now() time.Time
 }
 
-// Webhook keeps every event a simulator emitted, as the bytes first sent, and posts
-// them signed to one URL. Without a URL it keeps and sends nothing.
+// Webhook keeps every event as the bytes first sent. Without a URL it keeps and sends
+// nothing.
 type Webhook struct {
 	url    string
 	secret []byte
@@ -34,7 +33,6 @@ type Webhook struct {
 	events map[string][]byte
 }
 
-// NewWebhook signs each post with secret in the header named header.
 func NewWebhook(url string, secret []byte, header string, clock Clock) (*Webhook, error) {
 	if url != "" && len(secret) == 0 {
 		return nil, errors.New("simulator: a webhook URL needs a webhook secret")
@@ -45,8 +43,7 @@ func NewWebhook(url string, secret []byte, header string, clock Clock) (*Webhook
 	}, nil
 }
 
-// Record encodes and keeps the event under id, so a redelivery sends the same bytes.
-// It returns nil when no URL is configured.
+// Record keeps the bytes, so a redelivery sends the same ones.
 func (h *Webhook) Record(id string, event any) []byte {
 	if h.url == "" {
 		return nil
@@ -61,7 +58,7 @@ func (h *Webhook) Record(id string, event any) []byte {
 	return body
 }
 
-// Deliver posts body, signed at the current time. Any 2xx counts.
+// Deliver counts any 2xx.
 func (h *Webhook) Deliver(ctx context.Context, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(body))
 	if err != nil {
@@ -81,8 +78,7 @@ func (h *Webhook) Deliver(ctx context.Context, body []byte) error {
 	return nil
 }
 
-// Redeliver is the handler of POST /control/events/{id}/deliver: the provider sending
-// an event again because it thinks the first delivery was lost.
+// Redeliver is a provider that thinks the first delivery was lost.
 func (h *Webhook) Redeliver(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	body, ok := h.events[r.PathValue("id")]
