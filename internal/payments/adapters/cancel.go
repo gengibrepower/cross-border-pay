@@ -15,9 +15,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
 
-// Cancel moves a pending payment to canceled and appends payment.canceled, in one
-// transaction. The status is read under the payment's lock, so a confirmation that
-// commits first makes the cancel fail instead of being overwritten.
+// Cancel reads the status under the payment's lock, so a confirmation that commits
+// first makes the cancel fail instead of being overwritten.
 func (p *Postgres) Cancel(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, now time.Time) error {
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := paymentsdb.New(tx).LockMerchantPayment(ctx, paymentsdb.LockMerchantPaymentParams{

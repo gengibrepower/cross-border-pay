@@ -35,19 +35,13 @@ func (p *Postgres) SettlementCandidates(ctx context.Context, cutoff time.Time, a
 	return ids, nil
 }
 
-// Settle pays the merchant what is available at the cutoff of now, in one transaction.
-// The settleable payments are locked first and the merchant's payable and reserve
-// after, the order of every other path; with them locked nothing else can post to
-// them, and every change to what is pending (a confirmation, a refund's hold or
-// release) posts to the payable, so the balance and the pending sum are read at the
-// same point.
+// Settle locks the settleable payments first and the payable and reserve after, the
+// order of every other path. Every change to what is pending posts to the payable, so
+// with it locked the balance and the pending sum are read at the same point.
 //
-// Holds due by the cutoff go back to the payable first (decision 26). The available
-// amount is then the balance less what is pending: refunds and chargebacks of payments
-// already settled come out of it (section 4.7). A negative amount takes what it can
-// from the reserve and pays nothing (decision 27); a positive one is paid out less the
-// policy's hold, which goes into the reserve. settled is false when nothing was paid or
-// the cutoff was already settled.
+// Due holds go back first (decision 26). Refunds and chargebacks of settled payments
+// come out of what is available (section 4.7); a negative amount takes what it can
+// from the reserve and pays nothing (decision 27).
 func (p *Postgres) Settle(ctx context.Context, merchant domain.MerchantID, policy *domain.SettlementPolicy, now time.Time) (s domain.Settlement, settled bool, err error) {
 	cutoff := policy.CutoffDate(now)
 	before := func(m domain.Method) pgtype.Timestamptz {
@@ -167,9 +161,8 @@ type merchantAccounts struct {
 	payable, reserve ledger.AccountID
 }
 
-// lockMerchantAccounts creates the merchant's payable and reserve if they are not there
-// yet and locks both, in ascending ID order as Post does, so no other path waits on
-// them the other way round.
+// lockMerchantAccounts locks in ascending ID order as Post does, so no other path waits
+// on them the other way round.
 func lockMerchantAccounts(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, currency money.Currency) (merchantAccounts, error) {
 	l := ledgeradapters.Ledger{}
 	payable, err := l.EnsureAccount(ctx, tx, payableCode(merchant, currency), currency, ledger.MayGoNegative)
@@ -190,8 +183,6 @@ func lockMerchantAccounts(ctx context.Context, tx pgx.Tx, merchant domain.Mercha
 	return merchantAccounts{payable: payable.ID(), reserve: reserve.ID()}, nil
 }
 
-// releaseReserve gives the payable the holds due by the cutoff and marks them released,
-// and returns what the reserve holds after.
 func releaseReserve(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, a *merchantAccounts, cutoff time.Time) (int64, error) {
 	q := paymentsdb.New(tx)
 	l := ledgeradapters.Ledger{}
@@ -224,8 +215,7 @@ func releaseReserve(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, 
 	return balance.Amount() - release, nil
 }
 
-// coverWithReserve pays a negative available amount from the reserve, as far as it
-// goes (decision 27); the rest waits for the next money in.
+// coverWithReserve: what the reserve cannot cover waits for the next money in.
 func coverWithReserve(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, a *merchantAccounts, available, reserve int64) error {
 	cover := domain.ReserveCover(available, reserve)
 	if cover == 0 {

@@ -17,10 +17,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// confirm runs when the attempt has just succeeded. It moves the locked payment to paid,
-// posts its ledger transaction and appends payment.paid to the outbox, all in the
-// attempt's transaction (section 4.1, step 6). Money that cannot confirm the payment,
-// late, for another amount or for a payment already paid, is posted as a divergence.
+// confirm runs in the attempt's transaction (section 4.1, step 6). Money that cannot
+// confirm the payment is posted as a divergence.
 func confirm(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, attempt *domain.PaymentAttempt, u *domain.AttemptUpdate, now time.Time) error {
 	status, err := domain.ParseStatus(pay.Status)
 	if err != nil {
@@ -91,7 +89,6 @@ func setStatus(ctx context.Context, tx pgx.Tx, id pgtype.UUID, to domain.Status,
 	return int(version), nil
 }
 
-// storedPayment is what an event needs from a payment's row.
 type storedPayment struct {
 	id, merchant pgtype.UUID
 	amount       int64
@@ -123,8 +120,7 @@ func notify(ctx context.Context, tx pgx.Tx, outbox Outbox, t domain.EventType, p
 	return nil
 }
 
-// confirmationAccounts finds the chart of accounts' rows (migration 00009) for the
-// quote's currencies, and the merchant's payable, created on its first confirmation.
+// confirmationAccounts creates the merchant's payable on its first confirmation.
 func confirmationAccounts(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, q *fx.Quote) (domain.ConfirmationAccounts, error) {
 	payer, base := q.PayerAmount().Currency(), q.Amount().Currency()
 	receivables, fxPayer, fxBase := "provider_receivables:"+payer.Code(), "fx:"+payer.Code(), "fx:"+base.Code()

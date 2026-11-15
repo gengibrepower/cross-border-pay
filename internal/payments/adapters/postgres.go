@@ -22,25 +22,21 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
 
-// Outbox stores events for merchants in the caller's transaction (section 4.5). It is
-// the events module's, plugged in by cmd so that payments does not import it.
+// Outbox is section 4.5, plugged in by cmd so that payments does not import events.
 type Outbox interface {
 	Append(ctx context.Context, tx pgx.Tx, e *domain.MerchantEvent) error
 }
 
-// Reviews opens review cases in the caller's transaction (section 4.4), for the
-// reconciliation module, plugged in like Outbox. opened is false for a charge that
-// already has one.
+// Reviews is section 4.4, plugged in like Outbox. opened is false for a charge that
+// already has a case.
 type Reviews interface {
 	Open(ctx context.Context, tx pgx.Tx, c *domain.ReviewCase) (opened bool, err error)
 }
 
-// Sinks are the other modules' writers payments uses inside its own transactions.
 type Sinks struct {
 	Outbox  Outbox
 	Reviews Reviews
-	// Rates is the base rate a chargeback's money is bought back and sold at
-	// (decision 13); only the worker's event handler needs it.
+	// Rates is only needed by the worker's event handler, for chargebacks.
 	Rates app.RateSource
 }
 
@@ -194,17 +190,14 @@ func restorePayment(row *paymentsdb.Payment) (domain.Payment, error) {
 	if err != nil {
 		return domain.Payment{}, fmt.Errorf("currency: %w", err)
 	}
-	// The CHECK on payments.method allows only known methods; ParseMethod would refuse
-	// boleto and card, which are known but not offered yet.
+	// The CHECK on payments.method allows only known methods.
 	method := domain.Method(row.Method)
 	return domain.Restore(row.ID.Bytes, row.MerchantID.Bytes, status, method,
 		money.New(row.Amount, currency), row.Reference, row.CreatedAt.Time.UTC()), nil
 }
 
-// checkDebtLimit refuses the payment when the merchant's payable and reserve together
-// are below the debt limit (decision 27). It reads without locking either: a limit
-// crossed by a refund committing at the same time lets one more payment in, which only
-// brings money towards the merchant.
+// checkDebtLimit reads without locking: a limit crossed by a refund committing at the
+// same time lets one more payment in, which only brings money towards the merchant.
 func checkDebtLimit(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID) error {
 	position, err := merchantPosition(ctx, tx, merchant)
 	if err != nil {
@@ -216,9 +209,7 @@ func checkDebtLimit(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID) 
 	return nil
 }
 
-// merchantPosition is the merchant's payable and reserve together, each zero before it
-// exists: the payable comes with the first confirmation, the reserve with the first
-// settlement.
+// merchantPosition counts zero for an account not created yet.
 func merchantPosition(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID) (int64, error) {
 	l := ledgeradapters.Ledger{}
 	var position int64

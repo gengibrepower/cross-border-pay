@@ -12,8 +12,7 @@ import (
 
 const CardSimName domain.ProviderName = "cardsim"
 
-// CardSim is the app.Provider of the card simulator. A decline is a result, as the
-// issuer's answer; every error is returned, which the caller reads as unknown.
+// CardSim: a decline is a result; any error is unknown.
 type CardSim struct {
 	client *cardsim.Client
 }
@@ -24,8 +23,7 @@ func NewCardSim(client *cardsim.Client) *CardSim {
 
 func (*CardSim) Name() domain.ProviderName { return CardSimName }
 
-// CreateAttempt authorizes, and captures at once unless the merchant captures later
-// (decision 18).
+// CreateAttempt captures at once unless the merchant captures later (decision 18).
 func (p *CardSim) CreateAttempt(ctx context.Context, req *app.AttemptRequest) (app.AttemptResult, error) {
 	if req.Method != domain.Card {
 		return app.AttemptResult{}, fmt.Errorf("cardsim: method %s is not card", req.Method)
@@ -120,13 +118,11 @@ func cardRefundResult(rf *cardsim.Refund) (app.RefundResult, error) {
 	return r, nil
 }
 
-// AcceptChargeback is app.Disputer's accept.
 func (p *CardSim) AcceptChargeback(ctx context.Context, externalID string) (domain.ChargebackStatus, error) {
 	cb, err := p.client.Accept(ctx, externalID)
 	return chargebackStatus(externalID, &cb, err)
 }
 
-// ContestChargeback is app.Disputer's contest.
 func (p *CardSim) ContestChargeback(ctx context.Context, externalID, evidence string) (domain.ChargebackStatus, error) {
 	cb, err := p.client.Contest(ctx, externalID, cardsim.Contest{Evidence: evidence})
 	return chargebackStatus(externalID, &cb, err)

@@ -23,8 +23,6 @@ const (
 	oneLiveAttempt  = "payment_attempts_one_live"
 )
 
-// CreateAttempt stores the intention to call the provider, in created. It returns
-// app.ErrLiveAttempt while the payment has an attempt that was not rejected.
 func (p *Postgres) CreateAttempt(ctx context.Context, payment domain.PaymentID, provider domain.ProviderName, now time.Time) (domain.PaymentAttempt, error) {
 	row, err := insertAttempt(ctx, paymentsdb.New(p.pool), payment, provider, domain.CardInput{}, domain.BoletoInput{}, now)
 	if err != nil {
@@ -67,10 +65,8 @@ func (p *Postgres) GetAttempt(ctx context.Context, id domain.AttemptID) (domain.
 	return restoreAttempt(&row)
 }
 
-// ApplyAttempt locks the attempt, moves it by the event through the domain's table and
-// stores the result. The row lock serializes concurrent events: of two that race from
-// the same status, the second sees the first one's result. changed is false for a
-// duplicate, which writes nothing. An attempt that becomes succeeded confirms its
+// ApplyAttempt's row lock serializes concurrent events: of two that race from the same
+// status, the second sees the first one's result. A succeeded attempt confirms its
 // payment in the same transaction.
 func (p *Postgres) ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (attempt domain.PaymentAttempt, changed bool, err error) {
 	err = postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
@@ -102,9 +98,8 @@ func lockPayment(ctx context.Context, q *paymentsdb.Queries, id domain.AttemptID
 	return row, nil
 }
 
-// applyLocked runs with pay already locked by lockPayment. Money the provider
-// confirmed that the attempt cannot take, such as a payment after a rejection, is
-// posted as a divergence and leaves the attempt as it was.
+// applyLocked runs with pay already locked. Money the attempt cannot take, such as a
+// payment after a rejection, is posted as a divergence and leaves the attempt as it was.
 func applyLocked(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error) {
 	q := paymentsdb.New(tx)
 	row, err := q.LockAttempt(ctx, pgtype.UUID{Bytes: id, Valid: true})
@@ -178,8 +173,7 @@ func (p *Postgres) ClaimDueAttempts(ctx context.Context, now, leaseUntil time.Ti
 	return due, nil
 }
 
-// RescheduleAttempt is a no-op once the attempt left unknown, such as when an event
-// resolved it during the lookup.
+// RescheduleAttempt is a no-op once an event resolved the attempt during the lookup.
 func (p *Postgres) RescheduleAttempt(ctx context.Context, id domain.AttemptID, next time.Time) error {
 	_, err := paymentsdb.New(p.pool).RescheduleAttempt(ctx, paymentsdb.RescheduleAttemptParams{
 		ID:          pgtype.UUID{Bytes: id, Valid: true},
@@ -220,8 +214,7 @@ func restoreAttempt(row *paymentsdb.PaymentAttempt) (domain.PaymentAttempt, erro
 	return a, nil
 }
 
-// restoreBoleto reads what a boleto attempt stored; the CHECKs of migration 00023 keep
-// payer and due date together.
+// The CHECKs of migration 00023 keep payer and due date together.
 func restoreBoleto(row *paymentsdb.PaymentAttempt) (domain.BoletoInput, error) {
 	doc, err := cpf.Parse(row.PayerDocument.String)
 	if err != nil {
@@ -238,8 +231,7 @@ func restoreBoleto(row *paymentsdb.PaymentAttempt) (domain.BoletoInput, error) {
 	}, nil
 }
 
-// dateParam is a calendar date as Postgres's date: midnight UTC, which pgx sends as the
-// day alone.
+// dateParam is midnight UTC, which pgx sends as the day alone.
 func dateParam(d calendar.Date) pgtype.Date {
 	if d.IsZero() {
 		return pgtype.Date{}

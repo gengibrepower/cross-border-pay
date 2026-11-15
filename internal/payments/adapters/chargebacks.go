@@ -20,8 +20,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/cardsim"
 )
 
-// HandleCardSimEvent is HandlePixSimEvent for the card simulator's chargebacks: opened
-// takes the money back from the merchant, closed decides the dispute. It returns
+// HandleCardSimEvent is HandlePixSimEvent for chargebacks. It returns
 // app.ErrEventEarly for a chargeback of a capture not confirmed yet, or a close whose
 // opening was not applied yet.
 func HandleCardSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []byte, now time.Time) (subject string, err error) {
@@ -72,10 +71,8 @@ func HandleCardSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []
 	return subject, nil
 }
 
-// openChargeback posts the money the bank took back and moves the payment to
-// charged_back, which a refunded payment also takes (decision 7), with
-// chargeback.opened in the outbox. A pending payment is a capture the gateway is still
-// confirming: early, retried.
+// openChargeback: a refunded payment is charged back too (decision 7), and a pending
+// one is a capture still being confirmed, so the event is early and retried.
 func openChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, cb *cardsim.Chargeback, now time.Time) error {
 	status, err := domain.ParseStatus(pay.Status)
 	if err != nil {
@@ -141,7 +138,6 @@ func openChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsd
 	return notifyChargeback(ctx, tx, sinks.Outbox, domain.ChargebackOpenedEvent, pay.PaymentID, pay.MerchantID, to, &c, now)
 }
 
-// closeChargeback applies the dispute's decision to a chargeback already opened.
 func closeChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, cb *cardsim.Chargeback, now time.Time) error {
 	var to domain.ChargebackStatus
 	switch cb.Status {
@@ -171,10 +167,7 @@ func closeChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *payments
 	return err
 }
 
-// moveChargeback takes the chargeback to what the provider reported, with the payment
-// locked first and the chargeback after. A won dispute gives the money back; a closed
-// one tells the merchant. changed is false for a report the chargeback reflects
-// already.
+// moveChargeback locks the payment first and the chargeback after.
 func moveChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, payment, merchant pgtype.UUID, status domain.Status,
 	row *paymentsdb.Chargeback, to domain.ChargebackStatus, evidence string, now time.Time,
 ) (domain.ChargebackCase, bool, error) {
@@ -220,7 +213,6 @@ func moveChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, payment, merch
 	return c, true, nil
 }
 
-// postChargeback posts the step at today's base rate (decision 13).
 func postChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, c *domain.ChargebackCase, step domain.ChargebackStep, now time.Time) error {
 	if sinks.Rates == nil {
 		return errors.New("payments: no rate source to post a chargeback with")
@@ -252,8 +244,7 @@ func postChargeback(ctx context.Context, tx pgx.Tx, sinks *Sinks, c *domain.Char
 	return nil
 }
 
-// notifyChargeback appends the event with the payment moved to status, which bumps
-// its version so the event orders with the payment's others.
+// notifyChargeback bumps the payment's version, so the event orders with its others.
 func notifyChargeback(ctx context.Context, tx pgx.Tx, outbox Outbox, t domain.EventType, payment, merchant pgtype.UUID, status domain.Status, c *domain.ChargebackCase, now time.Time) error {
 	version, err := setStatus(ctx, tx, payment, status, now)
 	if err != nil {
@@ -297,7 +288,6 @@ func chargebackAccounts(ctx context.Context, tx pgx.Tx, merchant domain.Merchant
 	}, nil
 }
 
-// GetChargeback returns app.ErrChargebackNotFound unless the merchant's payment has it.
 func (p *Postgres) GetChargeback(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID) (domain.ChargebackCase, error) {
 	row, err := paymentsdb.New(p.pool).GetChargeback(ctx, paymentsdb.GetChargebackParams{
 		ID: pgtype.UUID{Bytes: id, Valid: true}, MerchantID: pgtype.UUID{Bytes: merchant, Valid: true},
@@ -311,8 +301,7 @@ func (p *Postgres) GetChargeback(ctx context.Context, merchant domain.MerchantID
 	return restoreChargeback(&row)
 }
 
-// AnswerChargeback stores what the provider said to the merchant's answer, as an event
-// would: the payment locked first, then the chargeback.
+// AnswerChargeback locks as an event would: the payment first, then the chargeback.
 func (p *Postgres) AnswerChargeback(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID, to domain.ChargebackStatus, evidence string, now time.Time) (domain.ChargebackCase, error) {
 	var c domain.ChargebackCase
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {

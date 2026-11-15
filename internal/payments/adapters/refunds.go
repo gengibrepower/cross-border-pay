@@ -129,8 +129,7 @@ func (p *Postgres) PaidAttempt(ctx context.Context, payment domain.PaymentID) (d
 	return restoreAttempt(&row)
 }
 
-// ApplyRefund takes the locks in the order every path takes them: the payment, the
-// refund, then the ledger's accounts.
+// ApplyRefund locks in the order every path does: payment, refund, ledger accounts.
 func (p *Postgres) ApplyRefund(ctx context.Context, id domain.RefundID, u *domain.RefundUpdate, rate fx.Rate, now time.Time) (refund domain.Refund, changed bool, err error) {
 	err = postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		q := paymentsdb.New(tx)
@@ -155,8 +154,7 @@ func (p *Postgres) ApplyRefund(ctx context.Context, id domain.RefundID, u *domai
 		if !changed {
 			return nil
 		}
-		// As for attempts, a new status restarts the check schedule: created, sent and
-		// unknown are in the queue, the final statuses leave it.
+		// As for attempts, a new status restarts the check schedule.
 		checks, next := row.Checks, row.NextCheckAt
 		if refund.Status() != from {
 			checks, next = 0, refundCheck(refund.Status(), now)
@@ -218,8 +216,7 @@ func (p *Postgres) ClaimDueRefunds(ctx context.Context, now, leaseUntil time.Tim
 	return due, nil
 }
 
-// RescheduleRefund is a no-op once the refund left unknown, such as when a retried
-// request resolved it during the lookup.
+// RescheduleRefund is a no-op once a retried request resolved the refund meanwhile.
 func (p *Postgres) RescheduleRefund(ctx context.Context, id domain.RefundID, next time.Time) error {
 	_, err := paymentsdb.New(p.pool).RescheduleRefund(ctx, paymentsdb.RescheduleRefundParams{
 		ID:          pgtype.UUID{Bytes: id, Valid: true},
@@ -242,8 +239,6 @@ func (p *Postgres) EscalateRefund(ctx context.Context, id domain.RefundID, now t
 	return nil
 }
 
-// completeRefund posts the money gone back and moves the payment: refunded once the
-// refunds that succeeded add up to what was paid, partially refunded before.
 func completeRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfRefundRow, refund *domain.Refund, rate fx.Rate, now time.Time) error {
 	quote, err := loadQuote(ctx, tx, pay.QuoteID.Bytes)
 	if err != nil {
@@ -287,7 +282,6 @@ func completeRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *payments
 	return notifyRefund(ctx, tx, outbox, domain.RefundSucceededEvent, refund, pay, to, version, now)
 }
 
-// releaseRefund gives the hold back to the merchant; the payment does not change.
 func releaseRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, pay *paymentsdb.LockPaymentOfRefundRow, refund *domain.Refund, now time.Time) error {
 	quote, err := loadQuote(ctx, tx, pay.QuoteID.Bytes)
 	if err != nil {
@@ -337,8 +331,6 @@ func notifyRefund(ctx context.Context, tx pgx.Tx, outbox Outbox, t domain.EventT
 	return nil
 }
 
-// refundAccounts finds the chart of accounts' rows (migrations 00009 and 00017) for the
-// quote's currencies, and the merchant's payable.
 func refundAccounts(ctx context.Context, tx pgx.Tx, merchant domain.MerchantID, q *fx.Quote) (domain.RefundAccounts, error) {
 	payer, base := q.PayerAmount().Currency(), q.Amount().Currency()
 	receivables, fxPayer, fxBase := "provider_receivables:"+payer.Code(), "fx:"+payer.Code(), "fx:"+base.Code()

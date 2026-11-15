@@ -18,9 +18,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
 
-// PrepareCapture holds the payment's lock, the one a confirmation takes, while it
-// decides: so a capture and the event or lookup that confirms it never cross, and the
-// captured quote is written once.
+// PrepareCapture holds the lock a confirmation takes while it decides, so a capture
+// and the event that confirms it never cross, and the captured quote is written once.
 func (p *Postgres) PrepareCapture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money, now time.Time) (app.PreparedCapture, error) {
 	var c app.PreparedCapture
 	err := postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
