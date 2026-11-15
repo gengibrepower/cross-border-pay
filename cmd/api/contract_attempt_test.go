@@ -35,12 +35,9 @@ type pixField struct {
 
 func pixOf(t *testing.T, rec *httptest.ResponseRecorder) pixField {
 	t.Helper()
-	var p struct {
+	p := decode[struct {
 		Pix *pixField `json:"pix"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		t.Fatal(err)
-	}
+	}](t, rec)
 	if p.Pix == nil {
 		t.Fatalf("response has no pix: %s", rec.Body)
 	}

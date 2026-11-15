@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -330,6 +331,19 @@ func (h providerEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) 
 		return eventsapp.Result{Subject: subject, Outcome: events.Failed, Reason: err.Error()}, nil
 	}
 	return eventsapp.Result{Subject: subject, Outcome: events.Processed}, nil
+}
+
+// decode fails the test unless rec answered one of want, when given, and parses its body.
+func decode[T any](t *testing.T, rec *httptest.ResponseRecorder, want ...int) T {
+	t.Helper()
+	if len(want) > 0 && !slices.Contains(want, rec.Code) {
+		t.Fatalf("status = %d, want %v: %s", rec.Code, want, rec.Body)
+	}
+	var v T
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 // apiRequest leaves out the headers of an empty key or idempotency key, and an empty

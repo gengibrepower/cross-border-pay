@@ -43,13 +43,7 @@ type cardPayment struct {
 
 func cardOf(t *testing.T, rec *httptest.ResponseRecorder) cardPayment {
 	t.Helper()
-	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
-	}
-	var p cardPayment
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		t.Fatal(err)
-	}
+	p := decode[cardPayment](t, rec, http.StatusCreated, http.StatusOK)
 	if p.Card == nil || p.Pix != nil {
 		t.Fatalf("a card payment must carry card and no pix: %s", rec.Body)
 	}

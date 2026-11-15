@@ -79,14 +79,7 @@ type chargebackBody struct {
 
 func chargebackOf(t *testing.T, rec *httptest.ResponseRecorder) chargebackBody {
 	t.Helper()
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
-	}
-	var cb chargebackBody
-	if err := json.Unmarshal(rec.Body.Bytes(), &cb); err != nil {
-		t.Fatal(err)
-	}
-	return cb
+	return decode[chargebackBody](t, rec, http.StatusOK)
 }
 
 func (c *contract) contest(key, id string) *httptest.ResponseRecorder {

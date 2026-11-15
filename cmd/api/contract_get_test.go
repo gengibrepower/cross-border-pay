@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,16 +17,9 @@ import (
 func (c *contract) createPayment(key string) (id string, body []byte) {
 	c.t.Helper()
 	rec := c.do(postPayment(c.t, key, rand.Text(), gameStore), true)
-	if rec.Code != http.StatusCreated {
-		c.t.Fatalf("create: status = %d: %s", rec.Code, rec.Body.String())
-	}
-	var p struct {
+	return decode[struct {
 		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		c.t.Fatal(err)
-	}
-	return p.ID, rec.Body.Bytes()
+	}](c.t, rec, http.StatusCreated).ID, rec.Body.Bytes()
 }
 
 func TestGetPaymentReturnsWhatCreateReturned(t *testing.T) {
@@ -81,15 +73,7 @@ type paymentList struct {
 
 func (c *contract) list(key, query string) paymentList {
 	c.t.Helper()
-	rec := c.do(getRequest(c.t, key, "/v1/payments"+query), true)
-	if rec.Code != http.StatusOK {
-		c.t.Fatalf("list%s: status = %d: %s", query, rec.Code, rec.Body.String())
-	}
-	var l paymentList
-	if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
-		c.t.Fatal(err)
-	}
-	return l
+	return decode[paymentList](c.t, c.do(getRequest(c.t, key, "/v1/payments"+query), true), http.StatusOK)
 }
 
 // Walking every page sees each payment exactly once, newest first, and none of
@@ -193,11 +177,7 @@ func TestListPaymentsErrors(t *testing.T) {
 
 func problemCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	var p struct {
+	return decode[struct {
 		Code string `json:"code"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		t.Fatal(err)
-	}
-	return p.Code
+	}](t, rec).Code
 }

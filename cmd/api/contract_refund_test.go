@@ -79,14 +79,7 @@ type refundBody struct {
 
 func refundOf(t *testing.T, rec *httptest.ResponseRecorder) refundBody {
 	t.Helper()
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("refund: status = %d: %s", rec.Code, rec.Body)
-	}
-	var r refundBody
-	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
-		t.Fatal(err)
-	}
-	return r
+	return decode[refundBody](t, rec, http.StatusCreated)
 }
 
 // balance is the sum of the entries on the accounts whose code starts with prefix.

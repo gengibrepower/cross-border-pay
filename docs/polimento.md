@@ -134,14 +134,18 @@ Marque `[x]` ao terminar e anote o número da PR.
     montar o struct; o total não diminui.
   - O `dupl` só acha esses handlers e `confirmationAccounts`/`refundAccounts`, que têm a
     mesma forma com contas diferentes.
-- [ ] **4. Testes.**
+- [x] **4. Testes.**
   - [x] (#68) `cmd/api` tem 4.903 linhas. Os helpers estão espalhados: `processInbox` e
     `boletoEvents` estão em `contract_boleto_test.go` mas roteiam os três provedores, e
     devem ir para `contract_test.go` com outro nome.
   - [x] (#68) Taxa fixa de 5,0000 repetida em `contractRates`, `testRates` (worker) e duas
     vezes em `contract_refund_resolver_test.go`: deixar uma só. Eram seis cópias no
     `cmd/api` e duas no `cmd/worker`; ficou uma por pacote.
-  - [ ] Testes quase iguais que viram tabela.
+  - [x] (#69) Testes quase iguais que viram tabela. Os testes de erro já eram tabelas.
+    A repetição estava nos helpers que conferem o status e decodificam o JSON
+    (`refundOf`, `chargebackOf`, `list`, `listSettlements`, `getBalance` e mais seis):
+    viraram `decode[T]`. O `dupl` com limiar 60 só acha mais pares de tipos diferentes
+    (`Status`/`AttemptStatus`, `hold`/`replay`), que não encurtam sem genéricos.
   - [x] (#68) Helpers de corpo e de requisição repetidos entre arquivos: `postChargeback`,
     `postRefund`, `getRequest` e semelhantes. Os oito viraram uma linha sobre
     `apiRequest`, e o `getPayment` saiu.
@@ -173,6 +177,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 15/11/2026 | 2. Comentários: demais pacotes | #67 | 16.427 | 924 | 19.009 | item 2 fechado |
 | 16/11/2026 | 3. Duplicação | — | 16.427 | 924 | 19.009 | medido, não compensa |
 | 16/11/2026 | 4. Testes: helpers do `cmd/api` | #68 | 16.427 | 924 | 18.956 | −53 no teste |
+| 16/11/2026 | 4. Testes: `decode[T]` | #69 | 16.427 | 924 | 18.894 | item 4 fechado |
 
 ## 8. Como retomar numa sessão nova
 
