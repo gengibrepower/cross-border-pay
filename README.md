@@ -46,7 +46,7 @@ The five tests the project is measured by ([docs/escopo.md §9](docs/escopo.md))
 | 2 | `TestConcurrentPartialRefundsNeverExceedThePayment`: refunds never pass what was paid | 4,000 concurrent refund requests |
 | 3 | `TestThousandsOfConcurrentTransfers`: the ledger closes at zero | 100,000 concurrent transfers |
 | 4 | `TestWorkerKilledMidRoundDeliversEveryEventAfterRestart`: a killed worker loses no webhook | 100 events, killed mid-round: all delivered |
-| 5 | `TestSameSeedSameCharges`, and the same for card and boleto: same seed, same history | 50 keys sent at once in reverse order give the charges sent one by one gave |
+| 5 | `TestChaosSameSeedSameStory`: same seed, same history and final state | 24 operations under faults the seed draws, twice on fresh stacks: the same state; another seed, another state |
 
 Beyond them, a retry never charges twice (10 concurrent requests with one key: 1 payment) and a settlement pays once (the same cutoff twice, or on 8 workers: 1 payout).
 
@@ -420,7 +420,34 @@ The acquirer opens a chargeback on a captured authorization by control endpoint,
 </details>
 
 <details>
-<summary><b>End to end</b> · 1 test</summary>
+<summary><b>Daily reconciliation</b> · 3 tests</summary>
+
+**Comparing a statement with the books (`reconciliation/domain`, section 4.8)**
+
+Each simulator serves `GET /statements/{date}`: the day's money movements in São Paulo time, each with the provider's ID, the gateway's key, the amount and the time, in the same format for all three. `Compare` knows nothing of where either side came from: it pairs lines by kind and by the gateway's key (the provider's ID for a chargeback), each side a multiset, and returns what is missing on either side or has another amount.
+
+**Result:** a property test: every difference planted in a random pair of lists comes back as exactly one divergence, in any order of either side. 6 table cases, among them a same-amount line preferred over the first one and a chargeback and its reversal sharing an ID. 6 mutants killed.
+
+---
+
+**Handling each divergence (`Reconciler.Reconcile`)**
+
+Seven days of a provider's statements against what the gateway recorded, with the amount the ledger posted, plus the money review cases hold. Only the divergences of the day are handled, so each is handled by one day's run. Money the provider received for an attempt of the gateway's is confirmed the way the provider's event would; for a key that names no attempt, it is held in `divergence:BRL` with a case, as in section 4.4, and the case keeps the key so the next run finds that money. A refund the provider completed while the gateway waited for the answer is finished. Anything else (only the gateway has it, another amount, another provider's attempt) is a case with no posting, opened once.
+
+**Result:** 4 worker tests and 1 contract test: a payment whose event was lost confirmed, and the next run finding nothing; two payments for no attempt held once each; what only the gateway has and a different amount opened as cases that move no money, once; another provider's attempt left alone; a refund finished from the simulator's real statement, refused for another amount or provider. 20/20 runs with `-race`. 10 mutants killed.
+
+---
+
+**The daily job (`reconciliation_runs`, decision 6 of F10)**
+
+Every minute the worker reconciles, for each provider, the last 7 closed days not yet done. A worker claims a day with a 10-minute lease: a day that failed or whose worker died is taken again once the lease ends, and a worker that was down for days catches up. Today is left until it closes. `worker reconcile -day YYYY-MM-DD` reconciles a day on demand.
+
+**Result:** four workers on the same days reconcile each once and hold the planted money once; running again, after the lease too, does nothing; a day whose statement failed comes back only after its lease, and the days after it still run. 20/20 runs with `-race`. 6 mutants killed.
+
+</details>
+
+<details>
+<summary><b>End to end</b> · 2 tests</summary>
 
 **GameStore walkthrough end to end (`e2e/`, section 4.1)**
 
@@ -428,9 +455,17 @@ The real `api`, `worker` and `pixsim` as processes, on a database migrated by `c
 
 **Result:** 3 walkthroughs in ~18 s, in parallel. 5/5 runs with `-race -count=5`. Ledger summing to zero per currency with 1 posting per paid charge, checked by SQL, and the merchant's US$ 19.40 by `GET /v1/balance`. 0 signatures refused by the merchant. 8 wiring mutants killed: the worker without its resolver, inbox or delivery, signing with another key, the API or the worker ignoring `SIGTERM`, the API without the provider inbox or the event routes.
 
+---
+
+**Chaos with a seed (`e2e/`, decisions 7 and 8 of F10)**
+
+The real `api`, `worker` and three simulators as processes. One step at a time, drawn by the seed: PIX, boleto and card payments (approved, declined, captured by hand), half refunds and chargebacks; before about one provider call in three, a `timeout_after` or a 200 ms `delay`; and one PIX charge paid with a key the gateway never gave. With one step at a time, the faults are used in a fixed order, so the seed decides the whole story. At the end the stack settles, `worker reconcile -day` runs for today, and the final state is read without the IDs the gateway generated.
+
+**Result:** **F10's criterion:** the books sum to zero per currency; the reconciliation finds only the planted charge (PIX: 1 divergence, held; card and boleto: none), so every other real on the statements is in the ledger once; seed 42 twice leaves the same state and seed 43 another (cited test 5). 24 operations per run, the three runs side by side in ~66 s with `-race`; the nightly job runs 300. `fail_before` is left out: the gateway only gives up on a call the provider never got after a minute, and the resolver's tests cover it.
+
 </details>
 
-CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`, and the end-to-end walkthrough with `-count=10`.
+CI runs formatting, a strict `golangci-lint`, `go test -race` with coverage and `govulncheck` on every pull request. A nightly job reruns everything with `-race -count=100`, the end-to-end tests with `-count=10`, and the chaos script with 300 operations.
 
 ## Architecture
 
@@ -750,6 +785,21 @@ The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 </details>
 
+<details>
+<summary><b>Daily reconciliation and chaos</b> · 5 decisions</summary>
+
+- **The statement:** `GET /statements/{date}` on each simulator, one format in `simkit`: the day's money movements in São Paulo time, each with the provider's ID, the gateway's key, amount and time, ordered so the same seed gives the same statement.<br>*Discarded:* A statement per kind of operation: three formats to compare the same thing.
+
+- **The gateway's side:** Attempts, refunds and chargebacks dated by when the gateway learned them, each with the amount its ledger posting moved on the provider's receivable, plus the money review cases hold.<br>*Discarded:* Dating by the ledger's `created_at`: it is the database's clock, not the one the domain records facts by.
+
+- **Money only the provider has:** With the gateway's key on an attempt, the usual confirmation, which already handles lateness and another amount; with no attempt, held in `divergence:BRL` with a case, as in section 4.4.<br>*Discarded:* Always a case: the resolver already confirms on the same evidence, and a person would redo it by hand.
+
+- **What only a person decides:** Missing at the provider, another amount, another provider's attempt: a case, with no posting; the posting already made stays.<br>*Discarded:* Correcting the ledger automatically: which side is right is not something the statement shows.
+
+- **Faults in the chaos script:** Scheduled right before the call that uses them, one step at a time, so the order, and so the story, comes from the seed; `timeout_after` and `delay` only.<br>*Discarded:* Concurrent steps: which request gets a fault would depend on timing. `fail_before`: a minute of `NotFoundGrace` per fault.
+
+</details>
+
 ## Status
 
 The plan is split into phases, each with a written definition of done ([docs/escopo.md §12](docs/escopo.md)).
@@ -766,7 +816,7 @@ The plan is split into phases, each with a written definition of done ([docs/esc
 | F7 | Refunds and settlement | ✅ done |
 | F8 | Card, boleto, chargebacks | ✅ done |
 | F9 | Polish: less code, comments only for the why, no behavior change ([plan](docs/polimento.md)) | ✅ done |
-| F10 | Chaos test across the three simulators and daily reconciliation | planned |
+| F10 | Chaos test across the three simulators and daily reconciliation ([plan](docs/f10.md)) | ✅ done |
 | F11 | `docker compose up` with everything and a GameStore demo script | planned |
 
 On 14 November 2026, after F8, the Efí sandbox, the public deploy, load tests and the payer page were cut (decision 58): F0–F8 already prove the four axes, and the time goes into a smaller codebase instead.
@@ -797,6 +847,8 @@ mise run cardsim      # card simulator on :8091
 mise run boletosim    # boleto simulator on :8092
 go run ./cmd/api      # API on :8080
 go run ./cmd/worker   # background jobs
+# reconcile one day now, as the daily job does for closed days
+go run ./cmd/worker reconcile -day 2026-11-15
 ```
 
 The worker applies inbox events, resolves `unknown` attempts and refunds, expires payments, settles merchants and delivers webhooks; every hour it deletes idempotency keys older than 24 h and events delivered more than 30 days ago. The variables they read; `mise.toml` sets the development ones:
@@ -919,7 +971,7 @@ With the worker running, every event reaches that URL with `Webhook-Signature: t
 
 The contract is [api/openapi.yaml](api/openapi.yaml).
 
-Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run e2e` (only the end-to-end walkthrough), `mise run test:stress` (the nightly `-count=100` run), `mise run gen` (`sqlc`).
+Other tasks: `mise run lint`, `mise run fmt`, `mise run vuln`, `mise run e2e` (only the end-to-end tests: GameStore and the short chaos script), `mise run test:stress` (the nightly `-count=100` run), `mise run gen` (`sqlc`).
 
 ## Repository layout
 
@@ -944,14 +996,14 @@ internal/
   payments/   payments, attempts, refunds, settlement
   events/     provider inbox and the outbox
   webhooks/   webhook delivery to merchants
-  reconciliation/ review cases
+  reconciliation/ daily reconciliation against the statements, review cases
   providers/  simulators (pixsim, cardsim, boletosim) and what they share (simkit)
   idempotency/ idempotency keys: lock, lease, recovery points
   platform/   config, logs, clock, Postgres, HTTP, SSRF, public IDs
 api/          openapi.yaml, the hand-written contract
 migrations/   SQL migrations, embedded in the binaries
 docs/         scope, rules and decisions (Portuguese)
-e2e/          GameStore walkthrough against the real binaries
+e2e/          GameStore walkthrough and the chaos script, against the real binaries
 ```
 
 ## Stack
