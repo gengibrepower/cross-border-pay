@@ -24,21 +24,17 @@ type Keys interface {
 	Fail(ctx context.Context, held *domain.Held) (released bool, err error)
 }
 
-// MerchantFunc returns the authenticated merchant; cmd/api wires it to the merchants
-// module so that idempotency does not import it.
+// MerchantFunc is wired by cmd/api, so that idempotency does not import merchants.
 type MerchantFunc func(ctx context.Context) (domain.MerchantID, bool)
 
 type heldKey struct{}
 
-// HeldFrom returns the key the request runs under. ok is false only on a route that
-// Require does not wrap.
 func HeldFrom(ctx context.Context) (held *domain.Held, ok bool) {
 	held, ok = ctx.Value(heldKey{}).(*domain.Held)
 	return held, ok
 }
 
-// Require makes a route idempotent by its Idempotency-Key header (section 4.2). It goes
-// inside the authentication, since keys belong to a merchant.
+// Require goes inside the authentication, since keys belong to a merchant.
 func Require(keys Keys, merchant MerchantFunc, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +114,6 @@ func replay(w http.ResponseWriter, resp *domain.Response) {
 	_, _ = w.Write(resp.Body)
 }
 
-// bufferedResponse holds the handler's answer until the key has recorded it.
 type bufferedResponse struct {
 	header http.Header
 	status int

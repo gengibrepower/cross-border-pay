@@ -30,8 +30,6 @@ var (
 	ErrStaleSignature = errors.New("webhooks: signature is too old or from the future")
 )
 
-// SigningVersions are the merchant's secrets a delivery at now is signed with: the
-// current one, and the previous one within PreviousSecretGrace of the rotation.
 func SigningVersions(e *merchants.Endpoint, now time.Time) []merchants.SecretVersion {
 	if e.Previous != 0 && now.Sub(e.RotatedAt) < PreviousSecretGrace {
 		return []merchants.SecretVersion{e.Version, e.Previous}
@@ -39,7 +37,6 @@ func SigningVersions(e *merchants.Endpoint, now time.Time) []merchants.SecretVer
 	return []merchants.SecretVersion{e.Version}
 }
 
-// Sign returns the signature header for body sent at t, with one v1 per secret.
 func Sign(secrets []string, t time.Time, body []byte) string {
 	ts := strconv.FormatInt(t.Unix(), 10)
 	var b strings.Builder
@@ -58,7 +55,7 @@ func mac(secret, ts string, body []byte) []byte {
 	return h.Sum(nil)
 }
 
-// Verify is what a merchant runs on a webhook: any v1 may match its secret.
+// Verify is what a merchant runs: any v1 may match its secret.
 func Verify(secret, header string, body []byte, now time.Time) error {
 	var ts string
 	var sigs [][]byte

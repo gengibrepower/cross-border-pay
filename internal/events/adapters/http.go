@@ -27,14 +27,13 @@ func NewHandler(inbox Receiver, logger *slog.Logger) *Handler {
 	return &Handler{inbox: inbox, logger: logger}
 }
 
-// Register mounts the providers' webhook. It carries no API key: the signature is the
-// authentication, checked by the provider's verifier.
+// Register's route carries no API key: the signature is the authentication.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/providers/{provider}/events", h.receive)
 }
 
-// receive answers 200 for a stored event and for a duplicate alike: either way the
-// provider must stop delivering it. Only a failure to store asks for a redelivery.
+// receive answers 200 for a duplicate too: either way the provider must stop
+// delivering it.
 func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEventBytes))
 	if err != nil {

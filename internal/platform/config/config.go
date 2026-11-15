@@ -10,13 +10,11 @@ import (
 )
 
 var (
-	ErrMissingDatabaseURL   = errors.New("DATABASE_URL is required")
-	ErrMissingWebhookSecret = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
-	// ErrMissingBoletoSimSecret is ErrMissingWebhookSecret for the boleto simulator.
+	ErrMissingDatabaseURL     = errors.New("DATABASE_URL is required")
+	ErrMissingWebhookSecret   = errors.New("PIXSIM_WEBHOOK_SECRET is required: it verifies the simulator's events")
 	ErrMissingBoletoSimSecret = errors.New("BOLETOSIM_WEBHOOK_SECRET is required: it verifies the boleto simulator's events")
-	// ErrMissingCardSimSecret is ErrMissingWebhookSecret for the card simulator.
-	ErrMissingCardSimSecret = errors.New("CARDSIM_WEBHOOK_SECRET is required: it verifies the card simulator's chargeback events")
-	ErrWeakSigningKey       = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
+	ErrMissingCardSimSecret   = errors.New("CARDSIM_WEBHOOK_SECRET is required: it verifies the card simulator's chargeback events")
+	ErrWeakSigningKey         = errors.New("WEBHOOK_SIGNING_KEY must have at least 32 bytes: every merchant's webhook secret is derived from it")
 )
 
 // minSigningKeyBytes is the merchants domain's MinSigningKeyBytes, repeated so that
@@ -28,32 +26,24 @@ type Config struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	DatabaseURL     string
-	// USDBRLRate is the fixed base rate of decision 12, as a decimal string; fx parses
-	// it so that this package does not depend on a domain module.
+	// USDBRLRate is decision 12, parsed by fx so that config imports no domain.
 	USDBRLRate string
-	// PixSimURL is where the PIX simulator answers; every key mode uses it until a
-	// real provider arrives in F9.
-	PixSimURL string
-	// CardSimURL and BoletoSimURL are where the card and boleto simulators answer, as
-	// PixSimURL for PIX.
+	// Every key mode uses the simulators: no real provider is wired (decision 58).
+	PixSimURL    string
 	CardSimURL   string
 	BoletoSimURL string
 	// ProviderTimeout bounds each call to a provider, below the server's write timeout
 	// so that the answer can still be stored and sent.
-	ProviderTimeout time.Duration
-	// PixSimWebhookSecret, CardSimWebhookSecret and BoletoSimWebhookSecret verify the
-	// signatures of each simulator's events.
+	ProviderTimeout        time.Duration
 	PixSimWebhookSecret    string
 	CardSimWebhookSecret   string
 	BoletoSimWebhookSecret string
-	// WebhookSigningKey derives the merchants' webhook secrets; it never enters the
-	// database.
+	// WebhookSigningKey never enters the database.
 	WebhookSigningKey string
 	// WebhookAllowPrivate lets webhooks reach private networks over http, for
 	// development and the GameStore walkthrough. Never in a real deployment.
 	WebhookAllowPrivate bool
-	// WebhookTimeout bounds each post to a merchant: connecting, TLS and the answer.
-	WebhookTimeout time.Duration
+	WebhookTimeout      time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {

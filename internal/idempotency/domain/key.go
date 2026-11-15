@@ -12,7 +12,7 @@ var ErrInvalidKey = errors.New("idempotency: key must have 1 to 255 characters")
 const (
 	// TTL is decision 14: after it, a key is as good as new.
 	TTL = 24 * time.Hour
-	// Lease is decision 52: how long a request holds its key before a retry may resume it.
+	// Lease is decision 52.
 	Lease = 30 * time.Second
 )
 
@@ -52,20 +52,18 @@ const (
 	Completed  Status = "completed"
 )
 
-// RecoveryPoint is how far a request got. Started is the only one this module knows;
-// each endpoint names the phases after it, and a resumed request continues from there.
+// RecoveryPoint: Started is the only one this module knows; each endpoint names the
+// phases after it.
 type RecoveryPoint string
 
 const Started RecoveryPoint = "started"
 
-// Response is what a completed request answered, replayed as is on a retry.
 type Response struct {
 	Status  int
 	Headers map[string]string
 	Body    []byte
 }
 
-// Record is a stored key as Decide needs it.
 type Record struct {
 	Hash        RequestHash
 	Status      Status
@@ -83,7 +81,6 @@ const (
 	Replay
 	// InProgress is the immediate 409 of decision 15.
 	InProgress
-	// Reused is the same key with a different request: 422.
 	Reused
 )
 
@@ -108,12 +105,10 @@ func Decide(r *Record, hash RequestHash, now time.Time) Outcome {
 // or release a key that a retry has resumed since.
 type LeaseToken [16]byte
 
-// Held is a key the caller may run its request under.
 type Held struct {
 	Merchant      MerchantID
 	Key           string
 	Token         LeaseToken
 	RecoveryPoint RecoveryPoint
-	// ResourceID is what an earlier holder created, if it got that far; zero otherwise.
-	ResourceID [16]byte
+	ResourceID    [16]byte
 }

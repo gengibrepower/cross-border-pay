@@ -43,8 +43,7 @@ type putEndpointRequest struct {
 type endpointResponse struct {
 	URL           string `json:"url"`
 	SecretVersion int    `json:"secret_version"`
-	// Secret is present only on the first registration and on a rotation.
-	Secret string `json:"secret,omitempty"`
+	Secret        string `json:"secret,omitempty"`
 	// Decision 24: set while deliveries are stopped; any PUT turns them back on.
 	FailingSince   *time.Time `json:"failing_since,omitempty"`
 	DisabledAt     *time.Time `json:"disabled_at,omitempty"`

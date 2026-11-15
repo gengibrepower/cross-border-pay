@@ -23,7 +23,7 @@ func (id MerchantID) String() string {
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
-// Mode separates test keys, always served by simulators, from live keys (decision 33).
+// Mode is decision 33: test keys are always served by simulators.
 type Mode string
 
 const (
@@ -52,8 +52,7 @@ var (
 	secretLen = encoding.EncodedLen(secretBytes)
 )
 
-// NewKey is a freshly generated API key. Plaintext is shown to the merchant once and
-// never stored; Lookup finds the stored row and Hash checks the rest.
+// NewKey's Plaintext is shown to the merchant once and never stored.
 type NewKey struct {
 	Plaintext string
 	Mode      Mode
@@ -61,8 +60,8 @@ type NewKey struct {
 	Hash      [sha256.Size]byte
 }
 
-// GenerateKey builds sk_<mode>_<lookup>_<secret>. The secret is 256 random bits, so a
-// fast hash is enough: there is no guessable password to slow down an attacker on.
+// GenerateKey: the secret is 256 random bits, so a fast hash is enough; there is no
+// guessable password to slow an attacker down on.
 func GenerateKey(mode Mode, random io.Reader) (NewKey, error) {
 	if _, err := ParseMode(string(mode)); err != nil {
 		return NewKey{}, err
@@ -76,7 +75,6 @@ func GenerateKey(mode Mode, random io.Reader) (NewKey, error) {
 	return NewKey{Plaintext: plaintext, Mode: mode, Lookup: lookup, Hash: sha256.Sum256([]byte(plaintext))}, nil
 }
 
-// ParseKey checks the shape of a presented key and returns its mode and lookup.
 func ParseKey(plaintext string) (Mode, string, error) {
 	parts := strings.Split(plaintext, "_")
 	if len(parts) != 4 || parts[0] != "sk" || len(parts[2]) != lookupLen || len(parts[3]) != secretLen {
@@ -101,7 +99,6 @@ func Matches(plaintext string, storedHash []byte) bool {
 	return subtle.ConstantTimeCompare(sum[:], storedHash) == 1
 }
 
-// Principal is who an authenticated request acts as.
 type Principal struct {
 	MerchantID MerchantID
 	Mode       Mode

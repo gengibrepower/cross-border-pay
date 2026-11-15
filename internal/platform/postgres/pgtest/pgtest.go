@@ -86,15 +86,12 @@ func prepare(ctx context.Context, container *tcpostgres.PostgresContainer) error
 	return nil
 }
 
-// NewDatabase clones the migrated template into a database only this test sees,
-// dropped when the test ends, and returns its connection URL.
 func NewDatabase(t testing.TB) string {
 	t.Helper()
 	return newDatabase(t, " TEMPLATE "+quote(templateName))
 }
 
-// NewEmptyPool connects to a database without the project's migrations, for tests of
-// the migration machinery itself.
+// NewEmptyPool is for tests of the migration machinery itself.
 func NewEmptyPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	return connect(t, newDatabase(t, ""))

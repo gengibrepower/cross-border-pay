@@ -32,7 +32,6 @@ func ParseCurrency(code string) (Currency, error) {
 
 func (c Currency) Code() string { return c.code }
 
-// Exponent is the number of minor-unit digits: 2 means amounts are in cents.
 func (c Currency) Exponent() int { return c.exponent }
 
 func (c Currency) String() string { return c.code }

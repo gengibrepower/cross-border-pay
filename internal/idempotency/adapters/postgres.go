@@ -202,9 +202,8 @@ func (p *Postgres) DeleteExpired(ctx context.Context, cutoff time.Time, limit in
 	return n, nil
 }
 
-// SetRecoveryPoint records how far the request got. It runs on the caller's
-// transaction, so the recovery point commits or rolls back with the work it describes;
-// if the lease was lost it returns ErrLeaseLost and the caller's work must roll back.
+// SetRecoveryPoint runs on the caller's transaction, so the point commits with the
+// work it describes; ErrLeaseLost means that work must roll back.
 func SetRecoveryPoint(ctx context.Context, db idempotencydb.DBTX, held *domain.Held, point domain.RecoveryPoint, resource [16]byte) error {
 	n, err := idempotencydb.New(db).SetRecoveryPoint(ctx, idempotencydb.SetRecoveryPointParams{
 		MerchantID:    uuid(held.Merchant),

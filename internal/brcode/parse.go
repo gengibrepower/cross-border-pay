@@ -107,7 +107,6 @@ func pixAccount(fields map[string]string) (map[string]string, error) {
 	return found, nil
 }
 
-// parseTLV reads a sequence of ID (2 digits), length (2 digits) and value.
 func parseTLV(s string) (map[string]string, error) {
 	fields := map[string]string{}
 	for s != "" {

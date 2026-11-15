@@ -17,8 +17,8 @@ const (
 	SecondCharge       CaseKind = "second_charge"
 )
 
-// Case is money a provider confirmed that confirmed nothing. Payment and Attempt are
-// nil for money that cannot be tied to one, such as the reconciliation's in F9.
+// Case's Payment and Attempt are nil for money that cannot be tied to one, such as
+// what the reconciliation of F10 finds.
 type Case struct {
 	Kind            CaseKind
 	Provider        string

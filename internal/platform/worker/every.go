@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// Every runs fn at once and then every interval until ctx is done. A failed round is
-// logged and the next one runs on schedule: one bad round, such as the database
-// briefly down, must not stop the whole worker the way a failed Job does.
+// Every logs a failed round and runs the next on schedule: the database briefly down
+// must not stop the whole worker the way a failed Job does.
 func Every(name string, interval time.Duration, logger *slog.Logger, fn func(ctx context.Context) error) Job {
 	return Job{Name: name, Run: func(ctx context.Context) error {
 		ticker := time.NewTicker(interval)

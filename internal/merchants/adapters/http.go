@@ -18,14 +18,11 @@ type Authenticator interface {
 
 type principalKey struct{}
 
-// PrincipalFrom returns the merchant the request was authenticated as. ok is false
-// only on a route that RequireAPIKey does not wrap.
 func PrincipalFrom(ctx context.Context) (p domain.Principal, ok bool) {
 	p, ok = ctx.Value(principalKey{}).(domain.Principal)
 	return p, ok
 }
 
-// RequireAPIKey accepts "Authorization: Bearer sk_..." and answers 401 otherwise.
 func RequireAPIKey(auth Authenticator, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

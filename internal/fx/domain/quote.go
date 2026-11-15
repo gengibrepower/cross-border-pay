@@ -14,7 +14,6 @@ var (
 	ErrRateUnavailable = errors.New("fx: rate unavailable")
 )
 
-// BasisPoints are hundredths of a percent: 150 is 1.5%.
 type BasisPoints int64
 
 const fullBasisPoints = 10_000
@@ -24,7 +23,7 @@ type Pricing struct {
 	Fee    BasisPoints
 }
 
-// DefaultPricing is decision 43: 1.5% spread to the payer, 3.0% fee to the merchant.
+// DefaultPricing is decision 43.
 var DefaultPricing = Pricing{Spread: 150, Fee: 300}
 
 func (p Pricing) validate() error {
@@ -106,15 +105,12 @@ func (q *Quote) price(p Pricing) error {
 
 func (q *Quote) Pricing() Pricing { return q.pricing }
 
-// Amount is what the merchant charged, in the base currency.
 func (q *Quote) Amount() money.Money { return q.amount }
 
 func (q *Quote) BaseRate() Rate { return q.baseRate }
 
-// PayerAmount is what the payer pays, in the quote currency, with the spread applied.
 func (q *Quote) PayerAmount() money.Money { return q.payerAmount }
 
-// Converted is PayerAmount back into the base currency at the base rate.
 func (q *Quote) Converted() money.Money { return q.converted }
 
 func (q *Quote) Spread() money.Money { return q.spread }
@@ -132,7 +128,6 @@ func (q *Quote) ExpiresAt() time.Time { return q.expiresAt }
 
 func (q *Quote) Expired(now time.Time) bool { return !now.Before(q.expiresAt) }
 
-// StoredQuote is a quote as stored: every computed amount, not just the inputs.
 type StoredQuote struct {
 	Pricing     Pricing
 	BaseRate    Rate

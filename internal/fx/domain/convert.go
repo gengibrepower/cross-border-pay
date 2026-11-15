@@ -7,8 +7,7 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/money"
 )
 
-// Convert applies the rate in either direction: base amounts are multiplied by it,
-// quote amounts are divided. The result is rounded half-even (decision 11).
+// Convert rounds half-even (decision 11).
 func Convert(m money.Money, r Rate) (money.Money, error) {
 	return convertScaled(m, r, big.NewInt(1), big.NewInt(1))
 }
@@ -44,8 +43,7 @@ func convertScaled(m money.Money, r Rate, num, den *big.Int) (money.Money, error
 	return result, nil
 }
 
-// Share is the part/whole share of total, rounded half-even, in total's currency: the
-// one place outside a conversion where an amount is split.
+// Share is the one place outside a conversion where an amount is split.
 func Share(total money.Money, part, whole int64) (money.Money, error) {
 	if whole <= 0 || part < 0 {
 		return money.Money{}, fmt.Errorf("fx: share %d/%d of %s: part must be non-negative and whole positive", part, whole, total)
@@ -53,7 +51,6 @@ func Share(total money.Money, part, whole int64) (money.Money, error) {
 	return mulRatio(total, part, whole)
 }
 
-// mulRatio returns m × num/den rounded half-even, in m's currency.
 func mulRatio(m money.Money, num, den int64) (money.Money, error) {
 	n := new(big.Int).Mul(big.NewInt(m.Amount()), big.NewInt(num))
 	return toMoney(divRoundHalfEven(n, big.NewInt(den)), m.Currency())
@@ -66,16 +63,14 @@ func toMoney(amount *big.Int, c money.Currency) (money.Money, error) {
 	return money.New(amount.Int64(), c), nil
 }
 
-// scaleExponents adjusts for currencies with different minor-unit digits. BRL and USD
-// both use 2, so today this multiplies by 1.
+// scaleExponents multiplies by 1 today: BRL and USD both have 2 minor digits.
 func scaleExponents(num, den *big.Int, from, to money.Currency) {
 	ten := big.NewInt(10)
 	num.Mul(num, new(big.Int).Exp(ten, big.NewInt(int64(to.Exponent())), nil))
 	den.Mul(den, new(big.Int).Exp(ten, big.NewInt(int64(from.Exponent())), nil))
 }
 
-// divRoundHalfEven is the only rounding rule in the system (section 3.2). den must be
-// positive.
+// divRoundHalfEven is the only rounding rule in the system (section 3.2).
 func divRoundHalfEven(num, den *big.Int) *big.Int {
 	q, rem := new(big.Int).DivMod(num, den, new(big.Int))
 	twiceRem := new(big.Int).Lsh(rem, 1)

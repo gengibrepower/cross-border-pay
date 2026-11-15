@@ -16,8 +16,7 @@ import (
 // with the posting it names or not at all.
 type Reviews struct{}
 
-// Open stores the case unless its charge already has one; opened says which. A charge
-// seen again is not an error, so the caller can skip what it already did.
+// Open: a charge seen again is not an error, so the caller can skip what it already did.
 func (Reviews) Open(ctx context.Context, tx pgx.Tx, c *domain.Case) (opened bool, err error) {
 	_, err = reconciliationdb.New(tx).OpenCase(ctx, reconciliationdb.OpenCaseParams{
 		Kind:            string(c.Kind),

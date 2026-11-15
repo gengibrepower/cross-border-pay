@@ -17,8 +17,7 @@ const (
 
 var ErrInvalidRate = errors.New("fx: invalid rate")
 
-// Rate is how many units of quote one unit of base buys, scaled by 10^8:
-// USD/BRL at 5.0750 is Rate{base: USD, quote: BRL, value: 507_500_000}.
+// Rate is scaled by 10^8: USD/BRL at 5.0750 is value 507_500_000.
 type Rate struct {
 	base  money.Currency
 	quote money.Currency
@@ -35,8 +34,8 @@ func NewRate(base, quote money.Currency, value int64) (Rate, error) {
 	return Rate{base: base, quote: quote, value: value}, nil
 }
 
-// ParseRate reads a plain decimal such as "5.0750". More than 8 decimal places is an
-// error rather than a silent rounding, because rates come from config and must be exact.
+// ParseRate refuses more than 8 decimal places rather than rounding silently: rates
+// come from config and must be exact.
 func ParseRate(base, quote money.Currency, s string) (Rate, error) {
 	intPart, fracPart, _ := strings.Cut(s, ".")
 	if intPart == "" || len(fracPart) > rateDecimals || !digitsOnly(intPart) || !digitsOnly(fracPart) {
@@ -76,7 +75,6 @@ func (r Rate) String() string {
 	return fmt.Sprintf("%s/%s %s", r.base, r.quote, r.Decimal())
 }
 
-// Decimal is the value with all 8 places, e.g. "5.07500000", for APIs and logs.
 func (r Rate) Decimal() string {
 	return fmt.Sprintf("%d.%08d", r.value/rateScale, r.value%rateScale)
 }

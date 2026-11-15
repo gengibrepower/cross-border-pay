@@ -1,5 +1,3 @@
-// Package domain holds the inbox's rules: what an event received from a provider is,
-// how its processing ends and how long a not-yet-applicable one keeps being retried.
 package domain
 
 import (
@@ -20,8 +18,7 @@ const (
 	GiveUpAfter = 24 * time.Hour
 )
 
-// Incoming is a verified event as the provider sent it. Payload and Signature are the
-// exact bytes and header, kept as the proof.
+// Incoming keeps Payload and Signature as the exact bytes and header, as proof.
 type Incoming struct {
 	Provider   string
 	ExternalID string
@@ -42,7 +39,6 @@ func (in *Incoming) Validate() error {
 	return nil
 }
 
-// Event is a stored event being processed.
 type Event struct {
 	ID         [16]byte
 	Provider   string
@@ -53,13 +49,11 @@ type Event struct {
 	ReceivedAt time.Time
 }
 
-// Outcome is how a handler's attempt at an event ends.
 type Outcome int
 
 const (
 	// Processed: the effect was applied, or had already been by another path.
 	Processed Outcome = iota + 1
-	// Ignored: an event type nobody acts on.
 	Ignored
 	// Retry: it cannot be applied yet, such as a payment for an attempt not stored.
 	Retry
@@ -76,8 +70,6 @@ const (
 	StatusFailed    Status = "failed"
 )
 
-// Next is where an event goes after an attempt that ended in o at now: a final status,
-// or pending again at retryAt.
 func (e *Event) Next(o Outcome, now time.Time) (status Status, retryAt time.Time, err error) {
 	switch o {
 	case Processed:
@@ -96,8 +88,6 @@ func (e *Event) Next(o Outcome, now time.Time) (status Status, retryAt time.Time
 	}
 }
 
-// RetryBackoff is the wait after attempts earlier tries: RetryBase · 2^attempts, at
-// most RetryCap.
 func RetryBackoff(attempts int) time.Duration {
 	d := RetryBase
 	for range attempts {

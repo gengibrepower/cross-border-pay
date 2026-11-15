@@ -18,8 +18,8 @@ import (
 	reconciliation "github.com/gengibrepower/cross-border-pay/internal/reconciliation/domain"
 )
 
-// paymentEvents is the bridge that keeps events and payments apart: it hands each
-// provider's events to payments and reads payments' errors as inbox outcomes.
+// paymentEvents keeps events and payments apart: it reads payments' errors as inbox
+// outcomes.
 type paymentEvents struct {
 	clock eventsapp.Clock
 	sinks paymentsadapters.Sinks
@@ -54,8 +54,7 @@ func (h paymentEvents) Handle(ctx context.Context, tx pgx.Tx, e *events.Event) (
 	return r, nil
 }
 
-// merchantOutbox is the bridge that keeps payments from importing events: it hands
-// payments' events to the events outbox, in payments' transaction.
+// merchantOutbox keeps payments from importing events.
 type merchantOutbox struct {
 	outbox eventsadapters.Outbox
 }
@@ -71,8 +70,7 @@ func (o merchantOutbox) Append(ctx context.Context, tx pgx.Tx, e *payments.Merch
 	return nil
 }
 
-// reviewQueue is the bridge that keeps payments from importing reconciliation: it opens
-// payments' review cases in reconciliation's queue, in payments' transaction.
+// reviewQueue keeps payments from importing reconciliation.
 type reviewQueue struct {
 	reviews reconciliationadapters.Reviews
 }
@@ -90,7 +88,6 @@ func (r reviewQueue) Open(ctx context.Context, tx pgx.Tx, c *payments.ReviewCase
 	return opened, nil
 }
 
-// paymentSinks takes the base rate a chargeback's money is bought back at.
 func paymentSinks(rates paymentsapp.RateSource) paymentsadapters.Sinks {
 	return paymentsadapters.Sinks{Outbox: merchantOutbox{}, Reviews: reviewQueue{}, Rates: rates}
 }

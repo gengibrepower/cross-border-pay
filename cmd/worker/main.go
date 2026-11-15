@@ -41,20 +41,13 @@ import (
 
 const (
 	idempotencyCleanupInterval = time.Hour
-	// attemptResolverInterval is how often due attempts are looked for; each attempt's
-	// own backoff lives in its next_check_at.
+	// Each row keeps its own backoff, so the intervals only pace the loops.
 	attemptResolverInterval = time.Second
-	// refundResolverInterval is attemptResolverInterval for refunds.
-	refundResolverInterval = time.Second
-	// settlementInterval is how soon after the local midnight a cutoff is settled; a
-	// cutoff already settled is not taken again.
-	settlementInterval = time.Minute
-	// inboxInterval paces the inbox; a pending event's own backoff is in its row.
-	inboxInterval = time.Second
-	// expiryInterval is how often expired quotes are looked for; a payment the provider
-	// could not be asked about comes back once its lease ends.
-	expiryInterval = time.Second
-	// webhookInterval paces the delivery rounds; each event's backoff is in its row.
+	refundResolverInterval  = time.Second
+	// A cutoff already settled is not taken again.
+	settlementInterval     = time.Minute
+	inboxInterval          = time.Second
+	expiryInterval         = time.Second
 	webhookInterval        = time.Second
 	webhookCleanupInterval = time.Hour
 )
