@@ -756,7 +756,8 @@ F0–F5 + README; F6 logo depois.
   simuladores; conciliação diária com os casos da seção 4.8 contra o extrato dos
   simuladores; CNAB 240 só o retorno, se sobrar tempo. *Pronto quando*: teste citado 5
   passa; falhas injetadas não perdem nem duplicam dinheiro; cada divergência da 4.8 vira
-  lançamento ou caso.
+  lançamento ou caso. Pronta em 15/11/2026, sem o CNAB 240; plano e registro em
+  `docs/f10.md`.
 
 **Fase 4 — Entrega**
 
