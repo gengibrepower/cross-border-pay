@@ -49,7 +49,7 @@ To work on the code you also need [mise](https://mise.jdx.dev): `mise install` b
 3. **Dual writes without distributed transactions.** The database and the provider never share a transaction. Intent is recorded first, ambiguous results become `unknown` instead of failures, and inbox/outbox tables carry events in and out.
 4. **Tolerance to a hostile outside world.** Providers that lag, duplicate, reorder or vanish, and merchants whose endpoints are down.
 
-## What is proven so far
+## What is proven
 
 Every number below is measured, not estimated. Every test that touches the database runs against a **real PostgreSQL 18** in a container (`testcontainers-go`), never a mocked one; domain tests do no I/O at all.
 
@@ -583,7 +583,7 @@ The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Ledger storage:** Postgres behind a `Ledger` interface; balances derived from entries.<br>*Discarded:* A custom ledger engine (future project); a cached balance, until load tests justify it.
 
-- **Isolation:** `READ COMMITTED` + `SELECT … FOR UPDATE` on accounts, locked in ascending ID order to prevent deadlocks.<br>*Discarded:* `SERIALIZABLE` with retries: planned as a comparative benchmark.
+- **Isolation:** `READ COMMITTED` + `SELECT … FOR UPDATE` on accounts, locked in ascending ID order to prevent deadlocks.<br>*Discarded:* `SERIALIZABLE` with retries: more aborted transactions under contention, for a guarantee the row locks already give.
 
 - **Immutability:** Ledger entries can never be updated or deleted, enforced by database triggers; corrections are new transactions.<br>*Discarded:* Editable rows: an audit trail you cannot trust.
 
@@ -640,7 +640,7 @@ The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Capture idempotency:** None needed: an authorization is captured once, so the same capture is answered as it is and another amount is a `409`, even after a capture the acquirer may not have received.<br>*Discarded:* An Idempotency-Key: a second key with another amount could capture twice.
 
-- **Boleto confirmation:** The simulator's signed `boleto.paid`, through the same inbox as PIX; the CNAB 240 return file may come in F10 as the reconciliation's evidence.<br>*Discarded:* Waiting for CNAB: F8's boleto would depend on a later parser, and a real bank announces the payment before the next day's file anyway.
+- **Boleto confirmation:** The simulator's signed `boleto.paid`, through the same inbox as PIX; the CNAB 240 return file was left out of F10, whose reconciliation reads the simulators' statements instead.<br>*Discarded:* Waiting for CNAB: F8's boleto would depend on a later parser, and a real bank announces the payment before the next day's file anyway.
 
 - **Boleto due date:** Three calendar days in `America/Sao_Paulo` (decision 44), received until the end of the first banking day on or after it; the quote lasts until then, and the date is stored with the attempt.<br>*Discarded:* Computing the due date on every call: a create resumed after midnight would ask for another boleto with the same key. Three business days: decision 44 says calendar days, and the banking day already enters the last day to receive.
 
@@ -691,7 +691,7 @@ The full list of 58 closed decisions, with reasoning, is in [docs/escopo.md §11
 
 - **Invariant 7, one confirmation per payment:** Two barriers: the payment's lock with the state machine (`paid` + `confirm` is a no-op), and a unique ledger reference `payment:<id>:confirm` that refuses a second post if the first barrier ever breaks.<br>*Discarded:* Trusting the status alone: one bug in a path and the money is counted twice.
 
-- **Who owns the review queue:** The `reconciliation` module (section 2.1), with only `review_cases` for now; payments opens cases through a port bridged in `cmd`, as with the outbox.<br>*Discarded:* A table in payments: F10's reconciliation would need a second queue or a data migration. The inbox's `failed`: it holds no ledger posting, and the expiry job has no event.
+- **Who owns the review queue:** The `reconciliation` module (section 2.1), which also runs the daily reconciliation since F10; payments opens cases through a port bridged in `cmd`, as with the outbox.<br>*Discarded:* A table in payments: F10's reconciliation would need a second queue or a data migration. The inbox's `failed`: it holds no ledger posting, and the expiry job has no event.
 
 - **Payment of a closed payment:** Late or another amount: the attempt `succeeded` (the provider has the money), the payment untouched, the money held.<br>*Discarded:* Undoing everything, as before: the money stayed outside the ledger, and a late event left the attempt halfway.
 
