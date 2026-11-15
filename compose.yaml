@@ -1,8 +1,11 @@
-# The whole gateway, locally: `docker compose up -d`. `mise run db` starts only postgres.
+# The whole gateway, locally: `docker compose up -d`, then `docker compose run --rm demo`.
+# `mise run db` starts only postgres.
 # Every secret here is for development only; a real deployment sets its own.
 x-gateway: &gateway
-  build: .
+  # Built once, by migrate; the other services reuse the image instead of racing to
+  # build the same tag.
   image: cross-border-pay
+  pull_policy: never
   restart: unless-stopped
   environment: &env
     DATABASE_URL: postgres://cbp:cbp@postgres:5432/cbp?sslmode=disable
@@ -40,6 +43,7 @@ services:
 
   migrate:
     <<: *gateway
+    build: .
     command: ["migrate"]
     restart: "no"
     depends_on:
@@ -82,6 +86,21 @@ services:
       BOLETOSIM_WEBHOOK_SECRET: dev-boletosim-webhook-secret
     ports:
       - "127.0.0.1:8092:8092"
+
+  # The GameStore story (docs/f11.md): `docker compose run --rm demo`. The profile keeps
+  # `up` from running it.
+  demo:
+    <<: *gateway
+    command: ["demo"]
+    restart: "no"
+    profiles: [demo]
+    depends_on: [api, worker, pixsim, cardsim]
+    environment:
+      DATABASE_URL: postgres://cbp:cbp@postgres:5432/cbp?sslmode=disable
+      DEMO_API_URL: http://api:8080
+      DEMO_PIXSIM_URL: http://pixsim:8090
+      DEMO_CARDSIM_URL: http://cardsim:8091
+      DEMO_ADDR: ":9000"
 
 volumes:
   pgdata:

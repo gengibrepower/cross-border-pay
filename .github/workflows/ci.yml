@@ -47,5 +47,6 @@ jobs:
           for url in localhost:8080/readyz localhost:8090/healthz localhost:8091/healthz localhost:8092/healthz; do
             timeout 60 sh -c "until curl -sf $url >/dev/null; do sleep 1; done" || { echo "$url never answered"; exit 1; }
           done
+      - run: docker compose run --rm demo
       - if: failure()
         run: docker compose logs
