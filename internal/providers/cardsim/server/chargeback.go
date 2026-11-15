@@ -13,9 +13,8 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/simkit"
 )
 
-// openChargeback plays the cardholder's bank: it takes back part or all of a capture,
-// never more than is left of it after earlier chargebacks. Refunds do not count: a
-// cardholder refunded can still dispute, and the money leaves twice (decision 7).
+// openChargeback never takes more than is left after earlier chargebacks. Refunds do
+// not count: a refunded cardholder can still dispute (decision 7).
 func (s *Simulator) openChargeback(w http.ResponseWriter, r *http.Request) {
 	var req cardsim.OpenChargeback
 	if err := simkit.Decode(w, r, &req); err != nil {
@@ -75,8 +74,8 @@ func (s *Simulator) openChargeback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// record keeps the event of the chargeback as it is now; the caller holds s.mu. Its ID
-// comes from the chargeback and the event's type, so each fact has one.
+// record: the caller holds s.mu. The ID comes from the chargeback and the event's
+// type, so each fact has one.
 func (s *Simulator) record(t cardsim.EventType, cb *cardsim.Chargeback) []byte {
 	e := cardsim.Event{
 		ID:   "evt_" + simkit.Text(s.seed.RNG(string(t)+"\x00"+cb.ID), idLength),
@@ -85,8 +84,8 @@ func (s *Simulator) record(t cardsim.EventType, cb *cardsim.Chargeback) []byte {
 	return s.webhook.Record(e.ID, &e)
 }
 
-// deliver posts the event; a client that gives up must not cut it short, and a failed
-// delivery does not undo the fact, which a redelivery sends again.
+// deliver: a client that gives up must not cut it short, and a failed delivery does
+// not undo the fact.
 func (s *Simulator) deliver(r *http.Request, chargeback string, event []byte) {
 	if event == nil {
 		return
@@ -116,9 +115,6 @@ func (s *Simulator) getChargeback(w http.ResponseWriter, r *http.Request) {
 	simkit.WriteJSON(w, http.StatusOK, out)
 }
 
-// accept closes the chargeback as lost, which sends chargeback.closed. Accepting a
-// chargeback the merchant accepted already returns it as it is; one under review or
-// decided cannot be accepted.
 func (s *Simulator) accept(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, func(cb *cardsim.Chargeback) (bool, string) {
 		switch cb.Status {
@@ -134,8 +130,6 @@ func (s *Simulator) accept(w http.ResponseWriter, r *http.Request) {
 	}, cardsim.Lost)
 }
 
-// contest sends the evidence and leaves the chargeback under review, until the
-// issuer's decision (resolve). Contesting again returns it as it is.
 func (s *Simulator) contest(w http.ResponseWriter, r *http.Request) {
 	var req cardsim.Contest
 	if err := simkit.Decode(w, r, &req); err != nil {
@@ -160,8 +154,6 @@ func (s *Simulator) contest(w http.ResponseWriter, r *http.Request) {
 	}, cardsim.UnderReview)
 }
 
-// respond moves the chargeback to status when decide says so. The move to a closed
-// status sends chargeback.closed.
 func (s *Simulator) respond(w http.ResponseWriter, r *http.Request, decide func(*cardsim.Chargeback) (move bool, refusal string), status cardsim.ChargebackStatus) {
 	fault := s.faults.Next(cardsim.OpRespond)
 	if !simkit.Before(w, r, &fault) {
@@ -196,8 +188,7 @@ func (s *Simulator) respond(w http.ResponseWriter, r *http.Request, decide func(
 	}
 }
 
-// move sets the status and, for Won or Lost, the closing time and its event; the
-// caller holds s.mu.
+// move: the caller holds s.mu.
 func (s *Simulator) move(cb *cardsim.Chargeback, status cardsim.ChargebackStatus) []byte {
 	cb.Status = status
 	if status != cardsim.Won && status != cardsim.Lost {
@@ -208,9 +199,7 @@ func (s *Simulator) move(cb *cardsim.Chargeback, status cardsim.ChargebackStatus
 	return s.record(cardsim.ChargebackClosed, cb)
 }
 
-// resolve plays the issuer: a contested chargeback is won or lost, and one nobody
-// answered is lost when its time to answer runs out. The same outcome again returns
-// the chargeback as it is.
+// resolve plays the issuer. The same outcome again returns the chargeback as it is.
 func (s *Simulator) resolve(w http.ResponseWriter, r *http.Request) {
 	var req cardsim.ResolveChargeback
 	if err := simkit.Decode(w, r, &req); err != nil {

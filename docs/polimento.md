@@ -117,7 +117,7 @@ Marque `[x]` ao terminar e anote o número da PR.
   `simkit` (64), `webhooks/app` (48), `boleto` (47). Alvo: menos da metade das 1.630
   linhas.
   Feito: `payments/domain` 300 → 159 (#59); `payments/app` 238 → 141 (#60);
-  `payments/adapters` 209 → 122 (#61).
+  `payments/adapters` 209 → 122 (#61); `providers/cardsim` 108 → 43, com o `server/` (#62).
 - [ ] **3. Duplicação no código de produção.**
   - `HandlePixSimEvent` e `HandleBoletoSimEvent` (`payments/adapters/events.go`) são o
     mesmo código com tipos diferentes. Basta uma função que receba o que muda.
@@ -158,6 +158,7 @@ Marque `[x]` ao terminar e anote o número da PR.
 | 15/11/2026 | 2. Comentários: `payments/domain` | #59 | 16.990 | 1.487 | 19.009 | 300 → 159 no pacote |
 | 15/11/2026 | 2. Comentários: `payments/app` | #60 | 16.893 | 1.390 | 19.009 | 238 → 141 no pacote |
 | 15/11/2026 | 2. Comentários: `payments/adapters` | #61 | 16.806 | 1.303 | 19.009 | 209 → 122 no pacote |
+| 15/11/2026 | 2. Comentários: `providers/cardsim` | #62 | 16.741 | 1.238 | 19.009 | 108 → 43 no pacote |
 
 ## 8. Como retomar numa sessão nova
 

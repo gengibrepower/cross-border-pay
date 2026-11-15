@@ -1,5 +1,5 @@
-// Package server is the card simulator: an acquirer that keeps its authorizations in
-// memory, derives every random choice from a seed and fails on command.
+// Package server is the card simulator: in memory, every random choice from a seed,
+// failing on command.
 package server
 
 import (
@@ -20,8 +20,7 @@ const idLength = 20
 
 type Config struct {
 	Seed uint64
-	// WebhookURL receives an event, signed with WebhookSecret, for every chargeback
-	// opened or closed. Without it the simulator sends nothing.
+	// Without WebhookURL the simulator sends nothing.
 	WebhookURL    string
 	WebhookSecret []byte
 }
@@ -31,9 +30,8 @@ type Clock = simkit.Clock
 type authRecord struct {
 	req  cardsim.Authorize
 	auth cardsim.Authorization
-	// refunded is what completed refunds returned, and chargedBack what chargebacks
-	// took, in minor units. Each is bounded by the capture on its own: a chargeback
-	// can take back what a refund already returned (decision 7).
+	// refunded and chargedBack are each bounded by the capture on its own: a
+	// chargeback can take back what a refund already returned (decision 7).
 	refunded    int64
 	chargedBack int64
 	chargebacks int
@@ -135,8 +133,7 @@ func (s *Simulator) get(w http.ResponseWriter, r *http.Request) {
 	simkit.WriteJSON(w, http.StatusOK, a)
 }
 
-// store decides the authorization once per key. Every random choice comes from a
-// generator seeded by the simulator's seed and the key.
+// store seeds every random choice with the simulator's seed and the key.
 func (s *Simulator) store(key string, req *cardsim.Authorize, reject bool) (cardsim.Authorization, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,8 +171,8 @@ func (s *Simulator) store(key string, req *cardsim.Authorize, reject bool) (card
 	return a, nil
 }
 
-// current is the authorization as of now; the caller holds s.mu. An authorization
-// past its validity has expired, whoever asks first: every read checks the deadline.
+// current: the caller holds s.mu. Every read checks the deadline, so an authorization
+// past it has expired whoever asks first.
 func (s *Simulator) current(rec *authRecord) cardsim.Authorization {
 	if rec.auth.Status == cardsim.Authorized && !s.clock.Now().Before(rec.auth.ExpiresAt) {
 		rec.auth.Status = cardsim.Expired
@@ -183,9 +180,8 @@ func (s *Simulator) current(rec *authRecord) cardsim.Authorization {
 	return rec.auth
 }
 
-// capture charges once: the same amount again returns the same authorization, as a
-// retry after a lost answer needs; another amount, more than was authorized, or an
-// authorization that is not live is refused.
+// capture: the same amount again returns the same authorization, as a retry after a
+// lost answer needs.
 func (s *Simulator) capture(w http.ResponseWriter, r *http.Request) {
 	var req cardsim.Capture
 	if err := simkit.Decode(w, r, &req); err != nil {
@@ -236,8 +232,8 @@ func (s *Simulator) doCapture(id string, amount money.Money) (a cardsim.Authoriz
 	return rec.auth, true, ""
 }
 
-// void releases a live authorization; a voided one is returned as it is, so a retry
-// after a lost answer gets the same answer, and any other status is refused.
+// void returns a voided authorization as it is, so a retry after a lost answer gets
+// the same answer.
 func (s *Simulator) void(w http.ResponseWriter, r *http.Request) {
 	fault := s.faults.Next(cardsim.OpVoid)
 	if !simkit.Before(w, r, &fault) {
@@ -309,8 +305,7 @@ func (s *Simulator) refund(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// storeRefund decides the refund once per key and keeps it, rejected too. Like the
-// PIX simulator, it holds invariant 8 on its own side: never more than was captured.
+// storeRefund keeps a rejected refund too, and holds invariant 8 on its own side.
 func (s *Simulator) storeRefund(key, id string, req *cardsim.CreateRefund, reject bool) (cardsim.Refund, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
