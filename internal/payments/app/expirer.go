@@ -15,8 +15,8 @@ import (
 const ExpiryBatch = 10
 
 type ExpiryQueue interface {
-	// ClaimDueExpiries takes up to limit pending payments whose quote expired by now and
-	// moves their next look to leaseUntil, so no other worker takes them meanwhile.
+	// ClaimDueExpiries leases the payments until leaseUntil, so no other worker takes
+	// them meanwhile.
 	ClaimDueExpiries(ctx context.Context, now, leaseUntil time.Time, limit int) ([]domain.PaymentID, error)
 	LatestAttempt(ctx context.Context, payment domain.PaymentID) (domain.PaymentAttempt, bool, error)
 	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
@@ -24,9 +24,8 @@ type ExpiryQueue interface {
 	Expire(ctx context.Context, id domain.PaymentID, now time.Time) (bool, error)
 }
 
-// Expirer closes payments whose quote ran out. It expires one only after asking the
-// provider: a payer who paid on time is confirmed, however late the news of it is, and
-// money paid late is posted as a divergence before the payment expires.
+// Expirer asks the provider before expiring: a payer who paid on time is confirmed
+// however late the news is, and money paid late is posted as a divergence first.
 type Expirer struct {
 	queue           ExpiryQueue
 	providers       *Providers
@@ -39,8 +38,7 @@ func NewExpirer(queue ExpiryQueue, providers *Providers, clock Clock, logger *sl
 	return &Expirer{queue: queue, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
-// Expire checks one batch of due payments and returns how many it claimed. One payment
-// failing does not stop the others; their errors are joined.
+// Expire returns how many it claimed. One payment failing does not stop the others.
 func (x *Expirer) Expire(ctx context.Context, limit int) (int, error) {
 	now := x.clock.Now()
 	due, err := x.queue.ClaimDueExpiries(ctx, now, now.Add(ClaimLease), limit)
@@ -59,8 +57,8 @@ func (x *Expirer) Expire(ctx context.Context, limit int) (int, error) {
 	return len(due), errors.Join(errs...)
 }
 
-// check decides nothing when the provider cannot answer: the payment stays pending and
-// comes back once the lease ends (decision 17's rule, applied to expiry).
+// check decides nothing when the provider cannot answer: the payment comes back once
+// the lease ends (decision 17).
 func (x *Expirer) check(ctx context.Context, id domain.PaymentID) error {
 	a, ok, err := x.queue.LatestAttempt(ctx, id)
 	if err != nil {
@@ -86,10 +84,8 @@ type attemptApplier interface {
 	ApplyAttempt(ctx context.Context, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) (domain.PaymentAttempt, bool, error)
 }
 
-// applyIfPaid asks the provider whether the attempt was paid and applies the payment if
-// so, which either confirms it or posts the money as a divergence. Every path that
-// closes a pending payment runs it first, so a payer who paid on time is never turned
-// away because the news was slow.
+// applyIfPaid runs before every path that closes a pending payment, so a payer who
+// paid on time is never turned away because the news was slow.
 func applyIfPaid(ctx context.Context, providers *Providers, timeout time.Duration, applier attemptApplier, clock Clock, a *domain.PaymentAttempt) error {
 	provider, err := providers.Named(a.Provider())
 	if err != nil {

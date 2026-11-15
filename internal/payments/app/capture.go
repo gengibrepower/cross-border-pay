@@ -11,32 +11,26 @@ import (
 )
 
 var (
-	// ErrNotCapturable is a payment with no authorization to capture: not a card, not
-	// authorized, declined, already closed, or refused by the acquirer.
 	ErrNotCapturable = errors.New("payments: payment cannot be captured")
-	// ErrCaptureInProgress is a capture whose earlier answer was lost: the resolver
-	// finds out what happened before anything else is tried.
+	// ErrCaptureInProgress: the resolver finds out what a lost answer did before
+	// anything else is tried.
 	ErrCaptureInProgress = errors.New("payments: a capture of this payment is still unresolved")
-	// ErrCaptureConflict is a capture of another amount than the one already started or
-	// taken: an authorization is captured once.
-	ErrCaptureConflict = errors.New("payments: payment is already captured for another amount")
-	// ErrAuthorizationExpired is a capture after the authorization's validity.
+	// ErrCaptureConflict: an authorization is captured once.
+	ErrCaptureConflict      = errors.New("payments: payment is already captured for another amount")
 	ErrAuthorizationExpired = errors.New("payments: authorization expired")
 )
 
-// PreparedCapture is a capture ready for the acquirer, or Done when the payment was
-// already captured for that amount and the call is a retry to answer as it is.
+// PreparedCapture is Done when the call is a retry of a capture already taken.
 type PreparedCapture struct {
 	Attempt domain.PaymentAttempt
 	Quote   fx.Quote
 	Done    bool
 }
 
-// Capture takes amount, the whole payment when nil, of an authorized card payment
-// (decision 18). The quote of what it takes is stored before the acquirer is called,
-// so the capture is the same however often it is retried, and so a capture whose
-// answer was lost is confirmed against it by the resolver. A capture is final: the
-// rest of the authorization is released, and refunds stop at what was captured.
+// Capture takes amount, the whole payment when nil (decision 18). Its quote is stored
+// before the acquirer is called, so a retry captures the same and the resolver can
+// confirm a lost answer against it. A capture is final: the rest of the authorization
+// is released.
 func (s *Service) Capture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money) (Priced, error) {
 	c, err := s.store.PrepareCapture(ctx, merchant, id, amount, s.clock.Now())
 	if err != nil {
@@ -87,9 +81,8 @@ func (s *Service) capturer(a *domain.PaymentAttempt) (Capturer, error) {
 	return capturer, nil
 }
 
-// void releases a canceled payment's authorization. It is best effort: an
-// authorization not voided lapses on its own when it expires, and no capture of a
-// canceled payment is ever asked for.
+// void is best effort: an authorization not voided lapses on its own, and a canceled
+// payment is never captured.
 func (s *Service) void(ctx context.Context, a *domain.PaymentAttempt) {
 	if a.Status() != domain.AttemptAccepted || !a.Card().ManualCapture {
 		return

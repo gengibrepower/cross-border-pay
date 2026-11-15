@@ -12,10 +12,8 @@ import (
 
 var ErrChargebackNotFound = errors.New("payments: chargeback not found")
 
-// Disputer is a provider that takes the merchant's answer to a chargeback, by the ID
-// the provider gave it. Each answer returns the chargeback's status after it; answering
-// again the same way returns it as it is. domain.ErrChargebackClosed is the provider
-// refusing an answer the chargeback can no longer take.
+// Disputer answers again the same way as it is. domain.ErrChargebackClosed is the
+// provider refusing an answer the chargeback can no longer take.
 type Disputer interface {
 	AcceptChargeback(ctx context.Context, externalID string) (domain.ChargebackStatus, error)
 	ContestChargeback(ctx context.Context, externalID, evidence string) (domain.ChargebackStatus, error)
@@ -24,15 +22,12 @@ type Disputer interface {
 type ChargebackStore interface {
 	// GetChargeback returns ErrChargebackNotFound unless the merchant's payment has it.
 	GetChargeback(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID) (domain.ChargebackCase, error)
-	// AnswerChargeback stores the status the provider answered with, and the evidence
-	// of a contest.
 	AnswerChargeback(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID, to domain.ChargebackStatus, evidence string, now time.Time) (domain.ChargebackCase, error)
 }
 
-// Chargebacks is the merchant's side of a dispute (section 4.7): the money left when
-// the chargeback opened; accepting gives it up, contesting asks the issuer for it back.
-// Neither takes an Idempotency-Key: the provider answers the same answer again as it
-// is, so a retry after a lost answer is safe.
+// Chargebacks is the merchant's side of section 4.7. Neither answer takes an
+// Idempotency-Key: the provider answers a repeated answer as it is, so a retry after a
+// lost answer is safe.
 type Chargebacks struct {
 	store           ChargebackStore
 	disputers       map[domain.ProviderName]Disputer
@@ -53,16 +48,13 @@ func (c *Chargebacks) Get(ctx context.Context, merchant domain.MerchantID, id do
 	return cb, nil
 }
 
-// Accept gives the chargeback up: lost. One the merchant already lost is returned as it
-// is; one contested or decided is domain.ErrChargebackClosed.
 func (c *Chargebacks) Accept(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID) (domain.ChargebackCase, error) {
 	return c.answer(ctx, merchant, id, domain.Lost, "", func(ctx context.Context, d Disputer, ext string) (domain.ChargebackStatus, error) {
 		return d.AcceptChargeback(ctx, ext)
 	})
 }
 
-// Contest sends the evidence: under review until the issuer decides, which arrives as
-// the provider's event. One under review already is returned as it is.
+// Contest leaves the chargeback under review until the provider's event decides it.
 func (c *Chargebacks) Contest(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID, evidence string) (domain.ChargebackCase, error) {
 	ev, err := domain.NewEvidence(evidence)
 	if err != nil {

@@ -14,14 +14,12 @@ import (
 )
 
 var (
-	// ErrPaymentNotRefundable is a refund of a payment that is not paid, or already
-	// refunded in full.
 	ErrPaymentNotRefundable = errors.New("payments: only a paid payment can be refunded")
 	ErrRefundNotFound       = errors.New("payments: refund not found")
 )
 
-// RefundRequested is the recovery point of a refund whose row and hold are stored: a
-// resumed request carries on from the refund's status instead of creating another.
+// RefundRequested: a resumed request carries on from the refund's status instead of
+// creating another.
 const RefundRequested idempotency.RecoveryPoint = "refund_requested"
 
 type RateSource interface {
@@ -29,24 +27,18 @@ type RateSource interface {
 }
 
 type RefundStore interface {
-	// CreateRefund locks the merchant's payment, prices the refund against the ones
-	// that still count, and stores it in created, at the provider of the paid attempt,
-	// with its hold posted and the RefundRequested recovery point, or none of them.
+	// CreateRefund locks the payment and stores the refund, its hold and the
+	// RefundRequested recovery point together, or none of them.
 	CreateRefund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money, now time.Time) (domain.Refund, error)
 	// GetRefund returns ErrRefundNotFound unless the merchant owns the refund's payment.
 	GetRefund(ctx context.Context, merchant domain.MerchantID, id domain.RefundID) (domain.Refund, error)
-	// PaidAttempt is the attempt that collected the payment, whose charge a refund
-	// returns money from.
 	PaidAttempt(ctx context.Context, payment domain.PaymentID) (domain.PaymentAttempt, error)
-	// ApplyRefund moves the refund by u and posts what its new status means: the money
-	// gone back, bought back at rate, with the payment's new status and
-	// refund.succeeded; or the hold released with refund.failed. changed is false for a
-	// duplicate.
+	// ApplyRefund posts what the new status means, at rate, with its event in the
+	// outbox. changed is false for a duplicate.
 	ApplyRefund(ctx context.Context, id domain.RefundID, u *domain.RefundUpdate, rate fx.Rate, now time.Time) (domain.Refund, bool, error)
 }
 
-// Refunder returns money of paid payments to their payers (section 4.7), with the same
-// double-write rules as attempts (section 4.3).
+// Refunder is section 4.7, with the double-write rules of attempts (section 4.3).
 type Refunder struct {
 	rates           RateSource
 	store           RefundStore
@@ -60,9 +52,8 @@ func NewRefunder(rates RateSource, store RefundStore, providers *Providers, cloc
 	return &Refunder{rates: rates, store: store, providers: providers, clock: clock, logger: logger, providerTimeout: providerTimeout}
 }
 
-// Refund refunds amount of the payment under the idempotency key held. The rate that
-// prices the money gone back is today's, taken first: without it nothing is stored and
-// the provider is not called.
+// Refund takes today's rate first: without it nothing is stored and the provider is
+// not called.
 func (r *Refunder) Refund(ctx context.Context, held *idempotency.Held, merchant domain.MerchantID, payment domain.PaymentID, amount money.Money) (domain.Refund, error) {
 	rate, err := r.rates.Rate(ctx, domain.ChargeCurrency, money.BRL)
 	if err != nil {
@@ -89,8 +80,7 @@ func (r *Refunder) Refund(ctx context.Context, held *idempotency.Held, merchant 
 	return refund, nil
 }
 
-// send is request for refunds: created means the provider was certainly not called,
-// sent that it may have been, anything else that the answer is stored.
+// send is request for refunds.
 func (r *Refunder) send(ctx context.Context, refund *domain.Refund, rate fx.Rate) (domain.Refund, error) {
 	switch refund.Status() {
 	case domain.RefundCreated:
@@ -123,7 +113,7 @@ func (r *Refunder) send(ctx context.Context, refund *domain.Refund, rate fx.Rate
 	return r.apply(ctx, &sent, &u, rate)
 }
 
-// call asks the provider for the refund. Any error is ambiguous, never a refusal.
+// call reads any error as ambiguous, never a refusal.
 func (r *Refunder) call(ctx context.Context, provider Provider, refund *domain.Refund, charge string) domain.RefundUpdate {
 	ctx, cancel := context.WithTimeout(ctx, r.providerTimeout)
 	defer cancel()
@@ -145,8 +135,7 @@ func (r *Refunder) apply(ctx context.Context, refund *domain.Refund, u *domain.R
 	return next, nil
 }
 
-// Update is the result as a change to the refund. An outcome the adapter left unset is
-// ambiguous, not a refusal.
+// Update reads an unset outcome as ambiguous, not a refusal.
 func (r *RefundResult) Update() domain.RefundUpdate {
 	switch r.Outcome {
 	case RefundSucceeded:
