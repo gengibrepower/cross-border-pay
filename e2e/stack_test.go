@@ -52,7 +52,7 @@ func TestMain(m *testing.M) {
 	}
 	bin = dir
 	build := exec.CommandContext(context.Background(), "go", "build", //nolint:gosec // G204: a fixed go build into a directory TestMain made.
-		"-race", "-o", dir+string(os.PathSeparator), "./cmd/api", "./cmd/worker", "./cmd/pixsim", "./cmd/cardsim", "./cmd/boletosim", "./cmd/migrate", "./cmd/admin")
+		"-race", "-o", dir+string(os.PathSeparator), "./cmd/api", "./cmd/worker", "./cmd/pixsim", "./cmd/cardsim", "./cmd/boletosim", "./cmd/migrate", "./cmd/admin", "./cmd/demo")
 	build.Dir = ".."
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
