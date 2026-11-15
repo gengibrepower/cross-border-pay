@@ -12,8 +12,7 @@ import (
 
 const BoletoSimName domain.ProviderName = "boletosim"
 
-// BoletoSim is the app.Provider of the boleto simulator. Only boletosim.ErrRejected
-// becomes a result; every other error is returned, which the caller reads as unknown.
+// BoletoSim: only boletosim.ErrRejected becomes a result; any other error is unknown.
 type BoletoSim struct {
 	client *boletosim.Client
 }
@@ -56,9 +55,8 @@ func (p *BoletoSim) GetAttempt(ctx context.Context, id domain.AttemptID) (app.At
 	return boletoResult(&b)
 }
 
-// boletoResult reads an expired boleto as accepted: it was registered and nobody paid
-// it, so the attempt stands as it was and the payment expires by its own quote, which
-// ends with the boleto's last day (decision 44).
+// boletoResult reads an expired boleto as accepted: the payment expires by its own
+// quote, which ends with the boleto's last day (decision 44).
 func boletoResult(b *boletosim.Boleto) (app.AttemptResult, error) {
 	r := app.AttemptResult{ExternalID: b.ID}
 	switch b.Status {

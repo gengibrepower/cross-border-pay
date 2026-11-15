@@ -19,8 +19,6 @@ type Chargebacks interface {
 	Contest(ctx context.Context, merchant domain.MerchantID, id domain.ChargebackID, evidence string) (domain.ChargebackCase, error)
 }
 
-// chargebackResponse is a chargeback as the merchant sees it: what the bank took back
-// from the payer, what the merchant lost with it, and where the dispute is.
 type chargebackResponse struct {
 	ID          string                  `json:"id"`
 	PaymentID   string                  `json:"payment_id"`

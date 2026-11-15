@@ -12,8 +12,7 @@ import (
 
 const PixSimName domain.ProviderName = "pixsim"
 
-// PixSim is the app.Provider of the PIX simulator. Only pixsim.ErrRejected becomes a
-// result; every other error is returned, which the caller reads as unknown.
+// PixSim: only pixsim.ErrRejected becomes a result; any other error is unknown.
 type PixSim struct {
 	client *pixsim.Client
 }

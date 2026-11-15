@@ -13,14 +13,10 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/payments/domain"
 )
 
-// errUnpostable is money the provider confirmed that the ledger cannot hold: without its
-// charge, without an amount, or in a currency the payment was not quoted in.
 var errUnpostable = errors.New("the provider confirmed money the ledger cannot hold")
 
-// diverge posts money the provider confirmed that confirms nothing to the divergence
-// account and opens its review case (section 4.4). The case's unique charge is what
-// makes a charge reported twice, by its event and by the expiry job, post once: only
-// the call that opens it posts. The payment is left as it is.
+// diverge is section 4.4. The case's unique charge makes a charge reported twice, by
+// its event and by the expiry job, post once: only the call that opens it posts.
 func diverge(ctx context.Context, tx pgx.Tx, reviews Reviews, pay *paymentsdb.LockPaymentOfAttemptRow, attempt *domain.PaymentAttempt, kind domain.DivergenceKind, u *domain.AttemptUpdate, cause error, now time.Time) error {
 	charge := u.ExternalID
 	if charge == "" {

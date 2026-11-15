@@ -34,8 +34,7 @@ type refundResponse struct {
 	CreatedAt   time.Time    `json:"created_at"`
 }
 
-// refundStatus hides the refund's internal statuses, as pixResponse does the attempt's:
-// a merchant only needs to know whether the money went back, will not, or is on its way.
+// refundStatus hides the refund's internal statuses, as pixResponse does.
 type refundStatus string
 
 const (

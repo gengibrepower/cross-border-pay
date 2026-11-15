@@ -30,7 +30,6 @@ func (p *Postgres) ClaimDueExpiries(ctx context.Context, now, leaseUntil time.Ti
 	return ids, nil
 }
 
-// LatestAttempt returns the payment's newest attempt; ok is false when it has none.
 func (p *Postgres) LatestAttempt(ctx context.Context, payment domain.PaymentID) (a domain.PaymentAttempt, ok bool, err error) {
 	rows, err := paymentsdb.New(p.pool).LatestAttempts(ctx, []pgtype.UUID{{Bytes: payment, Valid: true}})
 	if err != nil {
@@ -46,9 +45,7 @@ func (p *Postgres) LatestAttempt(ctx context.Context, payment domain.PaymentID) 
 	return a, true, nil
 }
 
-// Expire moves a pending payment whose quote has expired to expired and appends
-// payment.expired, in one transaction. expired is false when there was nothing to do,
-// such as a payment confirmed while the provider was being asked.
+// Expire is false for a payment confirmed while the provider was being asked.
 func (p *Postgres) Expire(ctx context.Context, id domain.PaymentID, now time.Time) (expired bool, err error) {
 	err = postgres.WithTx(ctx, p.pool, pgx.ReadCommitted, func(ctx context.Context, tx pgx.Tx) error {
 		expired = false

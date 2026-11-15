@@ -16,12 +16,9 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/providers/pixsim"
 )
 
-// HandlePixSimEvent applies a simulator event, already verified, inside tx: the
-// inbox's transaction, so the effect commits with the event's status. subject is the
-// attempt it concerns. Money that confirms nothing, late or for another amount, is
-// posted as a divergence and the event is settled. It returns app.ErrAttemptNotFound
-// for an attempt not stored yet, app.ErrEventDivergent for an event that cannot be
-// applied and app.ErrUnknownEventType.
+// HandlePixSimEvent runs in the inbox's transaction, so the effect commits with the
+// event's status. Money that confirms nothing is posted as a divergence and the event
+// is settled; app.ErrAttemptNotFound is an attempt not stored yet, retried.
 func HandlePixSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload []byte, now time.Time) (subject string, err error) {
 	var e pixsim.Event
 	if err := json.Unmarshal(payload, &e); err != nil {
@@ -59,8 +56,6 @@ func HandleBoletoSimEvent(ctx context.Context, tx pgx.Tx, sinks *Sinks, payload 
 	return applyPaid(ctx, tx, sinks, BoletoSimName, e.Boleto.IdempotencyKey, &u, now)
 }
 
-// subjectOf is the attempt a provider's idempotency key names, or nothing when it
-// names none.
 func subjectOf(key string) string {
 	id, err := domain.ParseAttemptID(key)
 	if err != nil {
@@ -69,9 +64,8 @@ func subjectOf(key string) string {
 	return id.String()
 }
 
-// applyPaid applies a payment the provider announced for the attempt whose ID it was
-// given as idempotency key. An attempt another provider holds is not the provider's to
-// confirm, whatever ID its event names.
+// applyPaid: an attempt another provider holds is not this provider's to confirm,
+// whatever ID its event names.
 func applyPaid(ctx context.Context, tx pgx.Tx, sinks *Sinks, provider domain.ProviderName, key string, u *domain.AttemptUpdate, now time.Time) (subject string, err error) {
 	id, err := domain.ParseAttemptID(key)
 	if err != nil {
@@ -94,9 +88,9 @@ func applyPaid(ctx context.Context, tx pgx.Tx, sinks *Sinks, provider domain.Pro
 	return subject, nil
 }
 
-// applySaved runs applyLocked in a savepoint. The inbox commits tx with a failed event's
-// status, so whatever an event wrote before it turned out divergent must go first; the
-// payment's lock, taken before the savepoint, is kept.
+// applySaved uses a savepoint because the inbox commits tx with a failed event's
+// status: what a divergent event wrote must go, and the payment's lock, taken before,
+// stays.
 func applySaved(ctx context.Context, tx pgx.Tx, sinks *Sinks, pay *paymentsdb.LockPaymentOfAttemptRow, id domain.AttemptID, u *domain.AttemptUpdate, now time.Time) error {
 	sp, err := tx.Begin(ctx)
 	if err != nil {

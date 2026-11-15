@@ -18,11 +18,9 @@ import (
 	"github.com/gengibrepower/cross-border-pay/internal/platform/postgres"
 )
 
-// Balance splits the merchant's payable as Settle does at now: what is pending, and the
-// rest available; and reads what the reserve holds. Both are read in one REPEATABLE READ snapshot, without the payable's
-// lock: a read never waits on a confirmation or blocks a settlement, and the two sums
-// still agree, since every change to what is pending posts to the payable in the same
-// transaction. A merchant with no confirmed payment has no payable yet: all zero.
+// Balance reads in one REPEATABLE READ snapshot, without the payable's lock: it never
+// waits on a confirmation or blocks a settlement, and the sums still agree, since every
+// change to what is pending posts to the payable in the same transaction.
 func (p *Postgres) Balance(ctx context.Context, merchant domain.MerchantID, policy *domain.SettlementPolicy, now time.Time) (domain.Balance, error) {
 	cutoff := policy.CutoffDate(now)
 	before := func(m domain.Method) pgtype.Timestamptz {

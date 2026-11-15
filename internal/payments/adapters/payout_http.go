@@ -27,10 +27,9 @@ type balanceResponse struct {
 }
 
 type settlementResponse struct {
-	ID         string      `json:"id"`
-	CutoffDate string      `json:"cutoff_date"`
-	Amount     money.Money `json:"amount"`
-	// Reserved is held until ReserveUntil, null when nothing was held (decision 26).
+	ID           string      `json:"id"`
+	CutoffDate   string      `json:"cutoff_date"`
+	Amount       money.Money `json:"amount"`
 	Reserved     money.Money `json:"reserved"`
 	ReserveUntil *string     `json:"reserve_until"`
 	Payments     []string    `json:"payments"`

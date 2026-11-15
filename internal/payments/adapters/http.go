@@ -34,8 +34,7 @@ type Payments interface {
 	Capture(ctx context.Context, merchant domain.MerchantID, id domain.PaymentID, amount *money.Money) (app.Priced, error)
 }
 
-// MerchantFunc returns the authenticated merchant; cmd/api wires it to the merchants
-// module so that payments does not import it.
+// MerchantFunc is wired by cmd/api, so that payments does not import merchants.
 type MerchantFunc func(ctx context.Context) (domain.MerchantID, bool)
 
 type Handler struct {
@@ -51,9 +50,8 @@ func NewHandler(payments Payments, refunds Refunds, payouts Payouts, chargebacks
 	return &Handler{payments: payments, refunds: refunds, payouts: payouts, chargebacks: chargebacks, merchant: merchant, logger: logger}
 }
 
-// Register adds the payment routes, each wrapped by auth; the ones that create or move
-// money are idempotent too, inside auth; the reads are not. Cancel moves no money and is idempotent by
-// itself: canceling twice leaves the payment as the first cancel did.
+// Register: routes that move money take an Idempotency-Key. Cancel moves none and is
+// idempotent by itself.
 func (h *Handler) Register(mux *http.ServeMux, auth, idempotent func(http.Handler) http.Handler) {
 	mux.Handle("POST /v1/payments", auth(idempotent(http.HandlerFunc(h.create))))
 	mux.Handle("GET /v1/payments", auth(http.HandlerFunc(h.list)))
@@ -76,7 +74,6 @@ type createRequest struct {
 	Payer     *payerRequest `json:"payer"`
 }
 
-// payerRequest is whom a boleto is registered to (decision 54).
 type payerRequest struct {
 	Name     string `json:"name"`
 	Document string `json:"document"`
@@ -115,10 +112,8 @@ type paymentResponse struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// boletoResponse is the boleto to show the payer, without the attempt's internal
-// statuses, as pixResponse is for PIX: ready with its barcode and linha digitável,
-// processing while the bank's answer is not known, failed when the bank refused it.
-// The payer is not echoed: the merchant sent it, and the CPF is shown nowhere.
+// boletoResponse hides the attempt's statuses as pixResponse does. The payer is not
+// echoed: the CPF is shown nowhere.
 type boletoResponse struct {
 	Status        pixStatus     `json:"status"`
 	DueDate       calendar.Date `json:"due_date"`
@@ -179,16 +174,12 @@ func newPixResponse(a *domain.PaymentAttempt) *pixResponse {
 	}
 }
 
-// cardResponse shows where the card stands without the attempt's internal statuses.
 type cardResponse struct {
-	Status        cardStatus `json:"status"`
-	CaptureMethod string     `json:"capture_method"`
-	// Captured is what the capture took, set once the card is captured.
-	Captured *capturedResponse `json:"captured,omitempty"`
+	Status        cardStatus        `json:"status"`
+	CaptureMethod string            `json:"capture_method"`
+	Captured      *capturedResponse `json:"captured,omitempty"`
 }
 
-// capturedResponse is the quote of what was captured: for a partial capture, the part
-// priced at the payment's locked rate, with the fee on what was taken.
 type capturedResponse struct {
 	Amount      money.Money `json:"amount"`
 	PayerAmount money.Money `json:"payer_amount"`
